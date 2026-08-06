@@ -705,6 +705,7 @@ nxinterface IOperatingSystem
     virtual bool RemoveProfile(const uint8_t uuid[HOST_PROFILE_UUID_SIZE]) = 0;
     virtual bool SetProfileImage(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], const uint8_t * image_data, uint32_t image_size) = 0;
     virtual bool GetProfileImagePath(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], char * out_path, uint32_t out_path_size) const = 0;
+    virtual void RegisterCheatMetadata(const uint8_t build_id[32], uint64_t main_region_begin, uint64_t main_region_size) = 0;
 };
 
 EXPORT IOperatingSystem * CALL CreateOperatingSystem(ISystemModules & modules);

@@ -25,6 +25,7 @@
 #include "core/hle/service/glue/glue_manager.h"
 #include "core/hle/service/services.h"
 #include "core/internal_network/network.h"
+#include "core/memory/cheat_engine.h"
 #include "core/perf_stats.h"
 #include "core/reporter.h"
 #include "yuzu_hid_core/hid_core.h"
@@ -255,6 +256,7 @@ struct System::Impl {
 
     Reporter reporter;
     std::array<u8, 0x20> build_id{};
+    std::unique_ptr<Memory::CheatEngine> cheat_engine;
 
     ISystemModules & modules;
 
@@ -624,6 +626,31 @@ void System::SetApplicationProcessBuildID(const CurrentBuildProcessID & id)
 const System::CurrentBuildProcessID & System::GetApplicationProcessBuildID() const
 {
     return impl->build_id;
+}
+
+void System::RegisterCheatList(const std::vector<Memory::CheatEntry> & list, const std::array<u8, 0x20> & build_id, u64 main_region_begin, u64 main_region_size)
+{
+    if (list.empty())
+    {
+        LOG_WARNING(CheatEngine, "RegisterCheatList called with an empty cheat list");
+        impl->cheat_engine.reset();
+        return;
+    }
+
+    if (impl->cheat_engine)
+    {
+        impl->cheat_engine->SetMainMemoryParameters(main_region_begin, main_region_size);
+        impl->cheat_engine->Reload(list);
+        LOG_INFO(CheatEngine, "Reloaded {} cheat entries for build_id={}, main={:#X}, size={:#X}",
+                 list.size(), Common::HexToString(build_id), main_region_begin, main_region_size);
+        return;
+    }
+
+    impl->cheat_engine = std::make_unique<Memory::CheatEngine>(*this, list, build_id);
+    impl->cheat_engine->SetMainMemoryParameters(main_region_begin, main_region_size);
+    impl->cheat_engine->Initialize();
+    LOG_INFO(CheatEngine, "Registered {} cheat entries for build_id={}, main={:#X}, size={:#X}",
+             list.size(), Common::HexToString(build_id), main_region_begin, main_region_size);
 }
 
 Service::SM::ServiceManager & System::ServiceManager()
