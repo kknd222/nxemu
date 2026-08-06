@@ -7,6 +7,7 @@
 #include "yuzu_audio_core/audio_core.h"
 #include "yuzu_common/microprofile.h"
 #include "yuzu_common/hardware_properties.h"
+#include "yuzu_common/hex_util.h"
 #include "core/core.h"
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
