@@ -11,6 +11,7 @@ on:
 jobs:
   build-windows:
     runs-on: windows-2022
+    timeout-minutes: 90
 
     steps:
       - name: Checkout
@@ -20,11 +21,23 @@ jobs:
 
       - name: Setup MSBuild
         uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
 
-      - name: Build nxemu-os and nxemu-loader
+      - name: Build nxemu-os
         shell: pwsh
         run: |
-          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-os`;nxemu-loader /v:m
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-os /v:m
+
+      - name: Build nxemu-loader
+        shell: pwsh
+        run: |
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-loader /v:m
+
+      - name: Show produced files
+        shell: pwsh
+        run: |
+          Get-ChildItem .\modules -Recurse -File | Select-Object FullName,Length,LastWriteTime
 
       - name: Package patched modules
         shell: pwsh
