@@ -6,6 +6,7 @@ on:
     branches:
       - cheat-loader
       - kknd222/cheat-loader
+      - kknd222/cheat-loader-530
 
 jobs:
   build-windows:
