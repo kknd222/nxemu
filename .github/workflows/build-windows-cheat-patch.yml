@@ -1,0 +1,60 @@
+﻿name: Build Windows cheat patch
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - cheat-loader
+      - kknd222/cheat-loader
+
+jobs:
+  build-windows:
+    runs-on: windows-2022
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build nxemu-os and nxemu-loader
+        shell: pwsh
+        run: |
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-os`;nxemu-loader /v:m
+
+      - name: Package patched modules
+        shell: pwsh
+        run: |
+          $pkg = "artifact\NXEmu_cheat_patch"
+          New-Item -ItemType Directory -Force "$pkg\modules\operating_system" | Out-Null
+          New-Item -ItemType Directory -Force "$pkg\modules\loader" | Out-Null
+
+          Copy-Item ".\modules\x64\operating_system\nxemu-os.dll" "$pkg\modules\operating_system\nxemu-os.dll" -Force
+          Copy-Item ".\modules\x64\loader\nxemu-loader.dll" "$pkg\modules\loader\nxemu-loader.dll" -Force
+
+          if (Test-Path ".\modules\x64\operating_system\nxemu-os.pdb") {
+            Copy-Item ".\modules\x64\operating_system\nxemu-os.pdb" "$pkg\modules\operating_system\nxemu-os.pdb" -Force
+          }
+          if (Test-Path ".\modules\x64\loader\nxemu-loader.pdb") {
+            Copy-Item ".\modules\x64\loader\nxemu-loader.pdb" "$pkg\modules\loader\nxemu-loader.pdb" -Force
+          }
+
+          @"
+          Install:
+          1. Close NXEmu first.
+          2. Back up D:\NXEmu\modules\operating_system\nxemu-os.dll and D:\NXEmu\modules\loader\nxemu-loader.dll.
+          3. Copy this artifact's modules folder over D:\NXEmu\modules.
+
+          Cheat path examples:
+          D:\NXEmu\user\load\01008CF01BAAC000\cheats\09A15C8259828A41.txt
+          D:\NXEmu\user\load\01008CF01BAAC000\<mod name>\cheats\09A15C8259828A41.txt
+          "@ | Set-Content -Encoding UTF8 "$pkg\README.txt"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NXEmu_cheat_patch_windows_x64
+          path: artifact/NXEmu_cheat_patch
