@@ -7,6 +7,8 @@
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/am/frontend/applets.h"
 #include "core/hle/service/filesystem/filesystem.h"
+#include "yuzu_common/hex_util.h"
+#include "core/memory/cheat_engine.h"
 #include "core/perf_stats.h"
 #include "os_settings.h"
 #include "os_settings_identifiers.h"
@@ -14,6 +16,7 @@
 #include "yuzu_common/fs/path_util.h"
 #include "yuzu_common/settings.h"
 #include "yuzu_common/string_util.h"
+#include "yuzu_common/logging/log.h"
 #include "yuzu_hid_core/frontend/emulated_controller.h"
 #include "yuzu_hid_core/hid_core.h"
 #include "yuzu_input_common/drivers/keyboard.h"
@@ -21,10 +24,119 @@
 #include "yuzu_input_common/main.h"
 #include <nxemu-core/settings/identifiers.h>
 #include <filesystem>
+#include <cstring>
+#include <cstdio>
+#include <cctype>
+#include <algorithm>
+#include <sstream>
+#include <fstream>
+#include <array>
+#include <vector>
+#include <string>
 
 namespace
 {
     constexpr char ACC_SAVE_AVATORS_BASE_PATH[] = "system/save/8000000000000010/su/avators";
+
+    std::string TitleIdToHex(uint64_t title_id)
+    {
+        char buffer[17]{};
+        std::snprintf(buffer, sizeof(buffer), "%016llX", static_cast<unsigned long long>(title_id));
+        return buffer;
+    }
+
+    bool EqualsIgnoreCase(std::string a, std::string b)
+    {
+        std::transform(a.begin(), a.end(), a.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        std::transform(b.begin(), b.end(), b.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
+        return a == b;
+    }
+
+    std::string ReadTextFile(const std::filesystem::path& path)
+    {
+        std::ifstream file(path, std::ios::binary);
+        if (!file)
+        {
+            return {};
+        }
+        std::ostringstream out;
+        out << file.rdbuf();
+        return out.str();
+    }
+
+    std::vector<std::filesystem::path> FindCheatFiles(uint64_t title_id, const std::array<uint8_t, 0x20>& build_id)
+    {
+        std::vector<std::filesystem::path> out;
+        const auto load_root = Common::FS::GetYuzuPath(Common::FS::YuzuPath::LoadDir);
+        const auto title_root = load_root / TitleIdToHex(title_id);
+        std::error_code ec;
+        if (!std::filesystem::is_directory(title_root, ec))
+        {
+            return out;
+        }
+
+        const auto build_id_full = Common::HexToString(build_id);
+        std::string build_id_trimmed = build_id_full;
+        const auto last_non_zero = build_id_trimmed.find_last_not_of('0');
+        if (last_non_zero != std::string::npos)
+        {
+            build_id_trimmed.resize(last_non_zero + 1);
+        }
+
+        std::vector<std::string> valid_names;
+        if (build_id_full.size() >= 16)
+        {
+            valid_names.push_back(build_id_full.substr(0, 16));
+        }
+        if (build_id_trimmed.size() >= 16)
+        {
+            valid_names.push_back(build_id_trimmed.substr(0, 16));
+        }
+        if (!build_id_trimmed.empty())
+        {
+            valid_names.push_back(build_id_trimmed);
+        }
+        valid_names.push_back(build_id_full);
+
+        const auto scan_cheat_dir = [&](const std::filesystem::path& cheat_dir) {
+            std::error_code scan_ec;
+            if (!std::filesystem::is_directory(cheat_dir, scan_ec))
+            {
+                return;
+            }
+            for (const auto& entry : std::filesystem::directory_iterator(cheat_dir, scan_ec))
+            {
+                if (scan_ec || !entry.is_regular_file(scan_ec) || !EqualsIgnoreCase(entry.path().extension().string(), ".txt"))
+                {
+                    continue;
+                }
+                const auto stem = entry.path().stem().string();
+                for (const auto& name : valid_names)
+                {
+                    if (EqualsIgnoreCase(stem, name))
+                    {
+                        out.push_back(entry.path());
+                        break;
+                    }
+                }
+            }
+        };
+
+        // yuzu/Ryujinx style directly under load/<title_id>/cheats
+        scan_cheat_dir(title_root / "cheats");
+
+        // NXEmu add-ons style: load/<title_id>/<mod name>/cheats
+        std::error_code iter_ec;
+        for (const auto& entry : std::filesystem::directory_iterator(title_root, iter_ec))
+        {
+            if (!iter_ec && entry.is_directory(iter_ec))
+            {
+                scan_cheat_dir(entry.path() / "cheats");
+            }
+        }
+
+        return out;
+    }
 
     class IButtonMappingListImpl : public IButtonMappingList
     {
@@ -251,6 +363,55 @@ bool OSManager::LoadModule(const IModuleInfo & module, uint64_t baseAddress)
     }
     m_process->LoadModule(module, baseAddress);
     return true;
+}
+
+void OSManager::RegisterCheatMetadata(const uint8_t build_id_raw[32], uint64_t main_region_begin, uint64_t main_region_size)
+{
+    std::array<uint8_t, 0x20> build_id{};
+    std::memcpy(build_id.data(), build_id_raw, build_id.size());
+
+    const uint64_t title_id = m_coreSystem.GetApplicationProcessProgramID();
+    const auto cheat_files = FindCheatFiles(title_id, build_id);
+    if (cheat_files.empty())
+    {
+        LOG_INFO(CheatEngine, "No cheat file found for title_id={:016X}, build_id={}", title_id, Common::HexToString(build_id));
+        return;
+    }
+
+    Core::Memory::TextCheatParser parser;
+    std::vector<Core::Memory::CheatEntry> merged_cheats;
+    for (const auto& cheat_file : cheat_files)
+    {
+        const auto text = ReadTextFile(cheat_file);
+        if (text.empty())
+        {
+            LOG_WARNING(CheatEngine, "Cheat file is empty or unreadable: {}", cheat_file.string());
+            continue;
+        }
+
+        auto parsed = parser.Parse(text);
+        if (parsed.empty())
+        {
+            LOG_WARNING(CheatEngine, "Failed to parse cheat file: {}", cheat_file.string());
+            continue;
+        }
+
+        LOG_INFO(CheatEngine, "Loaded {} cheat entries from {}", parsed.size(), cheat_file.string());
+        merged_cheats.insert(merged_cheats.end(), parsed.begin(), parsed.end());
+    }
+
+    if (merged_cheats.empty())
+    {
+        LOG_WARNING(CheatEngine, "All matching cheat files were empty/unparseable for title_id={:016X}", title_id);
+        return;
+    }
+
+    for (uint32_t i = 0; i < merged_cheats.size(); ++i)
+    {
+        merged_cheats[i].cheat_id = i;
+    }
+
+    m_coreSystem.RegisterCheatList(merged_cheats, build_id, main_region_begin, main_region_size);
 }
 
 IDeviceMemory & OSManager::DeviceMemory(void)

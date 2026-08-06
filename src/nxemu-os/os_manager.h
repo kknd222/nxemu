@@ -58,6 +58,7 @@ public:
     bool RemoveProfile(const uint8_t uuid[HOST_PROFILE_UUID_SIZE]) override;
     bool SetProfileImage(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], const uint8_t * image_data, uint32_t image_size) override;
     bool GetProfileImagePath(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], char * out_path, uint32_t out_path_size) const override;
+    void RegisterCheatMetadata(const uint8_t build_id[32], uint64_t main_region_begin, uint64_t main_region_size) override;
 
 private:
     OSManager() = delete;
