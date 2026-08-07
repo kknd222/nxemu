@@ -2,6 +2,11 @@
 
 on:
   workflow_dispatch:
+    inputs:
+      runner_label:
+        description: 'GitHub hosted runner label, e.g. windows-2025, windows-2022, windows-latest'
+        required: false
+        default: 'windows-2025'
   push:
     branches:
       - cheat-loader
@@ -10,7 +15,7 @@ on:
 
 jobs:
   build-windows:
-    runs-on: windows-2022
+    runs-on: ${{ github.event.inputs.runner_label || 'windows-2025' }}
     timeout-minutes: 90
 
     steps:
