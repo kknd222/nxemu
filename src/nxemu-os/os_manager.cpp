@@ -129,7 +129,7 @@ namespace
         std::error_code iter_ec;
         for (const auto& entry : std::filesystem::directory_iterator(title_root, iter_ec))
         {
-            if (!iter_ec && entry.is_directory(iter_ec))
+            if (!iter_ec && entry.is_directory(iter_ec) && !EqualsIgnoreCase(entry.path().filename().string(), "cheats"))
             {
                 scan_cheat_dir(entry.path() / "cheats");
             }
@@ -411,7 +411,19 @@ void OSManager::RegisterCheatMetadata(const uint8_t build_id_raw[32], uint64_t m
         merged_cheats[i].cheat_id = i;
     }
 
-    m_coreSystem.RegisterCheatList(merged_cheats, build_id, main_region_begin, main_region_size);
+    // Some cheats use large Main NSO-relative offsets that land in the application code/ASLR
+    // mapping beyond the decompressed main NSO image size. Keep the final IsValidVirtualAddress
+    // guard in StandardVmCallbacks, but avoid rejecting these addresses only because the image
+    // size passed by the NSO loader was too small.
+    constexpr uint64_t MinimumMainCheatRegionSize = 0x10000000ULL;
+    const uint64_t effective_main_region_size = std::max(main_region_size, MinimumMainCheatRegionSize);
+    if (effective_main_region_size != main_region_size)
+    {
+        LOG_INFO(CheatEngine, "Expanding cheat main region size from {:#X} to {:#X}",
+                 main_region_size, effective_main_region_size);
+    }
+
+    m_coreSystem.RegisterCheatList(merged_cheats, build_id, main_region_begin, effective_main_region_size);
 }
 
 IDeviceMemory & OSManager::DeviceMemory(void)
