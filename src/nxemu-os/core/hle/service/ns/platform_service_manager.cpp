@@ -44,7 +44,13 @@ static void DecryptSharedFont(const std::vector<u32>& input, Kernel::PhysicalMem
     // TODO(ogniK): Figure out a better way to do this
     std::transform(input.begin(), input.end(), transformed_font.begin(),
                    [&KEY](u32 font_data) { return Common::swap32(font_data ^ KEY); });
-    transformed_font[1] = Common::swap32(transformed_font[1]) ^ KEY; // "re-encrypt" the size
+    // The shared-memory header stores the decrypted TTF size encrypted with the shared-font key
+    // and then byte-swapped. The previous code missed the final swap, producing a header like
+    // 0E D9 15 49 instead of 49 15 D9 0E for the Simplified Chinese font. Some games only use
+    // the service-returned size, but others parse the BFTTF header in shared memory directly.
+    // Those games can select the wrong/missing glyph data for CJK text.
+    const u32 decrypted_size = Common::swap32(transformed_font[1]);
+    transformed_font[1] = Common::swap32(decrypted_size ^ KEY); // "re-encrypt" the size
     std::memcpy(output.data() + offset, transformed_font.data(),
                 transformed_font.size() * sizeof(u32));
     offset += transformed_font.size() * sizeof(u32);
