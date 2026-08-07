@@ -12,6 +12,7 @@ on:
       - cheat-loader
       - kknd222/cheat-loader
       - kknd222/cheat-loader-530
+      - kknd222/cheat-loader-latest
 
 jobs:
   build-windows:
