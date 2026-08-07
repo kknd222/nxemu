@@ -9,6 +9,7 @@ on:
         default: 'windows-2025'
   push:
     branches:
+      - master
       - cheat-loader
       - kknd222/cheat-loader
       - kknd222/cheat-loader-530
