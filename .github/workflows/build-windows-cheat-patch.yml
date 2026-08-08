@@ -144,21 +144,3 @@ jobs:
         with:
           name: NXEmu_cheat_patch_windows_x64
           path: artifact/NXEmu_cheat_patch
-
-      - name: Upload nxemu-os.dll artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nxemu-os-dll
-          path: artifact/NXEmu_cheat_patch/modules/operating_system
-
-      - name: Upload nxemu-loader.dll artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nxemu-loader-dll
-          path: artifact/NXEmu_cheat_patch/modules/loader
-
-      - name: Upload nxemu-video.dll artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: nxemu-video-dll
-          path: artifact/NXEmu_cheat_patch/modules/video
