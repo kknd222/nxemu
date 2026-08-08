@@ -46,6 +46,11 @@ jobs:
         run: |
           msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-loader /v:m
 
+      - name: Build nxemu-video
+        shell: pwsh
+        run: |
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-video /v:m
+
       - name: Show produced files
         shell: pwsh
         run: |
@@ -57,9 +62,11 @@ jobs:
           $pkg = "artifact\NXEmu_cheat_patch"
           New-Item -ItemType Directory -Force "$pkg\modules\operating_system" | Out-Null
           New-Item -ItemType Directory -Force "$pkg\modules\loader" | Out-Null
+          New-Item -ItemType Directory -Force "$pkg\modules\video" | Out-Null
 
           Copy-Item ".\modules\x64\operating_system\nxemu-os.dll" "$pkg\modules\operating_system\nxemu-os.dll" -Force
           Copy-Item ".\modules\x64\loader\nxemu-loader.dll" "$pkg\modules\loader\nxemu-loader.dll" -Force
+          Copy-Item ".\modules\x64\video\nxemu-video.dll" "$pkg\modules\video\nxemu-video.dll" -Force
 
           if (Test-Path ".\modules\x64\operating_system\nxemu-os.pdb") {
             Copy-Item ".\modules\x64\operating_system\nxemu-os.pdb" "$pkg\modules\operating_system\nxemu-os.pdb" -Force
@@ -67,11 +74,16 @@ jobs:
           if (Test-Path ".\modules\x64\loader\nxemu-loader.pdb") {
             Copy-Item ".\modules\x64\loader\nxemu-loader.pdb" "$pkg\modules\loader\nxemu-loader.pdb" -Force
           }
+          if (Test-Path ".\modules\x64\video\nxemu-video.pdb") {
+            Copy-Item ".\modules\x64\video\nxemu-video.pdb" "$pkg\modules\video\nxemu-video.pdb" -Force
+          }
 
           @"
           Install:
           1. Close NXEmu first.
-          2. Back up D:\NXEmu\modules\operating_system\nxemu-os.dll and D:\NXEmu\modules\loader\nxemu-loader.dll.
+          2. Back up D:\NXEmu\modules\operating_system\nxemu-os.dll,
+             D:\NXEmu\modules\loader\nxemu-loader.dll, and
+             D:\NXEmu\modules\video\nxemu-video.dll.
           3. Copy this artifact's modules folder over D:\NXEmu\modules.
 
           Cheat path examples:

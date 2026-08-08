@@ -36,7 +36,24 @@ ImageViewInfo::ImageViewInfo(const TICEntry& config, s32 base_layer) noexcept
     };
     range.extent.levels = config.res_max_mip_level - config.res_min_mip_level + 1;
 
-    switch (config.texture_type) {
+    TextureType texture_type = config.texture_type;
+    if (config.Depth() > 1 || base_layer != 0) {
+        switch (texture_type) {
+        case TextureType::Texture1D:
+            texture_type = TextureType::Texture1DArray;
+            break;
+        case TextureType::Texture2D:
+            texture_type = TextureType::Texture2DArray;
+            break;
+        case TextureType::TextureCubemap:
+            texture_type = TextureType::TextureCubeArray;
+            break;
+        default:
+            break;
+        }
+    }
+
+    switch (texture_type) {
     case TextureType::Texture1D:
         ASSERT(config.Height() == 1);
         ASSERT(config.Depth() == 1);

@@ -49,7 +49,23 @@ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
         config.texture_type != TextureType::Texture2DNoMipmap) {
         ASSERT(!config.IsPitchLinear());
     }
-    switch (config.texture_type) {
+    TextureType texture_type = config.texture_type;
+    if (config.Depth() > 1 || config.BaseLayer() != 0) {
+        switch (texture_type) {
+        case TextureType::Texture1D:
+            texture_type = TextureType::Texture1DArray;
+            break;
+        case TextureType::Texture2D:
+            texture_type = TextureType::Texture2DArray;
+            break;
+        case TextureType::TextureCubemap:
+            texture_type = TextureType::TextureCubeArray;
+            break;
+        default:
+            break;
+        }
+    }
+    switch (texture_type) {
     case TextureType::Texture1D:
         ASSERT(config.BaseLayer() == 0);
         type = ImageType::e1D;
@@ -57,10 +73,9 @@ ImageInfo::ImageInfo(const TICEntry& config) noexcept {
         resources.layers = 1;
         break;
     case TextureType::Texture1DArray:
-        UNIMPLEMENTED_IF(config.BaseLayer() != 0);
         type = ImageType::e1D;
         size.width = config.Width();
-        resources.layers = config.Depth();
+        resources.layers = config.BaseLayer() + config.Depth();
         break;
     case TextureType::Texture2D:
     case TextureType::Texture2DNoMipmap:
