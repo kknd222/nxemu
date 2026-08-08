@@ -31,6 +31,40 @@ jobs:
         with:
           msbuild-architecture: x64
 
+      - name: Setup glslangValidator for video shaders
+        shell: pwsh
+        run: |
+          $candidates = @()
+          if ($env:VULKAN_SDK) {
+            $candidates += Join-Path $env:VULKAN_SDK "Bin\glslangValidator.exe"
+          }
+          if (Test-Path "C:\VulkanSDK") {
+            $candidates += Get-ChildItem "C:\VulkanSDK" -Recurse -Filter glslangValidator.exe -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName
+          }
+
+          $glslang = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $glslang) {
+            choco install vulkan-sdk -y --no-progress
+            if ($env:VULKAN_SDK) {
+              $candidates += Join-Path $env:VULKAN_SDK "Bin\glslangValidator.exe"
+            }
+            if (Test-Path "C:\VulkanSDK") {
+              $candidates += Get-ChildItem "C:\VulkanSDK" -Recurse -Filter glslangValidator.exe -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName
+            }
+            $glslang = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+
+          if (-not $glslang) {
+            throw "glslangValidator.exe was not found after Vulkan SDK setup"
+          }
+
+          $glslangDir = Split-Path -Parent $glslang
+          Add-Content $env:GITHUB_PATH $glslangDir
+          Write-Host "Using glslangValidator: $glslang"
+          & $glslang --version
+
       - name: Build nxemu-os
         shell: pwsh
         run: |
@@ -45,6 +79,12 @@ jobs:
         shell: pwsh
         run: |
           msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-loader /v:m
+
+      - name: Build host shader headers
+        shell: pwsh
+        run: |
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:string_shader_header /v:m
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:host_shaders /v:m
 
       - name: Build nxemu-video
         shell: pwsh
@@ -96,3 +136,21 @@ jobs:
         with:
           name: NXEmu_cheat_patch_windows_x64
           path: artifact/NXEmu_cheat_patch
+
+      - name: Upload nxemu-os.dll artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxemu-os-dll
+          path: artifact/NXEmu_cheat_patch/modules/operating_system
+
+      - name: Upload nxemu-loader.dll artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxemu-loader-dll
+          path: artifact/NXEmu_cheat_patch/modules/loader
+
+      - name: Upload nxemu-video.dll artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxemu-video-dll
+          path: artifact/NXEmu_cheat_patch/modules/video
