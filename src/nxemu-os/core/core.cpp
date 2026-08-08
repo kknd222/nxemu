@@ -629,7 +629,7 @@ const System::CurrentBuildProcessID & System::GetApplicationProcessBuildID() con
     return impl->build_id;
 }
 
-void System::RegisterCheatList(const std::vector<Memory::CheatEntry> & list, const std::array<u8, 0x20> & build_id, u64 main_region_begin, u64 main_region_size)
+void System::RegisterCheatList(const std::vector<Memory::CheatEntry> & list, const std::array<u8, 0x20> & build_id, u64 main_region_begin, u64 main_region_size, std::chrono::nanoseconds interval)
 {
     if (list.empty())
     {
@@ -647,7 +647,7 @@ void System::RegisterCheatList(const std::vector<Memory::CheatEntry> & list, con
         return;
     }
 
-    impl->cheat_engine = std::make_unique<Memory::CheatEngine>(*this, list, build_id);
+    impl->cheat_engine = std::make_unique<Memory::CheatEngine>(*this, list, build_id, interval);
     impl->cheat_engine->SetMainMemoryParameters(main_region_begin, main_region_size);
     impl->cheat_engine->Initialize();
     LOG_INFO(CheatEngine, "Registered {} cheat entries for build_id={}, main={:#X}, size={:#X}",

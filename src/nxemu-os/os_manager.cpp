@@ -27,7 +27,9 @@
 #include <cstring>
 #include <cstdio>
 #include <cctype>
+#include <cstdlib>
 #include <algorithm>
+#include <chrono>
 #include <sstream>
 #include <fstream>
 #include <array>
@@ -194,6 +196,49 @@ namespace
         LOG_INFO(CheatEngine,
                  "Applied cheat selection for {}: enabled.txt={}, disabled.txt={}, enabled {}/{} entries",
                  cheat_file.string(), enabled_exists, disabled_exists, enabled_count, cheats.size());
+    }
+
+    std::chrono::nanoseconds LoadCheatInterval(const std::vector<std::filesystem::path>& cheat_files)
+    {
+        constexpr auto default_interval = std::chrono::nanoseconds{1000000000 / 12};
+        constexpr uint64_t min_interval_ms = 16;
+        constexpr uint64_t max_interval_ms = 10000;
+
+        for (const auto& cheat_file : cheat_files)
+        {
+            const auto interval_file = cheat_file.parent_path() / "cheat_interval_ms.txt";
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(interval_file, ec))
+            {
+                continue;
+            }
+
+            const auto text = TrimAsciiWhitespace(ReadTextFile(interval_file));
+            if (text.empty())
+            {
+                LOG_WARNING(CheatEngine, "Cheat interval file is empty: {}", interval_file.string());
+                return default_interval;
+            }
+
+            char* end = nullptr;
+            const auto value = std::strtoull(text.c_str(), &end, 10);
+            if (end == text.c_str())
+            {
+                LOG_WARNING(CheatEngine, "Invalid cheat interval in {}: {}", interval_file.string(), text);
+                return default_interval;
+            }
+
+            const auto clamped = std::clamp<uint64_t>(value, min_interval_ms, max_interval_ms);
+            if (clamped != value)
+            {
+                LOG_WARNING(CheatEngine, "Clamped cheat interval from {} ms to {} ms", value, clamped);
+            }
+            LOG_INFO(CheatEngine, "Using cheat interval from {}: {} ms", interval_file.string(),
+                     clamped);
+            return std::chrono::milliseconds{clamped};
+        }
+
+        return default_interval;
     }
 
     std::vector<std::filesystem::path> FindCheatFiles(uint64_t title_id, const std::array<uint8_t, 0x20>& build_id)
@@ -562,7 +607,9 @@ void OSManager::RegisterCheatMetadata(const uint8_t build_id_raw[32], uint64_t m
                  main_region_size, effective_main_region_size);
     }
 
-    m_coreSystem.RegisterCheatList(merged_cheats, build_id, main_region_begin, effective_main_region_size);
+    const auto cheat_interval = LoadCheatInterval(cheat_files);
+    m_coreSystem.RegisterCheatList(merged_cheats, build_id, main_region_begin,
+                                   effective_main_region_size, cheat_interval);
 }
 
 IDeviceMemory & OSManager::DeviceMemory(void)

@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <cstddef>
 #include <deque>
 #include <functional>
@@ -325,7 +326,7 @@ public:
 
     void AddGlueRegistrationForProcess(Kernel::KProcess & process, uint32_t version, StorageId baseGameStorageId, StorageId updateStorageId, uint8_t * nacpData, uint32_t nacpDataLen);
 
-    void RegisterCheatList(const std::vector<Memory::CheatEntry> & list, const std::array<u8, 0x20> & build_id, u64 main_region_begin, u64 main_region_size);
+    void RegisterCheatList(const std::vector<Memory::CheatEntry> & list, const std::array<u8, 0x20> & build_id, u64 main_region_begin, u64 main_region_size, std::chrono::nanoseconds interval);
 
     void SetFrontendAppletSet(Service::AM::Frontend::FrontendAppletSet && set);
 

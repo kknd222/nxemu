@@ -21,7 +21,7 @@
 
 namespace Core::Memory {
 namespace {
-constexpr auto CHEAT_ENGINE_NS = std::chrono::nanoseconds{1000000000 / 12};
+constexpr auto DefaultCheatEngineInterval = std::chrono::nanoseconds{1000000000 / 12};
 
 std::string_view ExtractName(std::size_t& out_name_size, std::string_view data,
                              std::size_t start_index, char match) {
@@ -215,9 +215,11 @@ std::vector<CheatEntry> TextCheatParser::Parse(std::string_view data) const {
 }
 
 CheatEngine::CheatEngine(System& system_, std::vector<CheatEntry> cheats_,
-                         const std::array<u8, 0x20>& build_id_)
+                         const std::array<u8, 0x20>& build_id_,
+                         std::chrono::nanoseconds interval_)
     : vm{std::make_unique<StandardVmCallbacks>(system_, metadata)},
-      cheats(std::move(cheats_)), core_timing{system_.CoreTiming()}, system{system_} {
+      cheats(std::move(cheats_)), interval{interval_.count() > 0 ? interval_ : DefaultCheatEngineInterval},
+      core_timing{system_.CoreTiming()}, system{system_} {
     metadata.main_nso_build_id = build_id_;
 }
 
@@ -233,7 +235,9 @@ void CheatEngine::Initialize() {
             FrameCallback(ns_late);
             return std::nullopt;
         });
-    core_timing.ScheduleLoopingEvent(CHEAT_ENGINE_NS, CHEAT_ENGINE_NS, event);
+    core_timing.ScheduleLoopingEvent(interval, interval, event);
+    LOG_INFO(CheatEngine, "Cheat engine interval is {} ms",
+             std::chrono::duration_cast<std::chrono::milliseconds>(interval).count());
 
     metadata.process_id = system.ApplicationProcess()->GetProcessId();
     metadata.title_id = system.GetApplicationProcessProgramID();
