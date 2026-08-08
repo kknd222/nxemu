@@ -65,9 +65,7 @@ void StandardVmCallbacks::MemoryWriteUnsafe(VAddr address, const void* data, u64
         return;
     }
 
-    if (system.ApplicationMemory().WriteBlock(address, data, size)) {
-        UNIMPLEMENTED();
-    }
+    system.ApplicationMemory().WriteBlockUnsafe(address, data, size);
 }
 
 u64 StandardVmCallbacks::HidKeysDown() {
