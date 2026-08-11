@@ -48,8 +48,7 @@ Result IReadOnlyApplicationControlDataInterface::GetApplicationDesiredLanguage(
     // titles that do not support Simplified Chinese.
     constexpr auto preferred_language = ApplicationLanguage::SimplifiedChinese;
     constexpr auto preferred_language_flag = GetSupportedLanguageFlag(preferred_language);
-    if (supported_languages == 0 ||
-        (supported_languages & preferred_language_flag) == preferred_language_flag)
+    if (supported_languages == 0 || (supported_languages & preferred_language_flag) == preferred_language_flag)
     {
         LOG_INFO(Service_NS, "Selecting preferred application language: SimplifiedChinese");
         *out_desired_language = preferred_language;

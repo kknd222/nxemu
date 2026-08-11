@@ -1,0 +1,69 @@
+﻿name: Sync upstream master
+
+on:
+  workflow_dispatch:
+  schedule:
+    # Run every day at 04:20 UTC. GitHub may delay scheduled jobs.
+    - cron: '20 4 * * *'
+
+permissions:
+  contents: write
+
+concurrency:
+  group: sync-upstream-master
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout fork master
+        uses: actions/checkout@v4
+        with:
+          ref: master
+          fetch-depth: 0
+
+      - name: Configure git
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Fetch upstream master
+        run: |
+          git remote add upstream https://github.com/N3xoX1/nxemu.git
+          git fetch upstream master
+
+      - name: Merge upstream master if needed
+        id: merge
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          if git merge-base --is-ancestor upstream/master HEAD; then
+            echo "Fork master already contains upstream/master. Nothing to do."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          echo "Merging upstream/master into fork master..."
+          if git merge --no-edit upstream/master; then
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::error::Merge conflict while syncing upstream/master. Resolve conflicts manually."
+            git merge --abort || true
+            exit 1
+          fi
+
+      - name: Push synced master
+        if: steps.merge.outputs.changed == 'true'
+        run: |
+          git push origin HEAD:master
+
+      - name: Summary
+        run: |
+          if [ "${{ steps.merge.outputs.changed }}" = "true" ]; then
+            echo "Upstream changes were merged and pushed to master. The build workflow should trigger automatically."
+          else
+            echo "No upstream changes. No build trigger needed."
+          fi

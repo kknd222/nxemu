@@ -27,12 +27,15 @@
 #include <cstring>
 #include <cstdio>
 #include <cctype>
+#include <cstdlib>
 #include <algorithm>
+#include <chrono>
 #include <sstream>
 #include <fstream>
 #include <array>
 #include <vector>
 #include <string>
+#include <unordered_set>
 
 namespace
 {
@@ -62,6 +65,180 @@ namespace
         std::ostringstream out;
         out << file.rdbuf();
         return out.str();
+    }
+
+    std::string TrimAsciiWhitespace(std::string text)
+    {
+        if (text.size() >= 3 && static_cast<unsigned char>(text[0]) == 0xEF &&
+            static_cast<unsigned char>(text[1]) == 0xBB &&
+            static_cast<unsigned char>(text[2]) == 0xBF)
+        {
+            text.erase(0, 3);
+        }
+
+        const auto is_space = [](unsigned char c) {
+            return std::isspace(c) != 0;
+        };
+
+        while (!text.empty() && is_space(static_cast<unsigned char>(text.front())))
+        {
+            text.erase(text.begin());
+        }
+        while (!text.empty() && is_space(static_cast<unsigned char>(text.back())))
+        {
+            text.pop_back();
+        }
+        return text;
+    }
+
+    std::string NormalizeCheatName(std::string text)
+    {
+        text = TrimAsciiWhitespace(std::move(text));
+        if (text.size() >= 2 && text.front() == '[' && text.back() == ']')
+        {
+            text = text.substr(1, text.size() - 2);
+            text = TrimAsciiWhitespace(std::move(text));
+        }
+
+        std::transform(text.begin(), text.end(), text.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+        return text;
+    }
+
+    std::string CheatEntryName(const Core::Memory::CheatEntry& entry)
+    {
+        const auto& name = entry.definition.readable_name;
+        const auto end = std::find(name.begin(), name.end(), '\0');
+        return std::string(name.begin(), end);
+    }
+
+    std::unordered_set<std::string> LoadCheatNameSet(const std::filesystem::path& path, bool& exists)
+    {
+        exists = false;
+        std::unordered_set<std::string> out;
+        std::error_code ec;
+        if (!std::filesystem::is_regular_file(path, ec))
+        {
+            return out;
+        }
+
+        exists = true;
+        std::istringstream input(ReadTextFile(path));
+        std::string line;
+        while (std::getline(input, line))
+        {
+            line = TrimAsciiWhitespace(std::move(line));
+            if (line.empty() || line.front() == '#' || line.front() == ';')
+            {
+                continue;
+            }
+            if (line.rfind("//", 0) == 0)
+            {
+                continue;
+            }
+
+            const auto comment_pos = line.find('#');
+            if (comment_pos != std::string::npos)
+            {
+                line.resize(comment_pos);
+            }
+            line = NormalizeCheatName(std::move(line));
+            if (!line.empty())
+            {
+                out.insert(std::move(line));
+            }
+        }
+        return out;
+    }
+
+    void ApplyCheatSelection(std::vector<Core::Memory::CheatEntry>& cheats,
+                             const std::filesystem::path& cheat_file)
+    {
+        const auto cheat_dir = cheat_file.parent_path();
+        bool enabled_exists = false;
+        bool disabled_exists = false;
+        const auto enabled_names = LoadCheatNameSet(cheat_dir / "enabled.txt", enabled_exists);
+        const auto disabled_names = LoadCheatNameSet(cheat_dir / "disabled.txt", disabled_exists);
+
+        if (!enabled_exists && !disabled_exists)
+        {
+            return;
+        }
+
+        const bool enable_all = enabled_names.contains("*") || enabled_names.contains("all");
+        uint32_t enabled_count = 0;
+        for (auto& cheat : cheats)
+        {
+            const auto name = NormalizeCheatName(CheatEntryName(cheat));
+            const bool has_opcodes = cheat.definition.num_opcodes > 0;
+
+            if (enabled_exists)
+            {
+                cheat.enabled = has_opcodes && (enable_all || enabled_names.contains(name));
+            }
+            else
+            {
+                cheat.enabled = has_opcodes;
+            }
+
+            if (disabled_exists && disabled_names.contains(name))
+            {
+                cheat.enabled = false;
+            }
+
+            if (cheat.enabled)
+            {
+                ++enabled_count;
+            }
+        }
+
+        LOG_INFO(CheatEngine,
+                 "Applied cheat selection for {}: enabled.txt={}, disabled.txt={}, enabled {}/{} entries",
+                 cheat_file.string(), enabled_exists, disabled_exists, enabled_count, cheats.size());
+    }
+
+    std::chrono::nanoseconds LoadCheatInterval(const std::vector<std::filesystem::path>& cheat_files)
+    {
+        constexpr auto default_interval = std::chrono::nanoseconds{1000000000 / 12};
+        constexpr uint64_t min_interval_ms = 16;
+        constexpr uint64_t max_interval_ms = 10000;
+
+        for (const auto& cheat_file : cheat_files)
+        {
+            const auto interval_file = cheat_file.parent_path() / "cheat_interval_ms.txt";
+            std::error_code ec;
+            if (!std::filesystem::is_regular_file(interval_file, ec))
+            {
+                continue;
+            }
+
+            const auto text = TrimAsciiWhitespace(ReadTextFile(interval_file));
+            if (text.empty())
+            {
+                LOG_WARNING(CheatEngine, "Cheat interval file is empty: {}", interval_file.string());
+                return default_interval;
+            }
+
+            char* end = nullptr;
+            const auto value = std::strtoull(text.c_str(), &end, 10);
+            if (end == text.c_str())
+            {
+                LOG_WARNING(CheatEngine, "Invalid cheat interval in {}: {}", interval_file.string(), text);
+                return default_interval;
+            }
+
+            const auto clamped = std::clamp<uint64_t>(value, min_interval_ms, max_interval_ms);
+            if (clamped != value)
+            {
+                LOG_WARNING(CheatEngine, "Clamped cheat interval from {} ms to {} ms", value, clamped);
+            }
+            LOG_INFO(CheatEngine, "Using cheat interval from {}: {} ms", interval_file.string(),
+                     clamped);
+            return std::chrono::milliseconds{clamped};
+        }
+
+        return default_interval;
     }
 
     std::vector<std::filesystem::path> FindCheatFiles(uint64_t title_id, const std::array<uint8_t, 0x20>& build_id)
@@ -129,7 +306,7 @@ namespace
         std::error_code iter_ec;
         for (const auto& entry : std::filesystem::directory_iterator(title_root, iter_ec))
         {
-            if (!iter_ec && entry.is_directory(iter_ec))
+            if (!iter_ec && entry.is_directory(iter_ec) && !EqualsIgnoreCase(entry.path().filename().string(), "cheats"))
             {
                 scan_cheat_dir(entry.path() / "cheats");
             }
@@ -396,7 +573,14 @@ void OSManager::RegisterCheatMetadata(const uint8_t build_id_raw[32], uint64_t m
             continue;
         }
 
-        LOG_INFO(CheatEngine, "Loaded {} cheat entries from {}", parsed.size(), cheat_file.string());
+        ApplyCheatSelection(parsed, cheat_file);
+
+        const auto enabled_count =
+            std::count_if(parsed.begin(), parsed.end(), [](const Core::Memory::CheatEntry& entry) {
+                return entry.enabled;
+            });
+        LOG_INFO(CheatEngine, "Loaded {} cheat entries ({} enabled) from {}", parsed.size(),
+                 enabled_count, cheat_file.string());
         merged_cheats.insert(merged_cheats.end(), parsed.begin(), parsed.end());
     }
 
@@ -411,7 +595,21 @@ void OSManager::RegisterCheatMetadata(const uint8_t build_id_raw[32], uint64_t m
         merged_cheats[i].cheat_id = i;
     }
 
-    m_coreSystem.RegisterCheatList(merged_cheats, build_id, main_region_begin, main_region_size);
+    // Some cheats use large Main NSO-relative offsets that land in the application code/ASLR
+    // mapping beyond the decompressed main NSO image size. Keep the final IsValidVirtualAddress
+    // guard in StandardVmCallbacks, but avoid rejecting these addresses only because the image
+    // size passed by the NSO loader was too small.
+    constexpr uint64_t MinimumMainCheatRegionSize = 0x10000000ULL;
+    const uint64_t effective_main_region_size = std::max(main_region_size, MinimumMainCheatRegionSize);
+    if (effective_main_region_size != main_region_size)
+    {
+        LOG_INFO(CheatEngine, "Expanding cheat main region size from {:#X} to {:#X}",
+                 main_region_size, effective_main_region_size);
+    }
+
+    const auto cheat_interval = LoadCheatInterval(cheat_files);
+    m_coreSystem.RegisterCheatList(merged_cheats, build_id, main_region_begin,
+                                   effective_main_region_size, cheat_interval);
 }
 
 IDeviceMemory & OSManager::DeviceMemory(void)

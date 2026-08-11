@@ -1,0 +1,146 @@
+﻿name: Build Windows cheat patch
+
+on:
+  workflow_dispatch:
+    inputs:
+      runner_label:
+        description: 'GitHub hosted runner label, e.g. windows-2025, windows-2022, windows-latest'
+        required: false
+        default: 'windows-2025'
+  push:
+    branches:
+      - master
+      - cheat-loader
+      - kknd222/cheat-loader
+      - kknd222/cheat-loader-530
+      - kknd222/cheat-loader-latest
+
+jobs:
+  build-windows:
+    runs-on: ${{ github.event.inputs.runner_label || 'windows-2025' }}
+    timeout-minutes: 90
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          lfs: true
+
+      - name: Pull LFS files in submodules
+        shell: pwsh
+        run: |
+          git lfs install
+          git lfs pull
+          git submodule foreach --recursive "git lfs pull || true"
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+        with:
+          msbuild-architecture: x64
+
+      - name: Setup glslangValidator for video shaders
+        shell: pwsh
+        run: |
+          $candidates = @()
+          if ($env:VULKAN_SDK) {
+            $candidates += Join-Path $env:VULKAN_SDK "Bin\glslangValidator.exe"
+          }
+          if (Test-Path "C:\VulkanSDK") {
+            $candidates += Get-ChildItem "C:\VulkanSDK" -Recurse -Filter glslangValidator.exe -ErrorAction SilentlyContinue |
+              Select-Object -ExpandProperty FullName
+          }
+
+          $glslang = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          if (-not $glslang) {
+            choco install vulkan-sdk -y --no-progress
+            if ($env:VULKAN_SDK) {
+              $candidates += Join-Path $env:VULKAN_SDK "Bin\glslangValidator.exe"
+            }
+            if (Test-Path "C:\VulkanSDK") {
+              $candidates += Get-ChildItem "C:\VulkanSDK" -Recurse -Filter glslangValidator.exe -ErrorAction SilentlyContinue |
+                Select-Object -ExpandProperty FullName
+            }
+            $glslang = $candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          }
+
+          if (-not $glslang) {
+            throw "glslangValidator.exe was not found after Vulkan SDK setup"
+          }
+
+          $glslangDir = Split-Path -Parent $glslang
+          Add-Content $env:GITHUB_PATH $glslangDir
+          Write-Host "Using glslangValidator: $glslang"
+          & $glslang --version
+
+      - name: Build nxemu-os
+        shell: pwsh
+        run: |
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-os /v:m
+
+      - name: Build nx_tzdb generated headers
+        shell: pwsh
+        run: |
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nx_tzdb /v:m
+
+      - name: Build nxemu-loader
+        shell: pwsh
+        run: |
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-loader /v:m
+
+      - name: Build host shader headers
+        shell: pwsh
+        run: |
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:string_shader_header /v:m
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:host_shaders /v:m
+
+      - name: Build nxemu-video
+        shell: pwsh
+        run: |
+          msbuild .\nxemu.sln /m /restore /p:Configuration=Release /p:Platform=x64 /t:nxemu-video /v:m
+
+      - name: Show produced files
+        shell: pwsh
+        run: |
+          Get-ChildItem .\modules -Recurse -File | Select-Object FullName,Length,LastWriteTime
+
+      - name: Package patched modules
+        shell: pwsh
+        run: |
+          $pkg = "artifact\NXEmu_cheat_patch"
+          New-Item -ItemType Directory -Force "$pkg\modules\operating_system" | Out-Null
+          New-Item -ItemType Directory -Force "$pkg\modules\loader" | Out-Null
+          New-Item -ItemType Directory -Force "$pkg\modules\video" | Out-Null
+
+          Copy-Item ".\modules\x64\operating_system\nxemu-os.dll" "$pkg\modules\operating_system\nxemu-os.dll" -Force
+          Copy-Item ".\modules\x64\loader\nxemu-loader.dll" "$pkg\modules\loader\nxemu-loader.dll" -Force
+          Copy-Item ".\modules\x64\video\nxemu-video.dll" "$pkg\modules\video\nxemu-video.dll" -Force
+
+          if (Test-Path ".\modules\x64\operating_system\nxemu-os.pdb") {
+            Copy-Item ".\modules\x64\operating_system\nxemu-os.pdb" "$pkg\modules\operating_system\nxemu-os.pdb" -Force
+          }
+          if (Test-Path ".\modules\x64\loader\nxemu-loader.pdb") {
+            Copy-Item ".\modules\x64\loader\nxemu-loader.pdb" "$pkg\modules\loader\nxemu-loader.pdb" -Force
+          }
+          if (Test-Path ".\modules\x64\video\nxemu-video.pdb") {
+            Copy-Item ".\modules\x64\video\nxemu-video.pdb" "$pkg\modules\video\nxemu-video.pdb" -Force
+          }
+
+          @"
+          Install:
+          1. Close NXEmu first.
+          2. Back up D:\NXEmu\modules\operating_system\nxemu-os.dll,
+             D:\NXEmu\modules\loader\nxemu-loader.dll, and
+             D:\NXEmu\modules\video\nxemu-video.dll.
+          3. Copy this artifact's modules folder over D:\NXEmu\modules.
+
+          Cheat path examples:
+          D:\NXEmu\user\load\01008CF01BAAC000\cheats\09A15C8259828A41.txt
+          D:\NXEmu\user\load\01008CF01BAAC000\<mod name>\cheats\09A15C8259828A41.txt
+          "@ | Set-Content -Encoding UTF8 "$pkg\README.txt"
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: NXEmu_cheat_patch_windows_x64
+          path: artifact/NXEmu_cheat_patch

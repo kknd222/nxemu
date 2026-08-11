@@ -63,7 +63,8 @@ public:
 class CheatEngine final {
 public:
     CheatEngine(System& system_, std::vector<CheatEntry> cheats_,
-                const std::array<u8, 0x20>& build_id_);
+                const std::array<u8, 0x20>& build_id_,
+                std::chrono::nanoseconds interval_);
     ~CheatEngine();
 
     void Initialize();
@@ -79,6 +80,7 @@ private:
 
     std::vector<CheatEntry> cheats;
     std::atomic_bool is_pending_reload{false};
+    std::chrono::nanoseconds interval;
 
     std::shared_ptr<Core::Timing::EventType> event;
     Core::Timing::CoreTiming& core_timing;
