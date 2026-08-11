@@ -395,8 +395,10 @@ Result FSP_SRV::OpenDataStorageByDataId(OutInterface<IStorage> out_interface, St
 Result FSP_SRV::OpenPatchDataStorageByCurrentProcess(OutInterface<IStorage> out_interface, StorageId storage_id, u64 title_id)
 {
     LOG_WARNING(Service_FS, "(STUBBED) called with storage_id={:02X}, title_id={:016X}", storage_id, title_id);
-    UNIMPLEMENTED();
-    R_SUCCEED();
+    // Match the established yuzu/suyu behavior: this optional patch data storage may be absent.
+    // Returning success without assigning out_interface leaves the caller with an invalid storage
+    // object and can make titles continue into a null/garbage read path.
+    R_RETURN(FileSys::ResultTargetNotFound);
 }
 
 Result FSP_SRV::OpenDataStorageWithProgramIndex(OutInterface<IStorage> out_interface, u8 program_index)

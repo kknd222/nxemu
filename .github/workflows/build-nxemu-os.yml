@@ -1,0 +1,45 @@
+﻿name: Build NXEmu OS module
+
+on:
+  workflow_dispatch:
+  push:
+    branches:
+      - fix-mk8-patch-storage
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build nxemu-os
+        shell: pwsh
+        run: |
+          msbuild .\src\nxemu-os\nxemu-os.vcxproj `
+            /m `
+            /p:Configuration=Release `
+            /p:Platform=x64 `
+            /p:BuildInParallel=true `
+            /v:minimal
+
+      - name: Collect artifacts
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force artifacts | Out-Null
+          Get-ChildItem -Recurse -File -Include nxemu-os.dll,nxemu-os.pdb,nxemu-os.lib | Sort-Object FullName | ForEach-Object {
+            Write-Host $_.FullName
+            Copy-Item $_.FullName artifacts\ -Force
+          }
+          Get-ChildItem artifacts
+
+      - name: Upload nxemu-os artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: nxemu-os-release-x64
+          path: artifacts/*
