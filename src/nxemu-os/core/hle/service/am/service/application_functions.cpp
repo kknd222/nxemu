@@ -165,6 +165,17 @@ Result IApplicationFunctions::GetDesiredLanguage(Out<u64> out_language_code)
                  supported_languages, m_applet->program_id);
     }
 
+    // Mario Kart 8 Deluxe's loaded control metadata can report only the legacy language mask
+    // (00000FFF), which excludes Simplified Chinese even when the user's desired setup expects it.
+    // Force the Simplified Chinese bit for this title so NS language selection can pick zh-Hans.
+    if (m_applet->program_id == 0x0100152000022000ULL) {
+        constexpr u32 simplified_chinese_flag = 1U << 14;
+        supported_languages |= simplified_chinese_flag;
+        LOG_WARNING(Service_AM,
+                    "Forcing Simplified Chinese support for Mario Kart 8 Deluxe, supported_languages={:08X}",
+                    supported_languages);
+    }
+
     // Call IApplicationManagerInterface implementation.
     auto& service_manager = system.ServiceManager();
     auto ns_am2 = service_manager.GetService<NS::IServiceGetterInterface>("ns:am2");
