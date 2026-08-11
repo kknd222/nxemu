@@ -25,6 +25,13 @@ std::string ToLowerAscii(std::string value)
     return value;
 }
 
+std::string FormatTitleId(uint64_t title_id)
+{
+    char buffer[17];
+    std::snprintf(buffer, sizeof(buffer), "%016llX", static_cast<unsigned long long>(title_id));
+    return buffer;
+}
+
 bool IsAddOnContentExtension(const char * fileName)
 {
     static const char * supported_extensions[] = {
@@ -124,14 +131,21 @@ void RegisterMatchingAddOnEntriesFromNsp(const FileSys::NSP & nsp, uint64_t base
 
 void RegisterConfiguredAddOnDirectoryEntries(uint64_t program_id, FileSys::VirtualFilesystem & vfs, IManualContentProvider & provider)
 {
-    if (program_id == 0 || loaderSettings.addOnDirectories.empty())
+    if (program_id == 0)
     {
         return;
     }
 
     const uint64_t base_program_id = FileSys::GetBaseTitleID(program_id);
+    std::vector<std::string> add_on_directories = loaderSettings.addOnDirectories;
+    const std::filesystem::path portable_add_on_dir =
+        std::filesystem::current_path() / "user" / "addons" / FormatTitleId(base_program_id);
+    if (Common::FS::IsDir(portable_add_on_dir))
+    {
+        add_on_directories.push_back(Common::FS::PathToUTF8String(portable_add_on_dir));
+    }
 
-    for (const std::string & dir : loaderSettings.addOnDirectories)
+    for (const std::string & dir : add_on_directories)
     {
         if (dir.empty())
         {

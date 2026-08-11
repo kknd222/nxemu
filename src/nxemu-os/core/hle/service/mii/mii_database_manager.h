@@ -43,6 +43,8 @@ public:
     Result SaveDatabase();
 
 private:
+    void EnsureDefaultMii(DatabaseSessionMetadata& metadata);
+
     // This is the global value of
     // nn::settings::fwdbg::GetSettingsItemValue("is_db_test_mode_enabled");
     bool is_test_db{};

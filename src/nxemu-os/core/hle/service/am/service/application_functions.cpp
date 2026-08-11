@@ -153,14 +153,27 @@ Result IApplicationFunctions::GetDesiredLanguage(Out<u64> out_language_code)
     u32 supported_languages = 0;
 
     ISystemloader & loader = system.GetSystemloader();
-    IFileSysNACPPtr metadata(loader.GetPMControlMetadata(m_applet->program_id));
+    IFileSysNACPPtr metadata(loader.GetPMControlMetadata(FileSys::GetUpdateTitleID(m_applet->program_id)));
     if (!metadata)
     {
-        metadata = loader.GetPMControlMetadata(FileSys::GetUpdateTitleID(m_applet->program_id));
+        metadata = loader.GetPMControlMetadata(m_applet->program_id);
     }
 
     if (metadata) {
         supported_languages = metadata->GetSupportedLanguages();
+        LOG_INFO(Service_AM, "Using supported_languages={:08X} for program_id={:016X}",
+                 supported_languages, m_applet->program_id);
+    }
+
+    // Mario Kart 8 Deluxe's loaded control metadata can report only the legacy language mask
+    // (00000FFF), which excludes Simplified Chinese even when the user's desired setup expects it.
+    // Force the Simplified Chinese bit for this title so NS language selection can pick zh-Hans.
+    if (m_applet->program_id == 0x0100152000022000ULL) {
+        constexpr u32 simplified_chinese_flag = 1U << 14;
+        supported_languages |= simplified_chinese_flag;
+        LOG_WARNING(Service_AM,
+                    "Forcing Simplified Chinese support for Mario Kart 8 Deluxe, supported_languages={:08X}",
+                    supported_languages);
     }
 
     // Call IApplicationManagerInterface implementation.
@@ -196,10 +209,10 @@ Result IApplicationFunctions::GetDisplayVersion(Out<DisplayVersion> out_display_
     LOG_DEBUG(Service_AM, "called");
 
     ISystemloader & loader = system.GetSystemloader();
-    IFileSysNACPPtr metadata(loader.GetPMControlMetadata(m_applet->program_id));
+    IFileSysNACPPtr metadata(loader.GetPMControlMetadata(FileSys::GetUpdateTitleID(m_applet->program_id)));
     if (!metadata)
     {
-        metadata = loader.GetPMControlMetadata(FileSys::GetUpdateTitleID(m_applet->program_id));
+        metadata = loader.GetPMControlMetadata(m_applet->program_id);
     }
 
     if (metadata)
