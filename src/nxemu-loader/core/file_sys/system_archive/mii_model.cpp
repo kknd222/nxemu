@@ -1,6 +1,12 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <fstream>
+#include <iterator>
+#include <vector>
+
+#include "yuzu_common/fs/path_util.h"
+#include "yuzu_common/logging/log.h"
 #include "core/file_sys/system_archive/mii_model.h"
 #include "core/file_sys/vfs/vfs_vector.h"
 
@@ -22,7 +28,59 @@ constexpr auto SHAPE_MID = NFSR_STANDARD;
 
 } // namespace MiiModelData
 
+namespace {
+
+VirtualFile LoadExternalMiiModelFile(const std::filesystem::path& directory, const std::string& name) {
+    const auto path = directory / name;
+    std::ifstream file{path, std::ios::binary};
+    if (!file) {
+        return nullptr;
+    }
+
+    std::vector<u8> data{std::istreambuf_iterator<char>{file}, std::istreambuf_iterator<char>{}};
+    if (data.empty()) {
+        LOG_WARNING(Service_FS, "External MiiModel file '{}' is empty", path.string());
+        return nullptr;
+    }
+
+    LOG_INFO(Service_FS, "Loaded external MiiModel file '{}' ({} bytes)", path.string(), data.size());
+    return std::make_shared<VectorVfsFile>(std::move(data), name);
+}
+
+VirtualDir LoadExternalMiiModel() {
+    const auto base_dir = Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir).parent_path() /
+                          "sysdata" / "mii_model";
+
+    constexpr std::array<const char*, 6> required_files{
+        "NXTextureLowLinear.dat", "NXTextureLowSRGB.dat", "NXTextureMidLinear.dat",
+        "NXTextureMidSRGB.dat",   "ShapeHigh.dat",        "ShapeMid.dat",
+    };
+
+    auto out = std::make_shared<VectorVfsDirectory>(std::vector<VirtualFile>{},
+                                                    std::vector<VirtualDir>{}, "data");
+
+    for (const auto* name : required_files) {
+        auto file = LoadExternalMiiModelFile(base_dir, name);
+        if (file == nullptr) {
+            LOG_WARNING(Service_FS,
+                        "External MiiModel override missing '{}'; falling back to placeholder MiiModel",
+                        (base_dir / name).string());
+            return nullptr;
+        }
+        out->AddFile(std::move(file));
+    }
+
+    LOG_INFO(Service_FS, "Using external MiiModel override from '{}'", base_dir.string());
+    return out;
+}
+
+} // Anonymous namespace
+
 VirtualDir MiiModel() {
+    if (auto external = LoadExternalMiiModel(); external != nullptr) {
+        return external;
+    }
+
     auto out = std::make_shared<VectorVfsDirectory>(std::vector<VirtualFile>{},
                                                     std::vector<VirtualDir>{}, "data");
 
