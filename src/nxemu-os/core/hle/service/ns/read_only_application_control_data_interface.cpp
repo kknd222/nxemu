@@ -42,6 +42,20 @@ Result IReadOnlyApplicationControlDataInterface::GetApplicationDesiredLanguage(
 {
     LOG_INFO(Service_NS, "called with supported_languages={:08X}", supported_languages);
 
+    // Prefer Simplified Chinese when the title advertises support for it. NXEmu currently lacks
+    // complete user-facing region/language settings, and some titles only pick Chinese through
+    // this NS application-language path. Fall back to the configured language priority list for
+    // titles that do not support Simplified Chinese.
+    constexpr auto preferred_language = ApplicationLanguage::SimplifiedChinese;
+    constexpr auto preferred_language_flag = GetSupportedLanguageFlag(preferred_language);
+    if (supported_languages == 0 ||
+        (supported_languages & preferred_language_flag) == preferred_language_flag)
+    {
+        LOG_INFO(Service_NS, "Selecting preferred application language: SimplifiedChinese");
+        *out_desired_language = preferred_language;
+        R_SUCCEED();
+    }
+
     // Get language code from settings
     const auto language_code = Set::GetLanguageCodeFromIndex(static_cast<s32>(osSettings.language_index));
 

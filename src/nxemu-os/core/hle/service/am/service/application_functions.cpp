@@ -153,14 +153,16 @@ Result IApplicationFunctions::GetDesiredLanguage(Out<u64> out_language_code)
     u32 supported_languages = 0;
 
     ISystemloader & loader = system.GetSystemloader();
-    IFileSysNACPPtr metadata(loader.GetPMControlMetadata(m_applet->program_id));
+    IFileSysNACPPtr metadata(loader.GetPMControlMetadata(FileSys::GetUpdateTitleID(m_applet->program_id)));
     if (!metadata)
     {
-        metadata = loader.GetPMControlMetadata(FileSys::GetUpdateTitleID(m_applet->program_id));
+        metadata = loader.GetPMControlMetadata(m_applet->program_id);
     }
 
     if (metadata) {
         supported_languages = metadata->GetSupportedLanguages();
+        LOG_INFO(Service_AM, "Using supported_languages={:08X} for program_id={:016X}",
+                 supported_languages, m_applet->program_id);
     }
 
     // Call IApplicationManagerInterface implementation.
@@ -196,10 +198,10 @@ Result IApplicationFunctions::GetDisplayVersion(Out<DisplayVersion> out_display_
     LOG_DEBUG(Service_AM, "called");
 
     ISystemloader & loader = system.GetSystemloader();
-    IFileSysNACPPtr metadata(loader.GetPMControlMetadata(m_applet->program_id));
+    IFileSysNACPPtr metadata(loader.GetPMControlMetadata(FileSys::GetUpdateTitleID(m_applet->program_id)));
     if (!metadata)
     {
-        metadata = loader.GetPMControlMetadata(FileSys::GetUpdateTitleID(m_applet->program_id));
+        metadata = loader.GetPMControlMetadata(m_applet->program_id);
     }
 
     if (metadata)
