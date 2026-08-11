@@ -183,6 +183,12 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Systemloader & loader, ISystemMod
     {
         return std::nullopt;
     }
+
+    if (name == "main")
+    {
+        operatingSystem.RegisterCheatMetadata(nso_header.build_id.data(), load_base, image_size);
+    }
+
     return load_base + image_size;
 }
 

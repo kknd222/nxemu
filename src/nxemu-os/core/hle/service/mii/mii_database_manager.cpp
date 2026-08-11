@@ -19,6 +19,20 @@ const char* DbFileName = "MiiDatabase.dat";
 
 DatabaseManager::DatabaseManager() {}
 
+void DatabaseManager::EnsureDefaultMii(DatabaseSessionMetadata& metadata) {
+    if (database.GetDatabaseLength() != 0) {
+        return;
+    }
+
+    StoreData store_data{};
+    store_data.BuildDefault(0);
+    database.Add(store_data);
+    is_moddified = true;
+    update_counter++;
+    metadata.update_counter = update_counter;
+    LOG_WARNING(Service_Mii, "Mii database was empty; added a default Mii");
+}
+
 Result DatabaseManager::MountSaveData() {
     if (!is_save_data_mounted) {
         system_save_dir =
@@ -53,6 +67,7 @@ Result DatabaseManager::Initialize(DatabaseSessionMetadata& metadata, bool& is_d
                                      Common::FS::FileType::BinaryFile};
 
     if (!db_file.IsOpen()) {
+        EnsureDefaultMii(metadata);
         return SaveDatabase();
     }
 
@@ -68,6 +83,8 @@ Result DatabaseManager::Initialize(DatabaseSessionMetadata& metadata, bool& is_d
         // Dragons happen here for simplicity just clean the database
         LOG_ERROR(Service_Mii, "Mii database is corrupted");
         database.CleanDatabase();
+        EnsureDefaultMii(metadata);
+        SaveDatabase();
         return ResultUnknown;
     }
 
@@ -76,7 +93,14 @@ Result DatabaseManager::Initialize(DatabaseSessionMetadata& metadata, bool& is_d
     if (result.IsError()) {
         LOG_ERROR(Service_Mii, "Mii database is corrupted 0x{:0x}", result.raw);
         database.CleanDatabase();
+        EnsureDefaultMii(metadata);
+        SaveDatabase();
         return ResultSuccess;
+    }
+
+    if (database.GetDatabaseLength() == 0) {
+        EnsureDefaultMii(metadata);
+        return SaveDatabase();
     }
 
     LOG_INFO(Service_Mii, "Successfully loaded mii database. size={}",
@@ -141,6 +165,10 @@ void DatabaseManager::Get(StoreData& out_store_data, std::size_t index,
     }
 
     // This function doesn't fail. It returns the first mii instead
+    if (database.GetDatabaseLength() == 0) {
+        out_store_data.BuildDefault(0);
+        return;
+    }
     out_store_data = database.Get(0);
 }
 
