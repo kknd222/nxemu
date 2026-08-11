@@ -372,8 +372,24 @@ Result FSP_SRV::OpenDataStorageByCurrentProcess(OutInterface<IStorage> out_inter
 
 Result FSP_SRV::OpenDataStorageByDataId(OutInterface<IStorage> out_interface, StorageId storage_id, u32 unknown, u64 title_id)
 {
-    LOG_DEBUG(Service_FS, "called with storage_id={:02X}, unknown={:08X}, title_id={:016X}", storage_id, unknown, title_id);
-    IVirtualFilePtr data(romfs_controller->OpenRomFS(title_id, storage_id, LoaderContentRecordType::Data));
+    LOG_INFO(Service_FS, "called with storage_id={:02X}, unknown={:08X}, title_id={:016X}", storage_id, unknown, title_id);
+
+    auto resolved_storage_id = storage_id;
+    IVirtualFilePtr data(romfs_controller->OpenRomFS(title_id, resolved_storage_id, LoaderContentRecordType::Data));
+
+    constexpr u64 system_archive_base_title_id = 0x0100000000000800;
+    constexpr u64 system_archive_last_title_id = 0x0100000000000827;
+    if (!data && title_id >= system_archive_base_title_id && title_id <= system_archive_last_title_id &&
+        storage_id != StorageId::NandSystem)
+    {
+        LOG_WARNING(Service_FS,
+                    "System archive {:016X} was not found in storage_id={:02X}; retrying NandSystem before synth fallback",
+                    title_id, storage_id);
+        resolved_storage_id = StorageId::NandSystem;
+        data = IVirtualFilePtr(
+            romfs_controller->OpenRomFS(title_id, resolved_storage_id, LoaderContentRecordType::Data));
+    }
+
     if (!data)
     {
         ISystemloader & loader = system.GetSystemloader();
@@ -386,7 +402,7 @@ Result FSP_SRV::OpenDataStorageByDataId(OutInterface<IStorage> out_interface, St
         LOG_ERROR(Service_FS, "Could not open data storage with title_id={:016X}, storage_id={:02X}", title_id, storage_id);
         R_RETURN(ResultUnknown);
     }
-    IVirtualFilePtr patched_file(romfs_controller->PatchBaseNca(title_id, storage_id, LoaderContentRecordType::Data, *data));
+    IVirtualFilePtr patched_file(romfs_controller->PatchBaseNca(title_id, resolved_storage_id, LoaderContentRecordType::Data, *data));
     auto storage = std::make_shared<IStorage>(system, std::move(patched_file));
     *out_interface = std::move(storage);
     R_SUCCEED();
