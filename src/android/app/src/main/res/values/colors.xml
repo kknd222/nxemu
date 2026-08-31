@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="eden_primary">#FF0080</color>
+    <color name="eden_primary_variant">#E6006B</color>
+    <color name="eden_secondary">#60D1F6</color>
+    <color name="eden_secondary_variant">#00E6E6</color>
+    <color name="eden_background">#FFFFFF</color>
+    <color name="eden_surface">#FFFFFF</color>
+    <color name="eden_surface_variant">#F0F0F0</color>
+    <color name="eden_card_background">#F0F0F0</color>
+    <color name="eden_card_background_elevated">#D8D8D8</color>
+    <color name="eden_on_background">#000000</color>
+    <color name="eden_on_surface">#000000</color>
+    <color name="eden_on_surface_variant">#45464F</color>
+    <color name="eden_on_primary">#FFFFFF</color>
+    <color name="eden_on_secondary">#C0C0C0</color>
+    <color name="eden_accent_purple">#9D00FF</color>
+    <color name="eden_accent_blue">#0080FF</color>
+    <color name="eden_accent_orange">#FF8000</color>
+    <color name="eden_border">#7C757F</color>
+    <color name="eden_border_light">#948B98</color>
+    <color name="eden_border_gradient_start">#FF0080</color>
+    <color name="eden_border_gradient_end">#60D1F6</color>
+    <color name="eden_primary_transparent">#05FF0080</color>
+    <color name="eden_secondary_transparent">#0560D1F6</color>
+    <color name="eden_transparent">#00000000</color>
+</resources>

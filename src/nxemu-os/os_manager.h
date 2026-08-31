@@ -2,11 +2,24 @@
 #include <nxemu-module-spec/operating_system.h>
 #include "core/core.h"
 #include "emu_thread.h"
+#include <vector>
 
 class OSManager :
     public IOperatingSystem
 {
 public:
+    struct LoadedModuleRange
+    {
+        uint64_t base{};
+        uint64_t size{};
+        uint64_t code_offset{};
+        uint64_t code_size{};
+        uint64_t ro_offset{};
+        uint64_t ro_size{};
+        uint64_t data_offset{};
+        uint64_t data_size{};
+    };
+
     OSManager(ISystemModules & modules);
     ~OSManager();
 
@@ -21,7 +34,9 @@ public:
     void ShutdownMainProcess() override;
     bool CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl) override;
     void StartApplicationProcess(int32_t priority, int64_t stackSize, uint32_t version, StorageId baseGameStorageId, StorageId updateStorageId, uint8_t * nacpData, uint32_t nacpDataLen) override;
+    void SetMainThreadStartupArguments(uint64_t argument0, uint64_t argument1, uint64_t mainThreadHandleWriteAddress) override;
     bool LoadModule(const IModuleInfo & module, uint64_t baseAddress) override;
+    bool ReadApplicationMemory(uint64_t address, void * out_buffer, uint64_t size) override;
     IDeviceMemory & DeviceMemory() override;
     void KeyboardKeyPress(int modifier, int keyIndex, int keyCode) override;
     void KeyboardKeyRelease(int modifier, int keyIndex, int keyCode) override;
@@ -59,6 +74,7 @@ public:
     bool SetProfileImage(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], const uint8_t * image_data, uint32_t image_size) override;
     bool GetProfileImagePath(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], char * out_path, uint32_t out_path_size) const override;
     void RegisterCheatMetadata(const uint8_t build_id[32], uint64_t main_region_begin, uint64_t main_region_size) override;
+    void RequestGuestCpuSample();
 
 private:
     OSManager() = delete;
@@ -69,4 +85,5 @@ private:
     ISystemModules & m_modules;
     Kernel::KProcess * m_process;
     std::unique_ptr<EmuThread> m_emuThread;
+    std::vector<LoadedModuleRange> m_loadedModules;
 };

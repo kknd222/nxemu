@@ -220,12 +220,24 @@ static VideoSetting settings[] = {
     {NXVideoSetting::FullscreenMode, "video", "fullscreen_mode", &videoSettings.fullscreen_mode, FullscreenMode::Exclusive},
 #endif
     {NXVideoSetting::AspectRatio, "video", "aspect_ratio", &videoSettings.aspect_ratio, AspectRatio::R16_9},
+#ifdef ANDROID
+    {NXVideoSetting::ResolutionSetup, "video", "resolution_setup", &videoSettings.resolution_setup, ResolutionSetup::Res1_2X},
+#else
     {NXVideoSetting::ResolutionSetup, "video", "resolution_setup", &videoSettings.resolution_setup, ResolutionSetup::Res1X},
+#endif
     {NXVideoSetting::ScalingFilter, "video", "scaling_filter", &videoSettings.scaling_filter, ScalingFilter::Bilinear},
     {NXVideoSetting::AntiAliasing, "video", "anti_aliasing", &videoSettings.anti_aliasing, AntiAliasing::None},
     {NXVideoSetting::FSPSharpness, "video", "fsr_sharpening_slider", &videoSettings.fsr_sharpening_slider, 25, 0, 200},
+#ifdef ANDROID
+    {NXVideoSetting::ForceMaximumClocks, "video", "renderer_force_max_clock", &videoSettings.renderer_force_max_clock, true},
+#else
     {NXVideoSetting::ForceMaximumClocks, "video", "renderer_force_max_clock", &videoSettings.renderer_force_max_clock, false},
+#endif
+#ifdef ANDROID
+    {NXVideoSetting::UseAsynchronousShaderBuilding, "video", "use_asynchronous_shaders", &videoSettings.use_asynchronous_shaders, true},
+#else
     {NXVideoSetting::UseAsynchronousShaderBuilding, "video", "use_asynchronous_shaders", &videoSettings.use_asynchronous_shaders, false},
+#endif
     {NXVideoSetting::FastGPUTime, "video", "use_fast_gpu_time", &videoSettings.use_fast_gpu_time, true},
     {NXVideoSetting::UseVulkanPipelineCache, "video", "use_vulkan_driver_pipeline_cache", &videoSettings.use_vulkan_driver_pipeline_cache, true},
     {NXVideoSetting::SyncToFramerateOfVideoPlayback, "video", "use_video_framerate", &videoSettings.use_video_framerate, false},

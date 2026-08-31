@@ -8,7 +8,12 @@ namespace Core {
 namespace {
 void SymbolicateBacktrace(Kernel::KProcess * process, std::vector<BacktraceEntry> & out)
 {
-    UNIMPLEMENTED();
+    // Android PoC/NCE path needs backtraces for diagnostics, but full symbolication
+    // is not wired in this split nxemu build yet. Keep raw PC/LR frame addresses
+    // instead of spamming "Unimplemented code!" assertions every time a guest thread
+    // hits a debug/prefetch/data-abort suspend path.
+    (void)process;
+    (void)out;
 }
 
 std::vector<BacktraceEntry> GetAArch64Backtrace(Kernel::KProcess * process, const CpuThreadContext & ctx)

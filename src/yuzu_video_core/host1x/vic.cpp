@@ -8,7 +8,9 @@ extern "C" {
 #pragma GCC diagnostic push
 #pragma GCC diagnostic ignored "-Wconversion"
 #endif
+#if !defined(NXEMU_DISABLE_FFMPEG)
 #include <libswscale/swscale.h>
+#endif
 #if defined(__GNUC__) || defined(__clang__)
 #pragma GCC diagnostic pop
 #endif
@@ -52,7 +54,11 @@ union VicConfig {
 Vic::Vic(Host1x & host1x_, std::shared_ptr<Nvdec> nvdec_processor_) :
     host1x(host1x_),
     nvdec_processor(std::move(nvdec_processor_)), 
+#if defined(NXEMU_DISABLE_FFMPEG)
+    converted_frame_buffer{nullptr, [](u8*) {}}
+#else
     converted_frame_buffer{nullptr, av_free}
+#endif
 {
 }
 
@@ -113,6 +119,10 @@ void Vic::Execute() {
 }
 
 void Vic::WriteRGBFrame(std::unique_ptr<FFmpeg::Frame> frame, const VicConfig& config) {
+#if defined(NXEMU_DISABLE_FFMPEG)
+    LOG_WARNING(Service_NVDRV, "VIC RGB frame skipped because FFmpeg is disabled");
+    return;
+#else
     LOG_TRACE(Service_NVDRV, "Writing RGB Frame");
 
     const auto frame_width = frame->GetWidth();
@@ -172,9 +182,14 @@ void Vic::WriteRGBFrame(std::unique_ptr<FFmpeg::Frame> frame, const VicConfig& c
         host1x.GMMU().WriteBlock(output_surface_luma_address, converted_frame_buf_addr,
                                  linear_size);
     }
+#endif
 }
 
 void Vic::WriteYUVFrame(std::unique_ptr<FFmpeg::Frame> frame, const VicConfig& config) {
+#if defined(NXEMU_DISABLE_FFMPEG)
+    LOG_WARNING(Service_NVDRV, "VIC YUV frame skipped because FFmpeg is disabled");
+    return;
+#else
     LOG_TRACE(Service_NVDRV, "Writing YUV420 Frame");
 
     const std::size_t surface_width = config.surface_width_minus1 + 1;
@@ -237,6 +252,7 @@ void Vic::WriteYUVFrame(std::unique_ptr<FFmpeg::Frame> frame, const VicConfig& c
     }
     host1x.GMMU().WriteBlock(output_surface_chroma_address, chroma_buffer.data(),
                              chroma_buffer.size());
+#endif
 }
 
 } // namespace Host1x

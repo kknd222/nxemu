@@ -19,6 +19,96 @@ extern "C"
 namespace FFmpeg
 {
 
+#if defined(NXEMU_DISABLE_FFMPEG)
+
+Packet::Packet(std::span<const u8>) {}
+Packet::~Packet() = default;
+
+Frame::Frame() {}
+Frame::~Frame() = default;
+
+Decoder::Decoder(Tegra::Host1x::NvdecCommon::VideoCodec) {}
+
+bool Decoder::SupportsDecodingOnDevice(AVPixelFormat *, AVHWDeviceType) const
+{
+    return false;
+}
+
+std::vector<AVHWDeviceType> HardwareContext::GetSupportedDeviceTypes()
+{
+    return {};
+}
+
+HardwareContext::~HardwareContext() = default;
+
+bool HardwareContext::InitializeForDecoder(DecoderContext &, const Decoder &)
+{
+    return false;
+}
+
+bool HardwareContext::InitializeWithType(AVHWDeviceType)
+{
+    return false;
+}
+
+DecoderContext::DecoderContext(const Decoder &) {}
+DecoderContext::~DecoderContext() = default;
+
+void DecoderContext::InitializeHardwareDecoder(const HardwareContext &, AVPixelFormat) {}
+
+bool DecoderContext::OpenContext(const Decoder &)
+{
+    LOG_WARNING(HW_GPU, "FFmpeg disabled in this Android diagnostic build; NVDEC is unavailable");
+    return false;
+}
+
+bool DecoderContext::SendPacket(const Packet &)
+{
+    return false;
+}
+
+std::unique_ptr<Frame> DecoderContext::ReceiveFrame(bool *)
+{
+    return {};
+}
+
+DeinterlaceFilter::DeinterlaceFilter(const Frame &) {}
+DeinterlaceFilter::~DeinterlaceFilter() = default;
+
+bool DeinterlaceFilter::AddSourceFrame(const Frame &)
+{
+    return false;
+}
+
+std::unique_ptr<Frame> DeinterlaceFilter::DrainSinkFrame()
+{
+    return {};
+}
+
+void DecodeApi::Reset()
+{
+    m_deinterlace_filter.reset();
+    m_hardware_context.reset();
+    m_decoder_context.reset();
+    m_decoder.reset();
+}
+
+bool DecodeApi::Initialize(Tegra::Host1x::NvdecCommon::VideoCodec)
+{
+    this->Reset();
+    LOG_WARNING(HW_GPU, "FFmpeg disabled in this Android diagnostic build; DecodeApi disabled");
+    return false;
+}
+
+bool DecodeApi::SendPacket(std::span<const u8>, size_t)
+{
+    return false;
+}
+
+void DecodeApi::ReceiveFrames(std::queue<std::unique_ptr<Frame>> &) {}
+
+#else
+
 namespace
 {
 
@@ -481,5 +571,7 @@ void DecodeApi::ReceiveFrames(std::queue<std::unique_ptr<Frame>> & frame_queue)
         }
     }
 }
+
+#endif
 
 } // namespace FFmpeg

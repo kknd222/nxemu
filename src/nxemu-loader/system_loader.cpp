@@ -30,6 +30,7 @@
 #include <fmt/core.h>
 #include <nxemu-core/settings/identifiers.h>
 #include <random>
+#include <sstream>
 #include <yuzu_common/fs/fs.h>
 #include <yuzu_common/fs/filesystem_interfaces.h>
 
@@ -39,6 +40,13 @@ extern IModuleNotification * g_notify;
 namespace
 {
 using FirmwareVersionFormat = Service::Set::FirmwareVersionFormat;
+
+std::string g_last_load_rom_diagnostics = "loadRomDiagnostics=not-run";
+
+void SetLastLoadRomDiagnostics(std::string text)
+{
+    g_last_load_rom_diagnostics = std::move(text);
+}
 
 constexpr uint64_t SystemUpdateTitleId = 0x0100000000000816ULL;
 constexpr uint64_t FirmwareVersionSystemDataId = 0x0100000000000809ULL;
@@ -419,8 +427,11 @@ bool HasSupportedFileExtension(const char * fileName)
 {
     static const char * supported_extensions[] = {
         "nro",
+        "nca",
         "dxci",
         "dnsp",
+        "xci",
+        "nsp",
     };
 
     std::string ext = Path(fileName).GetExtension();
@@ -550,17 +561,33 @@ bool Systemloader::SelectAndLoad(void * parentWindow)
 
 bool Systemloader::LoadRom(const char * fileName)
 {
+    std::ostringstream diag;
+    diag << "loadRom=begin\n";
+    diag << "path=" << (fileName ? fileName : "") << "\n";
+
     if (fileName == nullptr || fileName[0] == '\0')
     {
+        diag << "stage=argument\nresult=failed\nreason=empty path";
+        SetLastLoadRomDiagnostics(diag.str());
         return false;
     }
     
     impl->PrepareFirmwareForLoad(fileName);
+    diag << "firmwareProbe=done-or-skipped\n";
     g_settings->SetInt(NXCoreSetting::EmulationState, (int32_t)EmulationState::LoadingRom);
     impl->m_file = Core::GetGameFileFromPath(impl->m_virtualFilesystem, fileName);
+    diag << "vfsFile=" << (impl->m_file ? "opened" : "null") << "\n";
+    if (impl->m_file)
+    {
+        diag << "vfsName=" << impl->m_file->GetName() << "\n";
+        diag << "vfsSize=" << impl->m_file->GetSize() << "\n";
+    }
     impl->m_appLoader = Loader::GetLoader(*this, impl->m_file, 0, 0);
+    diag << "appLoader=" << (impl->m_appLoader ? "created" : "null") << "\n";
     if (!impl->m_appLoader)
     {
+        diag << "stage=GetLoader\nresult=failed\nreason=file format unsupported or VFS open failed";
+        SetLastLoadRomDiagnostics(diag.str());
         g_notify->DisplayError("The file format is not supported.", "Error loading file!");
         g_settings->SetBool(NXCoreSetting::EmulationState, (int32_t)EmulationState::Stopped);
         return false;
@@ -569,14 +596,19 @@ bool Systemloader::LoadRom(const char * fileName)
     g_settings->SetInt(NXCoreSetting::EmulationState, (int32_t)EmulationState::RomLoaded);
     Loader::AppLoader * app_loader = impl->m_appLoader.get();
     const LoaderFileType file_type = impl->m_appLoader->GetFileType();
+    diag << "loaderType=" << Loader::GetFileTypeString(file_type) << "\n";
     if (file_type == LoaderFileType::Unknown || file_type == LoaderFileType::Error)
     {
+        diag << "stage=GetFileType\nresult=failed\nreason=unknown/error type";
+        SetLastLoadRomDiagnostics(diag.str());
         g_notify->DisplayError("The file format is not supported.", "Error loading file!");
         g_settings->SetBool(NXCoreSetting::EmulationState, (int32_t)EmulationState::Stopped);
         return false;
     }
     uint64_t program_id = 0;
     const LoaderResultStatus res = app_loader->ReadProgramId(program_id);
+    diag << "readProgramId=" << static_cast<int>(res) << "\n";
+    diag << "programId=0x" << std::hex << program_id << std::dec << "\n";
     if (res == LoaderResultStatus::Success)
     {
         ManualContentProvider().ClearAllEntries();
@@ -584,32 +616,43 @@ bool Systemloader::LoadRom(const char * fileName)
             ::RomInfo loadedRom(*this, impl->m_file, impl->m_appLoader);
             loadedRom.PrepareManualContent();
         }
+        diag << "manualContent=prepared\n";
     }
     else
     {
         LOG_ERROR(Core, "Failed to find title id for ROM!");
+        diag << "manualContent=skipped-no-program-id\n";
     }
 
     uint32_t title_size = 0;
     std::string title = "Unknown program";
     LoaderResultStatus result = app_loader->ReadTitle(nullptr, &title_size);
+    diag << "readTitleSize=" << static_cast<int>(result) << "\n";
+    diag << "titleSize=" << title_size << "\n";
     if (result == LoaderResultStatus::Success)
     {
         title.resize(title_size);
         result = app_loader->ReadTitle(title.data(), &title_size);
+        diag << "readTitle=" << static_cast<int>(result) << "\n";
     }
     if (result != LoaderResultStatus::Success)
     {
         LOG_ERROR(Core, "Failed to read title for ROM!");
     }
+    diag << "title=" << title << "\n";
 
     const auto [load_result, load_parameters] = app_loader->Load(*this, impl->m_modules);
+    diag << "appLoaderLoad=" << static_cast<int>(load_result) << "\n";
     if (load_result != LoaderResultStatus::Success)
     {
+        diag << "stage=AppLoader::Load\nresult=failed";
+        SetLastLoadRomDiagnostics(diag.str());
         LOG_CRITICAL(Core, "Failed to load ROM (Error {})!", load_result);
         g_settings->SetBool(NXCoreSetting::EmulationState, (int32_t)EmulationState::Stopped);
         return false;
     }
+    diag << "mainThreadPriority=" << load_parameters->main_thread_priority << "\n";
+    diag << "mainThreadStackSize=" << load_parameters->main_thread_stack_size << "\n";
     std::vector<u8> nacp_data;
     FileSys::NACP nacp;
     if (app_loader->ReadControlData(nacp) == LoaderResultStatus::Success)
@@ -633,9 +676,21 @@ bool Systemloader::LoadRom(const char * fileName)
     StorageId baseGameStorageId = GetStorageIdForFrontendSlot(impl->m_contentProvider->GetSlotForEntry(impl->m_titleID, LoaderContentRecordType::Program));
     StorageId updateStorageId = GetStorageIdForFrontendSlot(impl->m_contentProvider->GetSlotForEntry(FileSys::GetUpdateTitleID(impl->m_titleID), LoaderContentRecordType::Program));
 
+    diag << "gameVersion=" << version << "\n";
+    diag << "baseGameStorageId=" << static_cast<int>(baseGameStorageId) << "\n";
+    diag << "updateStorageId=" << static_cast<int>(updateStorageId) << "\n";
+    diag << "nacpSize=" << nacp_data.size() << "\n";
+
     IOperatingSystem & operatingSystem = impl->m_modules.OperatingSystem();
     operatingSystem.StartApplicationProcess(load_parameters->main_thread_priority, load_parameters->main_thread_stack_size, version, baseGameStorageId, updateStorageId, nacp_data.data(), (uint32_t)nacp_data.size());
+    diag << "stage=StartApplicationProcess\nresult=started";
+    SetLastLoadRomDiagnostics(diag.str());
     return true;
+}
+
+extern "C" const char * NxemuGetLastLoadRomDiagnostics()
+{
+    return g_last_load_rom_diagnostics.c_str();
 }
 
 IRomInfo * Systemloader::RomInfo(const char * fileName, uint64_t programId, uint64_t programIndex)

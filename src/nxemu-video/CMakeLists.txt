@@ -38,8 +38,11 @@ if(TARGET video_core)
     target_link_libraries(nxemu-video PRIVATE video_core)
 endif()
 
-if(ANDROID_ABI STREQUAL "arm64-v8a")
+option(NXEMU_ANDROID_ENABLE_ADRENOTOOLS "Enable adrenotools on Android builds" OFF)
+
+if(ANDROID_ABI STREQUAL "arm64-v8a" AND NXEMU_ANDROID_ENABLE_ADRENOTOOLS)
     target_link_libraries(nxemu-video PRIVATE adrenotools)
+    target_compile_definitions(nxemu-video PRIVATE NXEMU_USE_ADRENOTOOLS=1)
 endif()
 
 if(ANDROID)

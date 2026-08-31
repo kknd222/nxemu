@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
+﻿// SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #ifdef _WIN32
@@ -30,8 +30,14 @@
 
 #endif // ^^^ Linux ^^^
 
+#include <atomic>
+#include <cstdarg>
 #include <mutex>
 #include <random>
+#include <cerrno>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 
 #include "yuzu_common/alignment.h"
 #include "yuzu_common/yuzu_assert.h"
@@ -40,6 +46,26 @@
 #include "yuzu_common/logging/log.h"
 
 namespace Common {
+
+namespace {
+#if defined(__ANDROID__)
+std::atomic<int> g_android_nce_host_trace_budget{512};
+
+void AndroidNceHostLogf(const char* fmt, ...) {
+    if (g_android_nce_host_trace_budget.fetch_sub(1, std::memory_order_relaxed) <= 0) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    __android_log_vprint(ANDROID_LOG_ERROR, "NxEmuNCEHost", fmt ? fmt : "", args);
+    va_end(args);
+}
+#else
+void AndroidNceHostLogf(const char* fmt, ...) {
+    (void)fmt;
+}
+#endif
+} // namespace
 
 constexpr size_t PageAlignment = 0x1000;
 constexpr size_t HugePageSize = 0x200000;
@@ -496,11 +522,36 @@ public:
     }
 
     void Map(size_t virtual_offset, size_t host_offset, size_t length, MemoryPermission perms) {
-        // Intersect the range with our address space.
-        AdjustMap(&virtual_offset, &length);
+        const size_t original_virtual_offset = virtual_offset;
+        const size_t original_host_offset = host_offset;
+        const size_t original_length = length;
 
-        // We are removing a placeholder.
-        free_manager.AllocateBlock(virtual_base + virtual_offset, length);
+        const bool direct_mapped = virtual_base == nullptr;
+        // Intersect the range with our reserved arena only in fastmem mode. In Android NCE direct
+        // mapping mode, virtual_offset is the guest VA itself (for example 0x80000000), so
+        // intersecting with the high fastmem reservation would incorrectly drop the mapping.
+        if (!direct_mapped) {
+            AdjustMap(&virtual_offset, &length);
+            if (length == 0) {
+                return;
+            }
+        }
+
+        if (virtual_offset % PageAlignment != 0 || host_offset % PageAlignment != 0 ||
+            length % PageAlignment != 0 || host_offset > backing_size ||
+            length > backing_size - host_offset) {
+            LOG_ERROR(HW_Memory,
+                      "Ignoring adjusted HostMemory::Map request on Android: original_virtual=0x{:x}, original_host=0x{:x}, original_length=0x{:x}, adjusted_virtual=0x{:x}, adjusted_host=0x{:x}, adjusted_length=0x{:x}, backing_size=0x{:x}",
+                      original_virtual_offset, original_host_offset, original_length, virtual_offset,
+                      host_offset, length, backing_size);
+            return;
+        }
+
+        // We are removing a placeholder. Direct-mapped Android NCE mappings target guest VAs
+        // directly and are not part of the high fastmem FreeRegionManager reservation.
+        if (!direct_mapped) {
+            free_manager.AllocateBlock(virtual_base + virtual_offset, length);
+        }
 
         // Deduce mapping protection flags.
         int flags = PROT_NONE;
@@ -516,21 +567,54 @@ public:
         }
 #endif
 
-        void* ret = mmap(virtual_base + virtual_offset, length, flags, MAP_SHARED | MAP_FIXED, fd,
-                         host_offset);
-        ASSERT_MSG(ret != MAP_FAILED, "mmap failed: {}", strerror(errno));
+        u8* const target = direct_mapped ? reinterpret_cast<u8*>(virtual_offset)
+                                         : virtual_base + virtual_offset;
+#if defined(__ANDROID__)
+        AndroidNceHostLogf("Impl::Map before mmap target=%p virtual=0x%zx host=0x%zx len=0x%zx flags=0x%x perms=0x%x fd=%d direct=%d",
+                           static_cast<void*>(target), virtual_offset, host_offset, length, flags,
+                           static_cast<unsigned>(perms), fd, direct_mapped ? 1 : 0);
+#endif
+        void* ret = mmap(target, length, flags, MAP_SHARED | MAP_FIXED, fd, host_offset);
+#if defined(__ANDROID__)
+        if (ret == MAP_FAILED) {
+            const int saved_errno = errno;
+            AndroidNceHostLogf("Impl::Map mmap failed target=%p virtual=0x%zx host=0x%zx len=0x%zx flags=0x%x errno=%d (%s)",
+                               static_cast<void*>(target), virtual_offset, host_offset, length,
+                               flags, saved_errno, strerror(saved_errno));
+            return;
+        }
+        AndroidNceHostLogf("Impl::Map mmap ok ret=%p target=%p virtual=0x%zx len=0x%zx flags=0x%x",
+                           ret, static_cast<void*>(target), virtual_offset, length, flags);
+#else
+        if (ret == MAP_FAILED) {
+            LOG_ERROR(HW_Memory,
+                      "HostMemory::Map mmap failed: errno={} {}, original_virtual=0x{:x}, original_host=0x{:x}, original_length=0x{:x}, adjusted_virtual=0x{:x}, adjusted_host=0x{:x}, adjusted_length=0x{:x}, flags=0x{:x}",
+                      errno, strerror(errno), original_virtual_offset, original_host_offset,
+                      original_length, virtual_offset, host_offset, length, flags);
+            return;
+        }
+#endif
     }
 
     void Unmap(size_t virtual_offset, size_t length) {
         // The method name is wrong. We're still talking about the virtual range.
         // We don't want to unmap, we want to reserve this memory.
 
-        // Intersect the range with our address space.
-        AdjustMap(&virtual_offset, &length);
+        const bool direct_mapped = virtual_base == nullptr;
+        u8* merged_pointer{};
+        size_t merged_size{};
+        if (direct_mapped) {
+            merged_pointer = reinterpret_cast<u8*>(virtual_offset);
+            merged_size = length;
+        } else {
+            // Intersect the range with our address space.
+            AdjustMap(&virtual_offset, &length);
 
-        // Merge with any adjacent placeholder mappings.
-        auto [merged_pointer, merged_size] =
-            free_manager.FreeBlock(virtual_base + virtual_offset, length);
+            // Merge with any adjacent placeholder mappings.
+            auto merged = free_manager.FreeBlock(virtual_base + virtual_offset, length);
+            merged_pointer = static_cast<u8*>(merged.first);
+            merged_size = merged.second;
+        }
 
         void* ret = mmap(merged_pointer, merged_size, PROT_NONE,
                          MAP_PRIVATE | MAP_ANONYMOUS | MAP_FIXED, -1, 0);
@@ -538,8 +622,15 @@ public:
     }
 
     void Protect(size_t virtual_offset, size_t length, bool read, bool write, bool execute) {
-        // Intersect the range with our address space.
-        AdjustMap(&virtual_offset, &length);
+        const bool direct_mapped = virtual_base == nullptr;
+        // Intersect the range with our address space only for high fastmem mappings. Android NCE
+        // direct mappings operate on guest VAs directly.
+        if (!direct_mapped) {
+            AdjustMap(&virtual_offset, &length);
+            if (length == 0) {
+                return;
+            }
+        }
 
         int flags = PROT_NONE;
         if (read) {
@@ -553,7 +644,31 @@ public:
             flags |= PROT_EXEC;
         }
 #endif
-        int ret = mprotect(virtual_base + virtual_offset, length, flags);
+        u8* const target = direct_mapped ? reinterpret_cast<u8*>(virtual_offset)
+                                         : virtual_base + virtual_offset;
+#if defined(__ANDROID__)
+        if (execute) {
+            AndroidNceHostLogf("Impl::Protect exec target=%p offset=0x%zx len=0x%zx flags=0x%x direct=%d",
+                               static_cast<void*>(target), virtual_offset, length, flags,
+                               direct_mapped ? 1 : 0);
+        }
+#endif
+        int ret = mprotect(target, length, flags);
+#if defined(__ANDROID__)
+        if (ret != 0 && execute) {
+            const int saved_errno = errno;
+            LOG_ERROR(HW_Memory,
+                      "Android HostMemory::Protect exec failed target={} offset=0x{:x} length=0x{:x} flags=0x{:x} errno={} ({})",
+                      static_cast<void*>(target), virtual_offset, length, flags, saved_errno,
+                      strerror(saved_errno));
+            const int fallback_flags = flags & ~PROT_EXEC;
+            const int fallback_ret = mprotect(target, length, fallback_flags);
+            LOG_ERROR(HW_Memory,
+                      "Android HostMemory::Protect exec fallback without PROT_EXEC ret={} flags=0x{:x}",
+                      fallback_ret, fallback_flags);
+            return;
+        }
+#endif
         ASSERT_MSG(ret == 0, "mprotect failed: {}", strerror(errno));
     }
 
@@ -688,21 +803,59 @@ HostMemory& HostMemory::operator=(HostMemory&&) noexcept = default;
 
 void HostMemory::Map(size_t virtual_offset, size_t host_offset, size_t length,
                      MemoryPermission perms, bool separate_heap) {
+#if defined(__ANDROID__)
+    AndroidNceHostLogf("HostMemory::Map enter v=0x%zx h=0x%zx len=0x%zx perm=0x%x separate=%d base=%p baseOff=0x%zx vsize=0x%zx bsize=0x%zx impl=%p",
+                       virtual_offset, host_offset, length, static_cast<unsigned>(perms),
+                       separate_heap ? 1 : 0, virtual_base, virtual_base_offset, virtual_size,
+                       backing_size, impl.get());
+#endif
+#ifdef ANDROID
+    if (virtual_offset % PageAlignment != 0 || host_offset % PageAlignment != 0 ||
+        length % PageAlignment != 0 || virtual_offset > virtual_size ||
+        length > virtual_size - virtual_offset || host_offset > backing_size ||
+        length > backing_size - host_offset) {
+        LOG_ERROR(HW_Memory,
+                  "Ignoring invalid HostMemory::Map request on Android: virtual_offset=0x{:x}, host_offset=0x{:x}, length=0x{:x}, virtual_size=0x{:x}, backing_size=0x{:x}",
+                  virtual_offset, host_offset, length, virtual_size, backing_size);
+        return;
+    }
+#else
     ASSERT(virtual_offset % PageAlignment == 0);
     ASSERT(host_offset % PageAlignment == 0);
     ASSERT(length % PageAlignment == 0);
     ASSERT(virtual_offset + length <= virtual_size);
     ASSERT(host_offset + length <= backing_size);
+#endif
     if (length == 0 || !virtual_base || !impl) {
+#if defined(__ANDROID__)
+        AndroidNceHostLogf("HostMemory::Map skipped len=0/base/impl len=0x%zx base=%p impl=%p", length,
+                           virtual_base, impl.get());
+#endif
         return;
     }
+#if defined(__ANDROID__)
+    AndroidNceHostLogf("HostMemory::Map before impl adjusted=0x%zx", virtual_offset + virtual_base_offset);
+#endif
     impl->Map(virtual_offset + virtual_base_offset, host_offset, length, perms);
+#if defined(__ANDROID__)
+    AndroidNceHostLogf("HostMemory::Map after impl");
+#endif
 }
 
 void HostMemory::Unmap(size_t virtual_offset, size_t length, bool separate_heap) {
+#ifdef ANDROID
+    if (virtual_offset % PageAlignment != 0 || length % PageAlignment != 0 ||
+        virtual_offset > virtual_size || length > virtual_size - virtual_offset) {
+        LOG_ERROR(HW_Memory,
+                  "Ignoring invalid HostMemory::Unmap request on Android: virtual_offset=0x{:x}, length=0x{:x}, virtual_size=0x{:x}",
+                  virtual_offset, length, virtual_size);
+        return;
+    }
+#else
     ASSERT(virtual_offset % PageAlignment == 0);
     ASSERT(length % PageAlignment == 0);
     ASSERT(virtual_offset + length <= virtual_size);
+#endif
     if (length == 0 || !virtual_base || !impl) {
         return;
     }
@@ -710,9 +863,19 @@ void HostMemory::Unmap(size_t virtual_offset, size_t length, bool separate_heap)
 }
 
 void HostMemory::Protect(size_t virtual_offset, size_t length, MemoryPermission perm) {
+#ifdef ANDROID
+    if (virtual_offset % PageAlignment != 0 || length % PageAlignment != 0 ||
+        virtual_offset > virtual_size || length > virtual_size - virtual_offset) {
+        LOG_ERROR(HW_Memory,
+                  "Ignoring invalid HostMemory::Protect request on Android: virtual_offset=0x{:x}, length=0x{:x}, virtual_size=0x{:x}",
+                  virtual_offset, length, virtual_size);
+        return;
+    }
+#else
     ASSERT(virtual_offset % PageAlignment == 0);
     ASSERT(length % PageAlignment == 0);
     ASSERT(virtual_offset + length <= virtual_size);
+#endif
     if (length == 0 || !virtual_base || !impl) {
         return;
     }
@@ -729,10 +892,19 @@ void HostMemory::ClearBackingRegion(size_t physical_offset, size_t length, u32 f
 }
 
 void HostMemory::EnableDirectMappedAddress() {
+#if defined(__ANDROID__)
+    AndroidNceHostLogf("HostMemory::EnableDirectMappedAddress enter base=%p baseOff=0x%zx vsize=0x%zx impl=%p",
+                       virtual_base, virtual_base_offset, virtual_size, impl.get());
+#endif
     if (impl) {
         impl->EnableDirectMappedAddress();
         virtual_size += reinterpret_cast<uintptr_t>(virtual_base);
+#if defined(__ANDROID__)
+        AndroidNceHostLogf("HostMemory::EnableDirectMappedAddress done base=%p baseOff=0x%zx vsize=0x%zx",
+                           virtual_base, virtual_base_offset, virtual_size);
+#endif
     }
 }
 
 } // namespace Common
+

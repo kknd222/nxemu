@@ -160,6 +160,11 @@ enum class SpecialRegister : u64 {
     case SpecialRegister::SR_AFFINITY:
         LOG_WARNING(Shader, "(STUBBED) SR_AFFINITY");
         return ir.Imm32(0); // This is the default value hardware returns.
+    case SpecialRegister::SR_DIRECTCBEWRITEADDRESSLOW:
+    case SpecialRegister::SR_DIRECTCBEWRITEADDRESSHIGH:
+    case SpecialRegister::SR_DIRECTCBEWRITEENABLE:
+        LOG_DEBUG(Shader, "(STUBBED) direct CBE write special register {}", special_register);
+        return ir.Imm32(0);
     default:
         LOG_CRITICAL(Shader, "(STUBBED) Special register {}", special_register);
         return ir.Imm32(0); // This is the default value hardware returns.

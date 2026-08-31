@@ -1,0 +1,192 @@
+<?xml version="1.0" encoding="utf-8"?>
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/root"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:background="@drawable/eden_background_gradient">
+
+    <LinearLayout
+        android:id="@+id/content_root"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:orientation="vertical"
+        android:padding="16dp"
+        android:paddingBottom="74dp">
+
+        <LinearLayout
+            android:id="@+id/header"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:background="@drawable/eden_hero"
+            android:gravity="center_vertical"
+            android:orientation="horizontal"
+            android:padding="12dp">
+
+            <LinearLayout
+                android:layout_width="104dp"
+                android:layout_height="wrap_content"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <FrameLayout
+                    android:id="@+id/game_cover_frame"
+                    android:layout_width="92dp"
+                    android:layout_height="92dp">
+
+                    <ImageView
+                        android:id="@+id/game_cover"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="@drawable/eden_badge"
+                        android:contentDescription="Game cover"
+                        android:scaleType="centerCrop"
+                        android:visibility="gone" />
+
+                    <TextView
+                        android:id="@+id/game_icon"
+                        android:layout_width="match_parent"
+                        android:layout_height="match_parent"
+                        android:background="@drawable/eden_badge"
+                        android:gravity="center"
+                        android:text="NX"
+                        android:textColor="#FFFFFFFF"
+                        android:textSize="19sp"
+                        android:textStyle="bold" />
+                </FrameLayout>
+
+                <TextView
+                    android:id="@+id/playtime"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:gravity="center"
+                    android:maxLines="1"
+                    android:paddingTop="4dp"
+                    android:text="Playtime 0m"
+                    android:textColor="@color/eden_on_surface_variant"
+                    android:textSize="10sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_weight="1"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/title"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="Game Properties"
+                    android:textColor="@color/eden_on_background"
+                    android:textSize="23sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/path"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="middle"
+                    android:maxLines="1"
+                    android:paddingTop="4dp"
+                    android:textColor="@color/eden_on_surface_variant"
+                    android:textSize="11sp" />
+
+                <TextView
+                    android:id="@+id/summary"
+                    android:layout_width="match_parent"
+                    android:layout_height="wrap_content"
+                    android:paddingTop="5dp"
+                    android:textColor="@color/eden_on_surface_variant"
+                    android:textSize="11sp" />
+            </LinearLayout>
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="match_parent"
+                android:gravity="center"
+                android:orientation="vertical">
+
+                <Button
+                    android:id="@+id/button_back"
+                    style="@style/NxEmuEdenButton"
+                    android:layout_width="132dp"
+                    android:layout_height="42dp"
+                    android:text="返回" />
+
+                <Button
+                    android:id="@+id/button_reset"
+                    style="@style/NxEmuEdenButton"
+                    android:layout_width="132dp"
+                    android:layout_height="42dp"
+                    android:layout_marginTop="6dp"
+                    android:text="重置" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <androidx.recyclerview.widget.RecyclerView
+            android:id="@+id/properties_list"
+            android:layout_width="match_parent"
+            android:layout_height="0dp"
+            android:layout_marginTop="8dp"
+            android:layout_weight="1"
+            android:clipToPadding="false"
+            android:paddingBottom="8dp" />
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/bottom_bar"
+        android:layout_width="match_parent"
+        android:layout_height="60dp"
+        android:layout_gravity="bottom"
+        android:background="@android:color/transparent"
+        android:gravity="center_vertical"
+        android:orientation="horizontal"
+        android:paddingStart="16dp"
+        android:paddingEnd="16dp">
+
+        <Button
+            android:id="@+id/button_quick_driver"
+            style="@style/NxEmuEdenButton"
+            android:layout_width="112dp"
+            android:layout_height="42dp"
+            android:text="驱动" />
+
+        <Button
+            android:id="@+id/button_quick_log"
+            style="@style/NxEmuEdenButton"
+            android:layout_width="112dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="8dp"
+            android:text="日志" />
+
+        <Button
+            android:id="@+id/button_quick_shader"
+            style="@style/NxEmuEdenButton"
+            android:layout_width="112dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="8dp"
+            android:text="清缓存" />
+
+        <TextView
+            android:id="@+id/bottom_hint"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="10dp"
+            android:layout_weight="1"
+            android:ellipsize="end"
+            android:maxLines="2"
+            android:textColor="@color/eden_on_surface_variant"
+            android:textSize="11sp" />
+
+        <Button
+            android:id="@+id/button_start"
+            style="@style/NxEmuEdenButtonPrimary"
+            android:layout_width="170dp"
+            android:layout_height="48dp"
+            android:text="▶ 启动" />
+    </LinearLayout>
+</FrameLayout>

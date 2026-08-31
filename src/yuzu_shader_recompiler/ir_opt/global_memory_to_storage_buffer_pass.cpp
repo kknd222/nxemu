@@ -390,11 +390,11 @@ void CollectStorageBuffers(IR::Block& block, IR::Inst& inst, StorageInfo& info) 
         storage_buffer = Track(low_addr, nullptr);
         if (!storage_buffer) {
             // If that also fails, use NVN fallbacks
-            LOG_WARNING(Shader, "Storage buffer failed to track, using global memory fallbacks");
+            LOG_DEBUG(Shader, "Storage buffer failed to track, using global memory fallbacks");
             return;
         }
-        LOG_WARNING(Shader, "Storage buffer tracked without bias, index {} offset {}",
-                    storage_buffer->index, storage_buffer->offset);
+        LOG_DEBUG(Shader, "Storage buffer tracked without bias, index {} offset {}",
+                  storage_buffer->index, storage_buffer->offset);
     }
     // Collect storage buffer and the instruction
     if (IsGlobalMemoryWrite(inst)) {

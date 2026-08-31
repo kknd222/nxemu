@@ -196,11 +196,27 @@ void Finalize() {
 
 void InterruptSocketOperations() {
     u8 value = 0;
+#ifdef ANDROID
+    if (interrupt_pipe_fd[1] < 0) {
+        LOG_DEBUG(Network, "InterruptSocketOperations skipped; interrupt pipe is closed");
+        return;
+    }
+    const ssize_t ret = write(interrupt_pipe_fd[1], &value, sizeof(value));
+    if (ret != 1 && errno != EAGAIN && errno != EWOULDBLOCK && errno != EBADF) {
+        LOG_ERROR(Network, "Failed to signal interrupt pipe on shutdown");
+    }
+#else
     ASSERT(write(interrupt_pipe_fd[1], &value, sizeof(value)) == 1);
+#endif
 }
 
 void AcknowledgeInterrupt() {
     u8 value = 0;
+#ifdef ANDROID
+    if (interrupt_pipe_fd[0] < 0) {
+        return;
+    }
+#endif
     ssize_t ret = read(interrupt_pipe_fd[0], &value, sizeof(value));
     if (ret != 1 && errno != EAGAIN && errno != EWOULDBLOCK) {
         LOG_ERROR(Network, "Failed to acknowledge interrupt on shutdown");

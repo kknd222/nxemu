@@ -3,6 +3,8 @@
 #include "core/core_timing.h"
 #include "core/cpu_manager.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/physical_core.h"
 #include "core/hle/service/acc/profile_manager.h"
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/am/frontend/applets.h"
@@ -17,8 +19,10 @@
 #include "yuzu_common/settings.h"
 #include "yuzu_common/string_util.h"
 #include "yuzu_common/logging/log.h"
+#include "yuzu_common/hardware_properties.h"
 #include "yuzu_hid_core/frontend/emulated_controller.h"
 #include "yuzu_hid_core/hid_core.h"
+#include "core/hle/service/nxemu_android_diagnostics.h"
 #include "yuzu_input_common/drivers/keyboard.h"
 #include "yuzu_input_common/drivers/virtual_gamepad.h"
 #include "yuzu_input_common/main.h"
@@ -36,9 +40,12 @@
 #include <vector>
 #include <string>
 #include <unordered_set>
+#include <fmt/format.h>
 
 namespace
 {
+    OSManager * g_active_os_manager = nullptr;
+
     constexpr char ACC_SAVE_AVATORS_BASE_PATH[] = "system/save/8000000000000010/su/avators";
 
     std::string TitleIdToHex(uint64_t title_id)
@@ -53,6 +60,51 @@ namespace
         std::transform(a.begin(), a.end(), a.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         std::transform(b.begin(), b.end(), b.begin(), [](unsigned char c) { return static_cast<char>(std::tolower(c)); });
         return a == b;
+    }
+
+    std::string HexBytes(const std::array<uint8_t, 32>& bytes, size_t count)
+    {
+        std::string out;
+        out.reserve(count * 3);
+        for (size_t i = 0; i < count && i < bytes.size(); ++i)
+        {
+            if (i != 0)
+            {
+                out.push_back(' ');
+            }
+            out += fmt::format("{:02x}", bytes[i]);
+        }
+        return out;
+    }
+
+    std::string DescribeModuleAddress(uint64_t address,
+                                      const std::vector<OSManager::LoadedModuleRange>& modules)
+    {
+        for (size_t i = 0; i < modules.size(); ++i)
+        {
+            const auto& module = modules[i];
+            if (address < module.base || address >= module.base + module.size)
+            {
+                continue;
+            }
+            const auto offset = address - module.base;
+            const char* section = "unknown";
+            if (offset >= module.code_offset && offset < module.code_offset + module.code_size)
+            {
+                section = "text";
+            }
+            else if (offset >= module.ro_offset && offset < module.ro_offset + module.ro_size)
+            {
+                section = "ro";
+            }
+            else if (offset >= module.data_offset && offset < module.data_offset + module.data_size)
+            {
+                section = "data";
+            }
+            return fmt::format("mod={} base={:#x} off={:#x} section={}", i, module.base, offset,
+                               section);
+        }
+        return "mod=unmapped";
     }
 
     std::string ReadTextFile(const std::filesystem::path& path)
@@ -417,6 +469,8 @@ namespace
     }
 }
 
+extern "C" void NxemuRequestCpuCoreSnapshotBudget(int count);
+
 extern IModuleSettings * g_settings;
 
 OSManager::OSManager(ISystemModules & modules) :
@@ -424,14 +478,75 @@ OSManager::OSManager(ISystemModules & modules) :
     m_coreSystem(modules),
     m_process(nullptr)
 {
+    g_active_os_manager = this;
 }
 
 OSManager::~OSManager()
 {
+    if (g_active_os_manager == this)
+    {
+        g_active_os_manager = nullptr;
+    }
     if (m_process != nullptr)
     {
         m_process->Close();
         m_process = nullptr;
+    }
+}
+
+void OSManager::RequestGuestCpuSample()
+{
+    if (m_process == nullptr)
+    {
+        Service::NxemuAndroidDiagnostics::RecordEvent("OS.CpuSample", "process=null");
+        return;
+    }
+
+    int thread_count = 0;
+    {
+        Kernel::KScopedLightLock lk(m_process->GetListLock());
+        for (auto it = m_process->GetThreadList().begin(); it != m_process->GetThreadList().end(); ++it)
+        {
+            auto * thread = std::addressof(*it);
+            const auto ctx = thread->GetContext();
+            std::array<uint8_t, 32> pc_bytes{};
+            const bool pc_bytes_ok =
+                m_process->GetCoreMemory().ReadBlock(ctx.pc, pc_bytes.data(), 16);
+            Service::NxemuAndroidDiagnostics::RecordEvent(
+                "OS.Thread",
+                fmt::format("tid={} state={} wait={} core={} pc={:#x} lr={:#x} sp={:#x} "
+                            "pc_{} lr_{} bytes={}",
+                            thread->GetThreadId(), static_cast<u32>(thread->GetState()),
+                            static_cast<u32>(thread->GetWaitReasonForDebugging()),
+                            thread->GetCurrentCore(), ctx.pc, ctx.lr, ctx.sp,
+                            DescribeModuleAddress(ctx.pc, m_loadedModules),
+                            DescribeModuleAddress(ctx.lr, m_loadedModules),
+                            pc_bytes_ok ? HexBytes(pc_bytes, 16) : "unreadable"));
+            if (++thread_count >= 16)
+            {
+                break;
+            }
+        }
+    }
+
+    for (u32 core = 0; core < Hardware::NUM_CPU_CORES; ++core)
+    {
+        m_coreSystem.Kernel().PhysicalCore(core).Interrupt();
+    }
+    NxemuRequestCpuCoreSnapshotBudget(4);
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "OS.CpuSample", fmt::format("requested threadsLogged={}", thread_count));
+}
+
+extern "C" void NxemuRequestGuestCpuSample()
+{
+    if (g_active_os_manager != nullptr)
+    {
+        g_active_os_manager->RequestGuestCpuSample();
+    }
+    else
+    {
+        Service::NxemuAndroidDiagnostics::RecordEvent("OS.CpuSample", "active_os_manager=null");
     }
 }
 
@@ -523,6 +638,10 @@ bool OSManager::CreateApplicationProcess(uint64_t codeSize, const IProgramMetada
 
     processID = m_process->GetProcessId();
     baseAddress = GetInteger(m_process->GetEntryPoint());
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "OS.CreateApplicationProcess",
+        fmt::format("program_id={:016X} codeSize={:#x} entry={:#x} processID={} is_hbl={}",
+                    metaData.GetTitleID(), codeSize, baseAddress, processID, is_hbl));
     return true;
 }
 
@@ -532,14 +651,45 @@ void OSManager::StartApplicationProcess(int32_t priority, int64_t stackSize, uin
     m_process->Run(priority, stackSize);
 }
 
+void OSManager::SetMainThreadStartupArguments(uint64_t argument0, uint64_t argument1, uint64_t mainThreadHandleWriteAddress)
+{
+    if (m_process != nullptr)
+    {
+        m_process->SetMainThreadStartupArguments(argument0, argument1, mainThreadHandleWriteAddress);
+    }
+}
+
 bool OSManager::LoadModule(const IModuleInfo & module, uint64_t baseAddress)
 {
     if (m_process == nullptr)
     {
         return false;
     }
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "OS.LoadModule",
+        fmt::format("index={} base={:#x} dataSize={:#x} code=[{:#x}+{:#x}] ro=[{:#x}+{:#x}] data=[{:#x}+{:#x}]",
+                    m_loadedModules.size(), baseAddress, module.DataSize(), module.CodeSegmentAddr(),
+                    module.CodeSegmentSize(), module.RODataSegmentAddr(),
+                    module.RODataSegmentSize(), module.DataSegmentAddr(),
+                    module.DataSegmentSize()));
+    m_loadedModules.push_back(LoadedModuleRange{baseAddress, module.DataSize(),
+                                                module.CodeSegmentAddr(),
+                                                module.CodeSegmentSize(),
+                                                module.RODataSegmentAddr(),
+                                                module.RODataSegmentSize(),
+                                                module.DataSegmentAddr(),
+                                                module.DataSegmentSize()});
     m_process->LoadModule(module, baseAddress);
     return true;
+}
+
+bool OSManager::ReadApplicationMemory(uint64_t address, void * out_buffer, uint64_t size)
+{
+    if (m_process == nullptr || out_buffer == nullptr || size == 0)
+    {
+        return false;
+    }
+    return m_process->GetCoreMemory().ReadBlock(address, out_buffer, size);
 }
 
 void OSManager::RegisterCheatMetadata(const uint8_t build_id_raw[32], uint64_t main_region_begin, uint64_t main_region_size)

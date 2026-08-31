@@ -4,6 +4,10 @@
 #include <algorithm>
 #include <cstring>
 
+#if defined(ANDROID) || defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
+
 #include "yuzu_common/bit_cast.h"
 #include "yuzu_common/cityhash.h"
 #include "yuzu_common/common_types.h"
@@ -34,6 +38,33 @@ constexpr std::array POLYGON_OFFSET_ENABLE_LUT = {
     POLYGON, // TriangleStripAdjacency
     POLYGON, // Patches
 };
+
+bool ReadAndroidBoolProperty(const char* name, bool default_value) {
+#if defined(ANDROID) || defined(__ANDROID__)
+    char value[PROP_VALUE_MAX]{};
+    const int len = __system_property_get(name, value);
+    if (len <= 0) {
+        return default_value;
+    }
+    if (value[0] == '1' || value[0] == 'y' || value[0] == 'Y' || value[0] == 't' ||
+        value[0] == 'T') {
+        return true;
+    }
+    if (value[0] == '0' || value[0] == 'n' || value[0] == 'N' || value[0] == 'f' ||
+        value[0] == 'F') {
+        return false;
+    }
+#endif
+    return default_value;
+}
+
+bool UseSquashedIteratedBlend() {
+#if defined(ANDROID) || defined(__ANDROID__)
+    return ReadAndroidBoolProperty("debug.nxemu.squashed_iterated_blend", true);
+#else
+    return false;
+#endif
+}
 
 void RefreshXfbState(VideoCommon::TransformFeedbackState& state, const Maxwell& regs) {
     std::ranges::transform(regs.transform_feedback.controls, state.layouts.begin(),
@@ -191,6 +222,21 @@ void FixedPipelineState::BlendingAttachment::Refresh(const Maxwell& regs, size_t
     };
 
     if (!regs.blend_per_target_enabled) {
+        // Android/Turnip compatibility: Eden uses this "squashed iterated blend"
+        // workaround for titles that enable iterated blending while expecting the
+        // effective single-target blend equation. Without it, transparent layers
+        // can be composed as opaque colored blocks on some drivers.
+        if (regs.iterated_blend.enable && UseSquashedIteratedBlend()) {
+            equation_rgb.Assign(PackBlendEquation(Maxwell::Blend::Equation::Add_GL));
+            equation_a.Assign(PackBlendEquation(Maxwell::Blend::Equation::Add_GL));
+            factor_source_rgb.Assign(PackBlendFactor(Maxwell::Blend::Factor::One_GL));
+            factor_dest_rgb.Assign(PackBlendFactor(Maxwell::Blend::Factor::One_GL));
+            factor_source_a.Assign(
+                PackBlendFactor(Maxwell::Blend::Factor::OneMinusSourceColor_GL));
+            factor_dest_a.Assign(PackBlendFactor(Maxwell::Blend::Factor::Zero_GL));
+            enable.Assign(1);
+            return;
+        }
         setup_blend(regs.blend);
         return;
     }

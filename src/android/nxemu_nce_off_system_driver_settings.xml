@@ -1,0 +1,9 @@
+<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="last_game_name">Mystic+Gate.dnsp</string>
+    <string name="last_game_path">/sdcard/ns/rom/Mystic+Gate.dnsp</string>
+    <boolean name="prefer_nce" value="false" />
+    <int name="resolution_setup" value="0" />
+    <int name="frame_skip" value="1" />
+    <boolean name="auto_output_log" value="true" />
+</map>

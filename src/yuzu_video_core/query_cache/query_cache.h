@@ -368,11 +368,20 @@ void QueryCacheBase<Traits>::NotifyWFI() {
 
 template <typename Traits>
 void QueryCacheBase<Traits>::NotifySegment(bool resume) {
+    if (!impl) [[unlikely]] {
+        return;
+    }
     if (resume) {
         impl->runtime.ResumeHostConditionalRendering();
     } else {
-        CounterClose(VideoCommon::QueryType::ZPassPixelCount64);
-        CounterClose(VideoCommon::QueryType::StreamingByteCount);
+        const auto zpass = static_cast<size_t>(VideoCommon::QueryType::ZPassPixelCount64);
+        const auto streaming = static_cast<size_t>(VideoCommon::QueryType::StreamingByteCount);
+        if (impl->streamers[zpass]) {
+            CounterClose(VideoCommon::QueryType::ZPassPixelCount64);
+        }
+        if (impl->streamers[streaming]) {
+            CounterClose(VideoCommon::QueryType::StreamingByteCount);
+        }
         impl->runtime.PauseHostConditionalRendering();
     }
 }

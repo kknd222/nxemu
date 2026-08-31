@@ -1,4 +1,4 @@
-/* SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project */
+﻿/* SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project */
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
 #include "core/arm/nce/arm_nce_asm_definitions.h"
@@ -82,6 +82,7 @@ _ZN4Core6ArmNce50ReturnToRunCodeByExceptionLevelChangeSignalHandlerEiPvS1_:
     /* Call the context restorer with the raw context. */
     mov     x0, x2
     bl      _ZN4Core6ArmNce19RestoreGuestContextEPv
+    cbz     x0, 1f
 
     /* Save the old value of tpidr_el0. */
     mrs     x8, tpidr_el0
@@ -95,6 +96,12 @@ _ZN4Core6ArmNce50ReturnToRunCodeByExceptionLevelChangeSignalHandlerEiPvS1_:
     bl      _ZN4Core6ArmNce22UnlockThreadParametersEPv
 
     /* Returning from here will enter the guest. */
+    ldp     x29, x30, [sp], #0x10
+    ret
+
+1:
+    /* RestoreGuestContext failed (spurious/early SIGUSR2 or invalid tpidr). Return to host
+       instead of dereferencing x0 and turning the diagnostic signal into a bare SIGSEGV. */
     ldp     x29, x30, [sp], #0x10
     ret
 
@@ -135,45 +142,51 @@ _ZN4Core6ArmNce29BreakFromRunCodeSignalHandlerEiPvS1_:
 .global     _ZN4Core6ArmNce32GuestAlignmentFaultSignalHandlerEiPvS1_
 .type       _ZN4Core6ArmNce32GuestAlignmentFaultSignalHandlerEiPvS1_, %function
 _ZN4Core6ArmNce32GuestAlignmentFaultSignalHandlerEiPvS1_:
-    /* Check to see if we have the correct TLS magic. */
-    mrs     x8, tpidr_el0
-    ldr     w9, [x8, #(TpidrEl0TlsMagic)]
-
-    LOAD_IMMEDIATE_32(w10, TlsMagic)
-
-    cmp     w9, w10
-    b.eq    1f
-
-    /* Incorrect TLS magic, so this is a host fault. */
-    /* Tail call the handler. */
-    b       _ZN4Core6ArmNce24HandleHostAlignmentFaultEiPvS1_
-
-1:
-    /* Correct TLS magic, so this is a guest fault. */
-    stp     x29, x30, [sp, #-0x20]!
-    str     x19, [sp, #0x10]
+    /* Android-safe handler: do not dereference TPIDR_EL0 in assembly. Guest code may have
+       clobbered TPIDR_EL0; blindly loading [tpidr + magic] can cause a second SIGSEGV
+       inside this signal handler and the process dies with no NCE diagnostics. */
+    stp     x29, x30, [sp, #-0x40]!
+    stp     x19, x20, [sp, #0x10]
+    stp     x21, x22, [sp, #0x20]
     mov     x29, sp
 
-    /* Save the old tpidr_el0. */
-    mov     x19, x8
+    /* Preserve original handler args and guest TPIDR candidate. */
+    mov     x20, x0
+    mov     x21, x1
+    mov     x22, x2
+    mrs     x19, tpidr_el0
 
-    /* Restore host tpidr_el0. */
-    ldr     x0, [x8, #(TpidrEl0NativeContext)]
-    ldr     x3, [x0, #(GuestContextHostContext + HostContextTpidrEl0)]
-    msr     tpidr_el0, x3
+    /* Resolve active NCE thread and restore host TPIDR_EL0 before running normal C++ code.
+       x0 returns GuestContext* or null for a host/non-NCE fault. */
+    mov     x0, x19
+    mov     x1, x20
+    mov     x2, x21
+    mov     x3, x22
+    bl      _ZN4Core6ArmNce42ResolveGuestSignalContextAndRestoreHostTlsEPviS1_S1_
+    cbz     x0, 3f
 
-    /* Call the handler. */
-    bl       _ZN4Core6ArmNce25HandleGuestAlignmentFaultEPNS_12GuestContextEPvS3_
+    /* Guest fault path. */
+    mov     x1, x21
+    mov     x2, x22
+    bl      _ZN4Core6ArmNce25HandleGuestAlignmentFaultEPNS_12GuestContextEPvS3_
 
-    /* If the handler returned false, we want to preserve the host tpidr_el0. */
+    /* If handled, return to guest with the original guest TPIDR. If unhandled,
+       SaveGuestContext has arranged the signal context to return to host code. */
     cbz     x0, 2f
-
-    /* Otherwise, restore guest tpidr_el0. */
     msr     tpidr_el0, x19
+    b       2f
+
+3:
+    /* Host fault path. */
+    mov     x0, x20
+    mov     x1, x21
+    mov     x2, x22
+    bl      _ZN4Core6ArmNce24HandleHostAlignmentFaultEiPvS1_
 
 2:
-    ldr     x19, [sp, #0x10]
-    ldp     x29, x30, [sp], #0x20
+    ldp     x21, x22, [sp, #0x20]
+    ldp     x19, x20, [sp, #0x10]
+    ldp     x29, x30, [sp], #0x40
     ret
 
 /* static void Core::ArmNce::GuestAccessFaultSignalHandler(int sig, void* info, void* raw_context) */
@@ -181,47 +194,44 @@ _ZN4Core6ArmNce32GuestAlignmentFaultSignalHandlerEiPvS1_:
 .global     _ZN4Core6ArmNce29GuestAccessFaultSignalHandlerEiPvS1_
 .type       _ZN4Core6ArmNce29GuestAccessFaultSignalHandlerEiPvS1_, %function
 _ZN4Core6ArmNce29GuestAccessFaultSignalHandlerEiPvS1_:
-    /* Check to see if we have the correct TLS magic. */
-    mrs     x8, tpidr_el0
-    ldr     w9, [x8, #(TpidrEl0TlsMagic)]
-
-    LOAD_IMMEDIATE_32(w10, TlsMagic)
-
-    cmp     w9, w10
-    b.eq    1f
-
-    /* Incorrect TLS magic, so this is a host fault. */
-    /* Tail call the handler. */
-    b       _ZN4Core6ArmNce21HandleHostAccessFaultEiPvS1_
-
-1:
-    /* Correct TLS magic, so this is a guest fault. */
-    stp     x29, x30, [sp, #-0x20]!
-    str     x19, [sp, #0x10]
+    /* Android-safe handler: do not dereference TPIDR_EL0 in assembly. See the
+       alignment handler above for rationale. */
+    stp     x29, x30, [sp, #-0x40]!
+    stp     x19, x20, [sp, #0x10]
+    stp     x21, x22, [sp, #0x20]
     mov     x29, sp
 
-    /* Save the old tpidr_el0. */
-    mov     x19, x8
+    mov     x20, x0
+    mov     x21, x1
+    mov     x22, x2
+    mrs     x19, tpidr_el0
 
-    /* Restore host tpidr_el0. */
-    ldr     x0, [x8, #(TpidrEl0NativeContext)]
-    ldr     x3, [x0, #(GuestContextHostContext + HostContextTpidrEl0)]
-    msr     tpidr_el0, x3
+    mov     x0, x19
+    mov     x1, x20
+    mov     x2, x21
+    mov     x3, x22
+    bl      _ZN4Core6ArmNce42ResolveGuestSignalContextAndRestoreHostTlsEPviS1_S1_
+    cbz     x0, 3f
 
-    /* Call the handler. */
-    bl       _ZN4Core6ArmNce22HandleGuestAccessFaultEPNS_12GuestContextEPvS3_
+    mov     x1, x21
+    mov     x2, x22
+    bl      _ZN4Core6ArmNce22HandleGuestAccessFaultEPNS_12GuestContextEPvS3_
 
-    /* If the handler returned false, we want to preserve the host tpidr_el0. */
     cbz     x0, 2f
-
-    /* Otherwise, restore guest tpidr_el0. */
     msr     tpidr_el0, x19
+    b       2f
+
+3:
+    mov     x0, x20
+    mov     x1, x21
+    mov     x2, x22
+    bl      _ZN4Core6ArmNce21HandleHostAccessFaultEiPvS1_
 
 2:
-    ldr     x19, [sp, #0x10]
-    ldp     x29, x30, [sp], #0x20
+    ldp     x21, x22, [sp, #0x20]
+    ldp     x19, x20, [sp, #0x10]
+    ldp     x29, x30, [sp], #0x40
     ret
-
 
 /* static void Core::ArmNce::LockThreadParameters(void* tpidr) */
 .section    .text._ZN4Core6ArmNce20LockThreadParametersEPv, "ax", %progbits
@@ -266,3 +276,10 @@ _ZN4Core6ArmNce22UnlockThreadParametersEPv:
     stlr    w1, [x0]
 
     ret
+
+
+
+
+.section .note.GNU-stack,"",%progbits
+
+

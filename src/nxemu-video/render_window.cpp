@@ -9,10 +9,11 @@
 #include <glad/glad_wgl.h>
 #endif
 #if defined(__ANDROID__)
+#include <android/log.h>
 #include <dlfcn.h>
 #include <nxemu-core/settings/identifiers.h>
 #include <yuzu_common/dynamic_library.h>
-#if defined(_M_ARM64) || defined(ARCHITECTURE_arm64)
+#if defined(NXEMU_USE_ADRENOTOOLS) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
 #include <adrenotools/driver.h>
 #endif
 #endif
@@ -232,6 +233,8 @@ bool OpenGLSharedContext::m_openglLoaded = false;
 
 #if defined(__ANDROID__)
 
+constexpr const char* AndroidVideoLogTag = "NxEmuVideo";
+
 class GraphicsContext_Android final : public Core::Frontend::GraphicsContext
 {
 public:
@@ -266,7 +269,7 @@ std::shared_ptr<Common::DynamicLibrary> LoadAndroidVulkanDriverFromSettings()
     const std::string custom_driver_name = g_settings->GetString(NXCoreSetting::GpuCustomDriverName);
     const std::string file_redirect_dir = g_settings->GetString(NXCoreSetting::GpuFileRedirectDir);
 
-#if defined(_M_ARM64) || defined(ARCHITECTURE_arm64)
+#if defined(NXEMU_USE_ADRENOTOOLS) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
     void * handle{};
     const char * file_redirect_dir_ptr{};
     int feature_flags{};
@@ -279,16 +282,26 @@ std::shared_ptr<Common::DynamicLibrary> LoadAndroidVulkanDriverFromSettings()
 
     if (!custom_driver_name.empty())
     {
+        __android_log_print(ANDROID_LOG_INFO, AndroidVideoLogTag,
+                            "Trying custom Vulkan driver: hook=%s dir=%s name=%s redirect=%s",
+                            hook_lib_dir.c_str(), custom_driver_dir.c_str(),
+                            custom_driver_name.c_str(), file_redirect_dir.c_str());
         handle = adrenotools_open_libvulkan(RTLD_NOW, feature_flags | ADRENOTOOLS_DRIVER_CUSTOM, nullptr, hook_lib_dir.c_str(), custom_driver_dir.c_str(), custom_driver_name.c_str(), file_redirect_dir_ptr, nullptr);
+        __android_log_print(ANDROID_LOG_INFO, AndroidVideoLogTag,
+                            "Custom Vulkan driver result: %p", handle);
     }
 
     if (handle == nullptr)
     {
+        __android_log_print(ANDROID_LOG_WARN, AndroidVideoLogTag,
+                            "Falling back to system Vulkan driver via adrenotools");
         handle = adrenotools_open_libvulkan(RTLD_NOW, feature_flags, nullptr, hook_lib_dir.c_str(), nullptr, nullptr, file_redirect_dir_ptr, nullptr);
     }
 
     if (handle != nullptr)
     {
+        __android_log_print(ANDROID_LOG_INFO, AndroidVideoLogTag,
+                            "Vulkan driver library opened via adrenotools: %p", handle);
         return std::make_shared<Common::DynamicLibrary>(handle);
     }
 #endif
@@ -296,8 +309,12 @@ std::shared_ptr<Common::DynamicLibrary> LoadAndroidVulkanDriverFromSettings()
     auto fallback = std::make_shared<Common::DynamicLibrary>();
     if (fallback->Open("libvulkan.so"))
     {
+        __android_log_print(ANDROID_LOG_WARN, AndroidVideoLogTag,
+                            "Vulkan driver library opened via plain libvulkan.so fallback");
         return fallback;
     }
+    __android_log_print(ANDROID_LOG_ERROR, AndroidVideoLogTag,
+                        "Failed to open any Vulkan driver library");
     return {};
 }
 

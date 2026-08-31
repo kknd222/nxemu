@@ -10,6 +10,9 @@
 #include "yuzu_video_core/guest_memory.h"
 #include "yuzu_video_core/memory_manager.h"
 #include "video_settings.h"
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+#include <android/log.h>
+#endif
 
 namespace Tegra
 {
@@ -31,6 +34,10 @@ MICROPROFILE_DEFINE(DispatchCalls, "GPU", "Execute command buffer", MP_RGB(128, 
 void DmaPusher::DispatchCalls()
 {
     MICROPROFILE_SCOPE(DispatchCalls);
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+    __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag",
+                        "Video.DmaPusher.DispatchCalls queued=%zu", dma_pushbuffer.size());
+#endif
 
     dma_pushbuffer_subindex = 0;
 
@@ -45,6 +52,9 @@ void DmaPusher::DispatchCalls()
     }
     gpu.FlushCommands();
     gpu.OnCommandListEnd();
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+    __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag", "Video.DmaPusher.DispatchDone");
+#endif
 }
 
 bool DmaPusher::Step()
@@ -76,6 +86,13 @@ bool DmaPusher::Step()
     {
         const CommandListHeader command_list_header{command_list.command_lists[dma_pushbuffer_subindex++]};
         dma_state.dma_get = command_list_header.addr;
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+        __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag",
+                            "Video.DmaPusher.CommandList addr=0x%llx size=%llu non_main=%llu",
+                            static_cast<unsigned long long>(command_list_header.addr.Value()),
+                            static_cast<unsigned long long>(command_list_header.size.Value()),
+                            static_cast<unsigned long long>(command_list_header.is_non_main.Value()));
+#endif
 
         if (dma_pushbuffer_subindex >= command_list.command_lists.size())
         {

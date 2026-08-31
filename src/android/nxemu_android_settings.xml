@@ -1,0 +1,10 @@
+﻿<?xml version='1.0' encoding='utf-8' standalone='yes' ?>
+<map>
+    <string name="last_game_name"></string>
+    <string name="last_game_path">/data/user/0/org.nxemu.app.debug/files/test_roms/hbmenu.nro</string>
+    <boolean name="prefer_nce" value="true" />
+    <int name="resolution_setup" value="1" />
+    <int name="frame_skip" value="0" />
+    <boolean name="auto_output_log" value="true" />
+</map>
+

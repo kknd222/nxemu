@@ -512,6 +512,8 @@ struct PerfStatsResults
 nxinterface IDeviceMemory
 {
     virtual const uint8_t * BackingBasePointer() const = 0;
+    virtual uint8_t * VirtualBasePointer() = 0;
+    virtual void EnableDirectMappedAddress() = 0;
 };
 
 nxinterface ICacheInvalidator
@@ -668,7 +670,9 @@ nxinterface IOperatingSystem
     virtual void ShutdownMainProcess() = 0;
     virtual bool CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl) = 0;
     virtual void StartApplicationProcess(int32_t priority, int64_t stackSize, uint32_t version, StorageId baseGameStorageId, StorageId updateStorageId, uint8_t * nacpData, uint32_t nacpDataLen) = 0;
+    virtual void SetMainThreadStartupArguments(uint64_t argument0, uint64_t argument1, uint64_t mainThreadHandleWriteAddress) = 0;
     virtual bool LoadModule(const IModuleInfo & module, uint64_t baseAddress) = 0;
+    virtual bool ReadApplicationMemory(uint64_t address, void * out_buffer, uint64_t size) = 0;
     virtual IDeviceMemory & DeviceMemory() = 0;
     virtual void KeyboardKeyPress(int modifier, int keyIndex, int keyCode) = 0;
     virtual void KeyboardKeyRelease(int modifier, int keyIndex, int keyCode) = 0;

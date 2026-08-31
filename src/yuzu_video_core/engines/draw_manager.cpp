@@ -1,10 +1,14 @@
 // SPDX-FileCopyrightText: Copyright 2022 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
 #include "yuzu_common/settings.h"
 #include "yuzu_video_core/dirty_flags.h"
 #include "yuzu_video_core/engines/draw_manager.h"
 #include "yuzu_video_core/rasterizer_interface.h"
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+#include <android/log.h>
+#endif
 
 namespace Tegra::Engines {
 DrawManager::DrawManager(Maxwell3D* maxwell3d_) : maxwell3d(maxwell3d_) {}
@@ -69,6 +73,15 @@ void DrawManager::ProcessMethodCall(u32 method, u32 argument) {
 
 void DrawManager::Clear(u32 layer_count) {
     if (maxwell3d->ShouldExecute()) {
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+        static std::atomic<u32> clear_log_count{};
+        const auto n = clear_log_count.fetch_add(1, std::memory_order_relaxed);
+        if (n < 32 || (n % 300) == 0) {
+            __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag",
+                                "Video.DrawManager.Clear layer_count=%u count=%u", layer_count,
+                                n + 1);
+        }
+#endif
         maxwell3d->rasterizer->Clear(layer_count);
     }
 }
@@ -267,6 +280,19 @@ void DrawManager::ProcessDraw(bool draw_indexed, u32 instance_count) {
     UpdateTopology();
 
     if (maxwell3d->ShouldExecute()) {
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+        static std::atomic<u32> draw_log_count{};
+        const auto n = draw_log_count.fetch_add(1, std::memory_order_relaxed);
+        if (n < 64 || (n % 300) == 0) {
+            __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag",
+                                "Video.DrawManager.Draw indexed=%d instances=%u topology=%u count=%u draw_count=%u",
+                                draw_indexed ? 1 : 0, instance_count,
+                                static_cast<u32>(draw_state.topology),
+                                draw_indexed ? draw_state.index_buffer.count
+                                             : draw_state.vertex_buffer.count,
+                                n + 1);
+        }
+#endif
         maxwell3d->rasterizer->Draw(draw_indexed, instance_count);
     }
 }
@@ -281,6 +307,15 @@ void DrawManager::ProcessDrawIndirect() {
     UpdateTopology();
 
     if (maxwell3d->ShouldExecute()) {
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+        static std::atomic<u32> indirect_log_count{};
+        const auto n = indirect_log_count.fetch_add(1, std::memory_order_relaxed);
+        if (n < 32 || (n % 300) == 0) {
+            __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag",
+                                "Video.DrawManager.DrawIndirect indexed=%d count=%u",
+                                indirect_state.is_indexed ? 1 : 0, n + 1);
+        }
+#endif
         maxwell3d->rasterizer->DrawIndirect();
     }
 }

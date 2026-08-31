@@ -1,8 +1,13 @@
-// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
+﻿// SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <atomic>
+#include <cstdarg>
 #include <fstream>
 #include <vector>
+#if defined(__ANDROID__)
+#include <android/log.h>
+#endif
 
 #include "yuzu_common/heap_tracker.h"
 #include "yuzu_common/logging/log.h"
@@ -10,6 +15,24 @@
 namespace Common {
 
 namespace {
+
+#if defined(__ANDROID__)
+std::atomic<int> g_android_nce_heap_trace_budget{256};
+
+void AndroidNceHeapLogf(const char* fmt, ...) {
+    if (g_android_nce_heap_trace_budget.fetch_sub(1, std::memory_order_relaxed) <= 0) {
+        return;
+    }
+    va_list args;
+    va_start(args, fmt);
+    __android_log_vprint(ANDROID_LOG_ERROR, "NxEmuNCEHeap", fmt ? fmt : "", args);
+    va_end(args);
+}
+#else
+void AndroidNceHeapLogf(const char* fmt, ...) {
+    (void)fmt;
+}
+#endif
 
 s64 GetMaxPermissibleResidentMapCount() {
     // Default value.
@@ -34,9 +57,13 @@ HeapTracker::~HeapTracker() = default;
 
 void HeapTracker::Map(size_t virtual_offset, size_t host_offset, size_t length,
                       MemoryPermission perm, bool is_separate_heap) {
+    AndroidNceHeapLogf("HeapTracker::Map v=0x%zx h=0x%zx len=0x%zx perm=0x%x separate=%d",
+                       virtual_offset, host_offset, length, static_cast<unsigned>(perm),
+                       is_separate_heap ? 1 : 0);
     // When mapping other memory, map pages immediately.
     if (!is_separate_heap) {
         m_buffer.Map(virtual_offset, host_offset, length, perm, false);
+        AndroidNceHeapLogf("HeapTracker::Map immediate done v=0x%zx", virtual_offset);
         return;
     }
 
@@ -158,24 +185,44 @@ void HeapTracker::Protect(size_t virtual_offset, size_t size, MemoryPermission p
 }
 
 bool HeapTracker::DeferredMapSeparateHeap(u8* fault_address) {
+    AndroidNceHeapLogf("DeferredMapSeparateHeap(ptr) fault=%p virtualBase=%p", fault_address,
+                       m_buffer.VirtualBasePointer());
     if (m_buffer.IsInVirtualRange(fault_address)) {
-        return this->DeferredMapSeparateHeap(fault_address - m_buffer.VirtualBasePointer());
+        const auto offset = static_cast<size_t>(fault_address - m_buffer.VirtualBasePointer());
+        AndroidNceHeapLogf("DeferredMapSeparateHeap(ptr) converted offset=0x%zx", offset);
+        return this->DeferredMapSeparateHeap(offset);
     }
 
+    AndroidNceHeapLogf("DeferredMapSeparateHeap(ptr) outside virtual range");
     return false;
 }
 
 bool HeapTracker::DeferredMapSeparateHeap(size_t virtual_offset) {
     bool rebuild_required = false;
 
+    AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) enter v=0x%zx", virtual_offset);
     {
         std::scoped_lock lk{m_lock};
+        AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) lock acquired v=0x%zx maps=%lld resident=%lld max=%lld",
+                           virtual_offset, static_cast<long long>(m_map_count),
+                           static_cast<long long>(m_resident_map_count),
+                           static_cast<long long>(m_max_resident_map_count));
 
         // Check to ensure this was a non-resident separate heap mapping.
         const auto it = this->GetNearestHeapMapLocked(virtual_offset);
-        if (it == m_mappings.end() || it->is_resident) {
+        if (it == m_mappings.end()) {
+            AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) no mapping v=0x%zx", virtual_offset);
             return false;
         }
+        if (it->is_resident) {
+            AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) already resident req=0x%zx map=[0x%zx,0x%zx)",
+                               virtual_offset, it->vaddr, it->vaddr + it->size);
+            return false;
+        }
+
+        AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) map selected req=0x%zx v=0x%zx p=0x%zx size=0x%zx perm=0x%x",
+                           virtual_offset, it->vaddr, it->paddr, it->size,
+                           static_cast<unsigned>(it->perm));
 
         // Update tick before possible rebuild.
         it->tick = m_tick++;
@@ -186,19 +233,26 @@ bool HeapTracker::DeferredMapSeparateHeap(size_t virtual_offset) {
         }
 
         // Map the area.
+        AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) before HostMemory::Map");
         m_buffer.Map(it->vaddr, it->paddr, it->size, it->perm, false);
+        AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) after HostMemory::Map");
 
         // This map is now resident.
         it->is_resident = true;
         m_resident_map_count++;
         m_resident_mappings.insert(*it);
+        AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) resident inserted count=%lld",
+                           static_cast<long long>(m_resident_map_count));
     }
 
     if (rebuild_required) {
         // A rebuild was required, so perform it now.
+        AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) before rebuild");
         this->RebuildSeparateHeapAddressSpace();
+        AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) after rebuild");
     }
 
+    AndroidNceHeapLogf("DeferredMapSeparateHeap(offset) exit true");
     return true;
 }
 

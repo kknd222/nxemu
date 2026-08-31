@@ -6,6 +6,10 @@
 #include <memory>
 #include <mutex>
 
+#if defined(ANDROID) || defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
+
 #include "yuzu_video_core/renderer_vulkan/renderer_vulkan.h"
 
 #include "yuzu_common/yuzu_assert.h"
@@ -43,6 +47,55 @@ namespace Vulkan {
 
 using Maxwell = Tegra::Engines::Maxwell3D::Regs;
 using MaxwellDrawState = Tegra::Engines::DrawManager::State;
+
+namespace {
+bool ReadAndroidBoolProperty(const char* name, bool default_value) {
+#if defined(ANDROID) || defined(__ANDROID__)
+    char value[PROP_VALUE_MAX]{};
+    const int len = __system_property_get(name, value);
+    if (len <= 0) {
+        return default_value;
+    }
+    if (value[0] == '1' || value[0] == 'y' || value[0] == 'Y' || value[0] == 't' ||
+        value[0] == 'T') {
+        return true;
+    }
+    if (value[0] == '0' || value[0] == 'n' || value[0] == 'N' || value[0] == 'f' ||
+        value[0] == 'F') {
+        return false;
+    }
+#endif
+    return default_value;
+}
+
+bool UseSquashedIteratedBlend() {
+#if defined(ANDROID) || defined(__ANDROID__)
+    return ReadAndroidBoolProperty("debug.nxemu.squashed_iterated_blend", true);
+#else
+    return false;
+#endif
+}
+
+bool UseAndroidRenderDiag() {
+#if defined(ANDROID) || defined(__ANDROID__)
+    return ReadAndroidBoolProperty("debug.nxemu.render_diag", false);
+#else
+    return false;
+#endif
+}
+
+bool ShouldAndroidRenderDiagLog(u64 count) {
+#if defined(ANDROID) || defined(__ANDROID__)
+    if (!UseAndroidRenderDiag()) {
+        return false;
+    }
+    // Keep logcat usable: dense at startup, then powers of two and coarse periodic samples.
+    return count <= 32 || (count <= 8192 && (count & (count - 1)) == 0) || count % 600 == 0;
+#else
+    return false;
+#endif
+}
+} // namespace
 using VideoCommon::ImageViewId;
 using VideoCommon::ImageViewType;
 
@@ -346,6 +399,21 @@ void RasterizerVulkan::DrawTexture() {
                                     .y = ScaleSrc(draw_texture_state.src_y1)}};
     Extent3D src_size = {static_cast<u32>(ScaleSrc(texture.size.width)),
                          static_cast<u32>(ScaleSrc(texture.size.height)), texture.size.depth};
+#if defined(ANDROID) || defined(__ANDROID__)
+    static u64 draw_texture_diag_count = 0;
+    ++draw_texture_diag_count;
+    if (ShouldAndroidRenderDiagLog(draw_texture_diag_count)) {
+        const VkExtent2D render_area = framebuffer->RenderArea();
+        LOG_INFO(Render_Vulkan,
+                 "[nxemu-render-diag] draw_texture#{} src={}x{}x{} srcScaled={} dstScaled={} "
+                 "srcRegion=({},{})->({},{}) dstRegion=({},{})->({},{}) fbArea={}x{} fbRescaled={}",
+                 draw_texture_diag_count, texture.size.width, texture.size.height,
+                 texture.size.depth, src_rescaling, dst_rescaling, src_region.start.x,
+                 src_region.start.y, src_region.end.x, src_region.end.y, dst_region.start.x,
+                 dst_region.start.y, dst_region.end.x, dst_region.end.y, render_area.width,
+                 render_area.height, framebuffer->IsRescaled());
+    }
+#endif
     blit_image.BlitColor(framebuffer, texture.RenderTarget(), texture.ImageHandle(),
                          sampler->Handle(), dst_region, src_region, src_size);
 }
@@ -427,8 +495,45 @@ void RasterizerVulkan::Clear(u32 layer_count) {
             }
         }
 
-        if (regs.clear_surface.R && regs.clear_surface.G && regs.clear_surface.B &&
-            regs.clear_surface.A) {
+#if defined(ANDROID) || defined(__ANDROID__)
+        static u64 clear_color_diag_count = 0;
+        ++clear_color_diag_count;
+        if (ShouldAndroidRenderDiagLog(clear_color_diag_count)) {
+            const u8 color_mask = static_cast<u8>(regs.clear_surface.R |
+                                                  (regs.clear_surface.G << 1) |
+                                                  (regs.clear_surface.B << 2) |
+                                                  (regs.clear_surface.A << 3));
+            LOG_INFO(Render_Vulkan,
+                     "[nxemu-render-diag] clear_color#{} rt={} rtFormat={} pixelFormat={} "
+                     "integer={} signed={} mask=0x{:x} full={} rgba=({:.4f},{:.4f},{:.4f},{:.4f}) "
+                     "rect=({},{} {}x{}) area={}x{} layer={} layers={} scissor={} rescale={}/{}",
+                     clear_color_diag_count, color_attachment,
+                     static_cast<u32>(regs.rt[color_attachment].format), static_cast<u32>(format),
+                     is_integer, is_signed, color_mask, color_mask == 0x0f, regs.clear_color[0],
+                     regs.clear_color[1], regs.clear_color[2], regs.clear_color[3],
+                     clear_rect.rect.offset.x, clear_rect.rect.offset.y,
+                     clear_rect.rect.extent.width, clear_rect.rect.extent.height,
+                     render_area.width, render_area.height, clear_rect.baseArrayLayer,
+                     clear_rect.layerCount, regs.clear_control.use_scissor, up_scale, down_shift);
+        }
+#endif
+
+        const bool full_color_mask =
+            regs.clear_surface.R && regs.clear_surface.G && regs.clear_surface.B &&
+            regs.clear_surface.A;
+        const bool use_draw_clear =
+#if defined(ANDROID) || defined(__ANDROID__)
+            // Adreno/Turnip can expose stale tiled attachment contents if vkCmdClearAttachments
+            // is mixed with frequent LOAD render passes and later sampled for display. Drawing the
+            // clear as a fullscreen/rect pass is slower but exercises the same color-write path as
+            // normal geometry and is kept as an Android compatibility A/B switch. It did not fix
+            // Kirby blue blocks by itself; Turnip 26.2 fixed that, so keep this off by default.
+            ReadAndroidBoolProperty("debug.nxemu.force_draw_color_clear", false);
+#else
+            false;
+#endif
+
+        if (full_color_mask && !use_draw_clear) {
             scheduler.Record([color_attachment, clear_value, clear_rect](vk::CommandBuffer cmdbuf) {
                 const VkClearAttachment attachment{
                     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -463,6 +568,22 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     if (aspect_flags == 0) {
         return;
     }
+
+#if defined(ANDROID) || defined(__ANDROID__)
+    static u64 clear_ds_diag_count = 0;
+    ++clear_ds_diag_count;
+    if (ShouldAndroidRenderDiagLog(clear_ds_diag_count)) {
+        LOG_INFO(Render_Vulkan,
+                 "[nxemu-render-diag] clear_ds#{} depth={} stencil={} aspects=0x{:x} "
+                 "depthValue={:.6f} stencilValue={} stencilMask=0x{:x} rect=({},{} {}x{}) area={}x{} "
+                 "layer={} layers={} scissor={}",
+                 clear_ds_diag_count, use_depth, use_stencil, aspect_flags, regs.clear_depth,
+                 regs.clear_stencil, regs.stencil_front_mask, clear_rect.rect.offset.x,
+                 clear_rect.rect.offset.y, clear_rect.rect.extent.width,
+                 clear_rect.rect.extent.height, render_area.width, render_area.height,
+                 clear_rect.baseArrayLayer, clear_rect.layerCount, regs.clear_control.use_scissor);
+    }
+#endif
 
     if (use_stencil && framebuffer->HasAspectStencilBit() && regs.stencil_front_mask != 0xFF &&
         regs.stencil_front_mask != 0) {
@@ -820,6 +941,15 @@ std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(
     if (!framebuffer_addr) {
         return {};
     }
+#if defined(ANDROID) || defined(__ANDROID__)
+    // Diagnostic/compatibility switch: bypass the GPU texture-cache backed display path and fall
+    // back to raw framebuffer upload in present::Layer.  Some Android Vulkan drivers are very
+    // sensitive to stale render-target/layout/cache state; this lets us distinguish a bad final
+    // composite from a bad accelerated framebuffer image.
+    if (ReadAndroidBoolProperty("debug.nxemu.disable_accelerated_display", false)) {
+        return {};
+    }
+#endif
     std::scoped_lock lock{texture_cache.mutex};
     const auto [image_view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, framebuffer_addr);
@@ -960,7 +1090,7 @@ void RasterizerVulkan::UpdateDynamicStates() {
         if (device.IsExtExtendedDynamicState2ExtrasSupported()) {
             UpdateLogicOp(regs);
         }
-        if (device.IsExtExtendedDynamicState3Supported()) {
+        if (device.IsExtExtendedDynamicState3BlendingSupported()) {
             UpdateBlending(regs);
         }
     }
@@ -1427,39 +1557,123 @@ void RasterizerVulkan::UpdateBlending(Tegra::Engines::Maxwell3D::Regs& regs) {
         scheduler.Record([setup_masks](vk::CommandBuffer cmdbuf) {
             cmdbuf.SetColorWriteMaskEXT(0, setup_masks);
         });
+#if defined(ANDROID) || defined(__ANDROID__)
+        static u64 blend_mask_diag_count = 0;
+        ++blend_mask_diag_count;
+        if (ShouldAndroidRenderDiagLog(blend_mask_diag_count)) {
+            LOG_INFO(Render_Vulkan,
+                     "[nxemu-render-diag] blend_mask#{} common={} masks=[0x{:x},0x{:x},0x{:x},"
+                     "0x{:x},0x{:x},0x{:x},0x{:x},0x{:x}]",
+                     blend_mask_diag_count, regs.color_mask_common,
+                     static_cast<u32>(setup_masks[0]), static_cast<u32>(setup_masks[1]),
+                     static_cast<u32>(setup_masks[2]), static_cast<u32>(setup_masks[3]),
+                     static_cast<u32>(setup_masks[4]), static_cast<u32>(setup_masks[5]),
+                     static_cast<u32>(setup_masks[6]), static_cast<u32>(setup_masks[7]));
+        }
+#endif
     }
 
     if (state_tracker.TouchBlendEnable()) {
         std::array<VkBool32, Maxwell::NumRenderTargets> setup_enables{};
-        std::ranges::transform(
-            regs.blend.enable, setup_enables.begin(),
-            [&](const auto& is_enabled) { return is_enabled != 0 ? VK_TRUE : VK_FALSE; });
+        for (size_t index = 0; index < Maxwell::NumRenderTargets; index++) {
+            bool is_integer = false;
+            if (regs.rt[index].format != Tegra::RenderTargetFormat::NONE) {
+                const auto format =
+                    VideoCore::Surface::PixelFormatFromRenderTargetFormat(regs.rt[index].format);
+                is_integer = IsPixelFormatInteger(format);
+            }
+            setup_enables[index] =
+                (!is_integer && regs.blend.enable[index] != 0) ? VK_TRUE : VK_FALSE;
+        }
         scheduler.Record([setup_enables](vk::CommandBuffer cmdbuf) {
             cmdbuf.SetColorBlendEnableEXT(0, setup_enables);
         });
+#if defined(ANDROID) || defined(__ANDROID__)
+        static u64 blend_enable_diag_count = 0;
+        ++blend_enable_diag_count;
+        if (ShouldAndroidRenderDiagLog(blend_enable_diag_count)) {
+            u32 enable_mask = 0;
+            u32 integer_mask = 0;
+            for (size_t index = 0; index < Maxwell::NumRenderTargets; index++) {
+                if (setup_enables[index] != VK_FALSE) {
+                    enable_mask |= 1u << index;
+                }
+                if (regs.rt[index].format != Tegra::RenderTargetFormat::NONE) {
+                    const auto format =
+                        VideoCore::Surface::PixelFormatFromRenderTargetFormat(regs.rt[index].format);
+                    if (IsPixelFormatInteger(format)) {
+                        integer_mask |= 1u << index;
+                    }
+                }
+            }
+            LOG_INFO(Render_Vulkan,
+                     "[nxemu-render-diag] blend_enable#{} enableMask=0x{:x} integerRtMask=0x{:x} "
+                     "guestEnable=[{},{},{},{},{},{},{},{}] rtFormat=[{},{},{},{},{},{},{},{}]",
+                     blend_enable_diag_count, enable_mask, integer_mask, regs.blend.enable[0],
+                     regs.blend.enable[1], regs.blend.enable[2], regs.blend.enable[3],
+                     regs.blend.enable[4], regs.blend.enable[5], regs.blend.enable[6],
+                     regs.blend.enable[7], static_cast<u32>(regs.rt[0].format),
+                     static_cast<u32>(regs.rt[1].format), static_cast<u32>(regs.rt[2].format),
+                     static_cast<u32>(regs.rt[3].format), static_cast<u32>(regs.rt[4].format),
+                     static_cast<u32>(regs.rt[5].format), static_cast<u32>(regs.rt[6].format),
+                     static_cast<u32>(regs.rt[7].format));
+        }
+#endif
     }
 
     if (state_tracker.TouchBlendEquations()) {
         std::array<VkColorBlendEquationEXT, Maxwell::NumRenderTargets> setup_blends{};
-        for (size_t index = 0; index < Maxwell::NumRenderTargets; index++) {
-            const auto blend_setup = [&]<typename T>(const T& guest_blend) {
-                auto& host_blend = setup_blends[index];
-                host_blend.srcColorBlendFactor = MaxwellToVK::BlendFactor(guest_blend.color_source);
-                host_blend.dstColorBlendFactor = MaxwellToVK::BlendFactor(guest_blend.color_dest);
-                host_blend.colorBlendOp = MaxwellToVK::BlendEquation(guest_blend.color_op);
-                host_blend.srcAlphaBlendFactor = MaxwellToVK::BlendFactor(guest_blend.alpha_source);
-                host_blend.dstAlphaBlendFactor = MaxwellToVK::BlendFactor(guest_blend.alpha_dest);
-                host_blend.alphaBlendOp = MaxwellToVK::BlendEquation(guest_blend.alpha_op);
-            };
-            if (!regs.blend_per_target_enabled) {
-                blend_setup(regs.blend);
-                continue;
+        const auto blend_setup = [&](auto& host_blend, const auto& guest_blend) {
+            host_blend.srcColorBlendFactor = MaxwellToVK::BlendFactor(guest_blend.color_source);
+            host_blend.dstColorBlendFactor = MaxwellToVK::BlendFactor(guest_blend.color_dest);
+            host_blend.colorBlendOp = MaxwellToVK::BlendEquation(guest_blend.color_op);
+            host_blend.srcAlphaBlendFactor = MaxwellToVK::BlendFactor(guest_blend.alpha_source);
+            host_blend.dstAlphaBlendFactor = MaxwellToVK::BlendFactor(guest_blend.alpha_dest);
+            host_blend.alphaBlendOp = MaxwellToVK::BlendEquation(guest_blend.alpha_op);
+        };
+
+        if (!regs.blend_per_target_enabled) {
+            if (regs.iterated_blend.enable && UseSquashedIteratedBlend()) {
+                setup_blends[0].srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                setup_blends[0].dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+                setup_blends[0].colorBlendOp = VK_BLEND_OP_ADD;
+                setup_blends[0].srcAlphaBlendFactor = VK_BLEND_FACTOR_ONE_MINUS_SRC_COLOR;
+                setup_blends[0].dstAlphaBlendFactor = VK_BLEND_FACTOR_ZERO;
+                setup_blends[0].alphaBlendOp = VK_BLEND_OP_ADD;
+            } else {
+                blend_setup(setup_blends[0], regs.blend);
             }
-            blend_setup(regs.blend_per_target[index]);
+            for (size_t index = 1; index < Maxwell::NumRenderTargets; index++) {
+                setup_blends[index] = setup_blends[0];
+            }
+        } else {
+            for (size_t index = 0; index < Maxwell::NumRenderTargets; index++) {
+                blend_setup(setup_blends[index], regs.blend_per_target[index]);
+            }
         }
         scheduler.Record([setup_blends](vk::CommandBuffer cmdbuf) {
             cmdbuf.SetColorBlendEquationEXT(0, setup_blends);
         });
+#if defined(ANDROID) || defined(__ANDROID__)
+        static u64 blend_eq_diag_count = 0;
+        ++blend_eq_diag_count;
+        if (ShouldAndroidRenderDiagLog(blend_eq_diag_count)) {
+            const auto& b0 = setup_blends[0];
+            LOG_INFO(Render_Vulkan,
+                     "[nxemu-render-diag] blend_eq#{} perTarget={} iterated={} squashed={} "
+                     "rt0(srcC={},dstC={},opC={},srcA={},dstA={},opA={}) guestCommon(srcC={},dstC={},opC={},srcA={},dstA={},opA={})",
+                     blend_eq_diag_count, regs.blend_per_target_enabled, regs.iterated_blend.enable,
+                     regs.iterated_blend.enable && UseSquashedIteratedBlend(),
+                     static_cast<u32>(b0.srcColorBlendFactor),
+                     static_cast<u32>(b0.dstColorBlendFactor), static_cast<u32>(b0.colorBlendOp),
+                     static_cast<u32>(b0.srcAlphaBlendFactor),
+                     static_cast<u32>(b0.dstAlphaBlendFactor), static_cast<u32>(b0.alphaBlendOp),
+                     static_cast<u32>(regs.blend.color_source),
+                     static_cast<u32>(regs.blend.color_dest), static_cast<u32>(regs.blend.color_op),
+                     static_cast<u32>(regs.blend.alpha_source),
+                     static_cast<u32>(regs.blend.alpha_dest), static_cast<u32>(regs.blend.alpha_op));
+        }
+#endif
     }
 }
 

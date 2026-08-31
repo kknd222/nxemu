@@ -50,6 +50,23 @@ std::unique_ptr<Tegra::GPU> CreateGPU(ISystemModules & modules, Core::Frontend::
     } catch (const std::runtime_error& exception) {
         scope.Cancel();
         LOG_ERROR(HW_GPU, "Failed to initialize GPU: {}", exception.what());
+#ifdef ANDROID
+        if (videoSettings.renderer_backend != RendererBackend::Null) {
+            LOG_WARNING(HW_GPU,
+                        "Android GPU renderer initialization failed; falling back to Null renderer");
+            try {
+                auto null_context = emu_window.CreateSharedContext();
+                auto null_scope = null_context->Acquire();
+                auto renderer =
+                    std::make_unique<Null::RendererNull>(emu_window, *gpu, std::move(null_context));
+                gpu->BindRenderer(std::move(renderer));
+                return gpu;
+            } catch (const std::runtime_error& null_exception) {
+                LOG_ERROR(HW_GPU, "Failed to initialize Android Null renderer fallback: {}",
+                          null_exception.what());
+            }
+        }
+#endif
         return nullptr;
     }
 }

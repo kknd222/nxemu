@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/card_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="5dp"
+    android:background="@drawable/eden_game_card"
+    android:gravity="center_vertical"
+    android:orientation="horizontal"
+    android:minHeight="86dp"
+    android:padding="11dp">
+
+    <TextView
+        android:id="@+id/radio_mark"
+        android:layout_width="38dp"
+        android:layout_height="38dp"
+        android:background="@drawable/eden_badge"
+        android:gravity="center"
+        android:text="○"
+        android:textColor="@color/eden_on_primary"
+        android:textSize="20sp" />
+
+    <LinearLayout
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginStart="9dp"
+        android:layout_weight="1"
+        android:orientation="vertical">
+
+        <TextView
+            android:id="@+id/driver_title"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:textColor="@color/eden_on_background"
+            android:textSize="13.5sp"
+            android:textStyle="bold" />
+
+        <TextView
+            android:id="@+id/driver_detail"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="end"
+            android:maxLines="1"
+            android:paddingTop="2dp"
+            android:textColor="@color/eden_on_surface_variant"
+            android:textSize="10.5sp" />
+
+        <TextView
+            android:id="@+id/driver_source"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:ellipsize="middle"
+            android:maxLines="1"
+            android:paddingTop="2dp"
+            android:textColor="#7C757F"
+            android:textSize="9sp" />
+    </LinearLayout>
+</LinearLayout>

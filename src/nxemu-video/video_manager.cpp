@@ -1,4 +1,4 @@
-#include "render_window.h"
+﻿#include "render_window.h"
 #include "video_manager.h"
 #include "video_settings.h"
 #include "yuzu_video_core/control/channel_state.h"
@@ -16,6 +16,29 @@
 #include <chrono>
 #include <future>
 #include <thread>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
+
+namespace {
+void NxemuVideoDiag(const char* category, const std::string& detail) {
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+    __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag", "%s %s", category, detail.c_str());
+#else
+    (void)category;
+    (void)detail;
+#endif
+}
+void NxemuVideoDiag(const char* category, const char* detail) {
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+    __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag", "%s %s", category, detail);
+#else
+    (void)category;
+    (void)detail;
+#endif
+}
+}
 
 extern IModuleSettings * g_settings;
 
@@ -36,10 +59,10 @@ struct VideoManager::Impl
     
     void EmulationStarting(void)
     {
-        if (m_init.valid())
-        {
-            m_init.wait();
-        }
+    if (m_init.valid())
+    {
+        m_init.wait();
+    }
         if (m_gpuCore)
         {
             m_gpuCore->NotifyShutdown();
@@ -58,6 +81,7 @@ struct VideoManager::Impl
         m_gpuCore = VideoCore::CreateGPU(m_modules, *(m_emuWindow.get()), *m_host1x);
         if (!m_gpuCore)
         {
+            NxemuVideoDiag("Video.EmulationStarting", "CreateGPU failed");
             return;
         }
         m_init = std::async(std::launch::async, [this]() {
@@ -105,6 +129,7 @@ struct VideoManager::Impl
                 m_gpuCore->ReleaseContext();
             }
 
+            NxemuVideoDiag("Video.GPUCore", "Start thread");
             m_gpuCore->Start();
         });
     }
@@ -255,6 +280,21 @@ void VideoManager::Host1xUnregisterProcess(uint64_t asid)
 
 void VideoManager::RequestComposite(VideoFramebufferConfig * layers, uint32_t layerCount, VideoNvFence * fences, uint32_t fenceCount)
 {
+    NxemuVideoDiag(
+        "Video.RequestComposite",
+        std::string{"layers="} + std::to_string(layerCount) + " fences=" +
+            std::to_string(fenceCount) +
+            (layerCount > 0 ? (" first_addr=" + std::to_string(layers[0].address) +
+                               " first_w=" + std::to_string(layers[0].width) +
+                               " first_h=" + std::to_string(layers[0].height) +
+                               " first_stride=" + std::to_string(layers[0].stride) +
+                               " first_format=" + std::to_string(layers[0].pixelFormat))
+                            : std::string{}));
+    if (impl == nullptr || impl->m_gpuCore == nullptr)
+    {
+        return;
+    }
+
     std::vector<Tegra::FramebufferConfig> output_layers;
     std::vector<Service::Nvidia::NvFence> output_fences;
     output_layers.reserve(layerCount);
@@ -296,8 +336,19 @@ IChannelState * VideoManager::AllocateChannel()
 
 void VideoManager::PushGPUEntries(int32_t bindId, const uint64_t * commandList, uint32_t commandListSize, const uint32_t * prefetchCommandlist, uint32_t prefetchCommandlistSize)
 {
+    NxemuVideoDiag(
+        "Video.PushGPUEntries",
+        std::string{"bind="} + std::to_string(bindId) + " entries=" +
+            std::to_string(commandListSize) + " prefetch=" +
+            std::to_string(prefetchCommandlistSize));
     Tegra::CommandList entries(commandListSize);
     memcpy(entries.command_lists.data(), commandList, sizeof(uint64_t) * commandListSize);
+    if (commandListSize > 0)
+    {
+        NxemuVideoDiag(
+            "Video.PushGPUEntries.First",
+            std::string{"raw=0x"} + fmt::format("{:X}", static_cast<uint64_t>(commandList[0])));
+    }
     if (prefetchCommandlistSize > 0)
     {
         entries.prefetch_command_list.resize(prefetchCommandlistSize);
@@ -347,26 +398,64 @@ void VideoManager::HandleRasterizerWrite(const uint8_t * pointer, uint64_t size,
     });
 }
 
+void VideoManager::InvalidateGPUMemory(const uint8_t * pointer, uint64_t size)
+{
+    thread_local Common::ScratchBuffer<u32> scratch;
+    impl->m_host1x->MemoryManager().ApplyOpOnPointer(pointer, scratch, [&](DAddr address) {
+        impl->m_gpuCore->InvalidateRegion(address, size);
+    });
+}
+
 void VideoManager::DeregisterHostAction(uint32_t syncpoint_id, uint32_t handle)
 {
+    NxemuVideoDiag(
+        "Video.HostSyncpoint.Deregister",
+        std::string{"syncpt="} + std::to_string(syncpoint_id) + " handle=" +
+            std::to_string(handle));
     impl->m_host1x->GetSyncpointManager().DeregisterHostAction(syncpoint_id, handle);
 }
 
 uint32_t VideoManager::HostSyncpointValue(uint32_t id)
 {
-    return impl->m_host1x->GetSyncpointManager().GetHostSyncpointValue(id);
+    const uint32_t value = impl->m_host1x->GetSyncpointManager().GetHostSyncpointValue(id);
+    NxemuVideoDiag(
+        "Video.HostSyncpoint.Value",
+        std::string{"syncpt="} + std::to_string(id) + " value=" + std::to_string(value));
+    return value;
 }
 
 uint32_t VideoManager::HostSyncpointRegisterAction(uint32_t fence_id, uint32_t target_value, HostActionCallback operation, uint32_t slot, void* userData)
 {
-    return impl->m_host1x->GetSyncpointManager().RegisterHostAction(fence_id, target_value, [operation, userData, slot]() {
+    NxemuVideoDiag(
+        "Video.HostSyncpoint.Register",
+        std::string{"syncpt="} + std::to_string(fence_id) + " target=" +
+            std::to_string(target_value) + " slot=" + std::to_string(slot));
+    const uint32_t handle = impl->m_host1x->GetSyncpointManager().RegisterHostAction(fence_id, target_value, [operation, userData, slot, fence_id, target_value]() {
+        NxemuVideoDiag(
+            "Video.HostSyncpoint.Action",
+            std::string{"syncpt="} + std::to_string(fence_id) + " target=" +
+                std::to_string(target_value) + " slot=" + std::to_string(slot));
         operation(slot, userData);
     });
+    NxemuVideoDiag(
+        "Video.HostSyncpoint.Registered",
+        std::string{"syncpt="} + std::to_string(fence_id) + " target=" +
+            std::to_string(target_value) + " slot=" + std::to_string(slot) +
+            " handle=" + std::to_string(handle));
+    return handle;
 }
 
 void VideoManager::WaitHost(uint32_t syncpoint_id, uint32_t expected_value)
 {
+    NxemuVideoDiag(
+        "Video.HostSyncpoint.WaitHost.Enter",
+        std::string{"syncpt="} + std::to_string(syncpoint_id) + " expected=" +
+            std::to_string(expected_value));
     impl->m_host1x->GetSyncpointManager().WaitHost(syncpoint_id, expected_value);
+    NxemuVideoDiag(
+        "Video.HostSyncpoint.WaitHost.Done",
+        std::string{"syncpt="} + std::to_string(syncpoint_id) + " expected=" +
+            std::to_string(expected_value));
 }
 
 uint32_t VideoManager::ShadersBuilding()

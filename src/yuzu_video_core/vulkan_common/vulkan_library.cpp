@@ -15,7 +15,21 @@ std::shared_ptr<Common::DynamicLibrary> OpenLibrary(
     LOG_DEBUG(Render_Vulkan, "Looking for a Vulkan library");
 #if defined(ANDROID) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
     // Android manages its Vulkan driver from the frontend.
-    return context->GetDriverLibrary();
+    if (context != nullptr) {
+        auto frontend_library = context->GetDriverLibrary();
+        if (frontend_library && frontend_library->IsOpen()) {
+            return frontend_library;
+        }
+    }
+
+    auto library = std::make_shared<Common::DynamicLibrary>();
+    LOG_DEBUG(Render_Vulkan, "Trying Android Vulkan library: libvulkan.so");
+    if (!library->Open("libvulkan.so")) {
+        const std::string filename = Common::DynamicLibrary::GetVersionedFilename("vulkan", 1);
+        LOG_DEBUG(Render_Vulkan, "Trying Android Vulkan library (second attempt): {}", filename);
+        void(library->Open(filename.c_str()));
+    }
+    return library;
 #else
     auto library = std::make_shared<Common::DynamicLibrary>();
 #ifdef __APPLE__

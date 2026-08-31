@@ -281,6 +281,17 @@ nxinterface IModuleInfo
     virtual uint64_t DataSegmentAddr(void) const = 0;
     virtual uint64_t DataSegmentOffset(void) const = 0;
     virtual uint64_t DataSegmentSize(void) const = 0;
+#ifdef _MSC_VER
+    virtual uint64_t PatchSegmentAddr(void) const = 0;
+    virtual uint64_t PatchSegmentOffset(void) const = 0;
+    virtual uint64_t PatchSegmentSize(void) const = 0;
+#else
+    virtual uint64_t PatchSegmentAddr(void) const { return 0; }
+    virtual uint64_t PatchSegmentOffset(void) const { return 0; }
+    virtual uint64_t PatchSegmentSize(void) const { return 0; }
+#endif
+    virtual uint32_t PatchPostHandlerCount(void) const { return 0; }
+    virtual bool PatchPostHandler(uint32_t index, uint64_t * module_pc, uint64_t * patch_pc) const { (void)index; (void)module_pc; (void)patch_pc; return false; }
 };
 
 nxinterface IProcess

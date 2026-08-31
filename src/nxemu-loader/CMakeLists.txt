@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+﻿cmake_minimum_required(VERSION 3.18)
 project(nxemu-loader LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
@@ -21,6 +21,7 @@ target_include_directories(nxemu-loader PRIVATE
     ${CMAKE_BINARY_DIR}/generated
     ${CMAKE_SOURCE_DIR}/external/boost
     ${CMAKE_SOURCE_DIR}/src/3rd_party/nx_tzdb/include
+    ${CMAKE_SOURCE_DIR}/external/oaknut/include
 )
 
 target_compile_definitions(nxemu-loader PRIVATE
@@ -45,3 +46,4 @@ if(ANDROID)
 endif()
 
 set_property(TARGET nxemu-loader PROPERTY POSITION_INDEPENDENT_CODE ON)
+

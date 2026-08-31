@@ -10,6 +10,9 @@
 #include <vector>
 
 #include <fmt/format.h>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 #include "frontend/graphics_context.h"
 #include "yuzu_common/logging/log.h"
@@ -25,6 +28,9 @@
 #include "yuzu_video_core/present.h"
 #include "yuzu_video_core/renderer_vulkan/present/util.h"
 #include "yuzu_video_core/renderer_vulkan/renderer_vulkan.h"
+#include "nxemu-core/settings/identifiers.h"
+#include <nxemu-module-spec/base.h>
+#include <atomic>
 #include "yuzu_video_core/renderer_vulkan/vk_blit_screen.h"
 #include "yuzu_video_core/renderer_vulkan/vk_rasterizer.h"
 #include "yuzu_video_core/renderer_vulkan/vk_scheduler.h"
@@ -40,6 +46,63 @@
 #include "yuzu_video_core/vulkan_common/vulkan_surface.h"
 #include "yuzu_video_core/vulkan_common/vulkan_wrapper.h"
 #include "yuzu_video_core/watermark.h"
+
+
+extern IModuleSettings * g_settings;
+
+namespace {
+std::atomic<uint64_t> g_android_composite_count{};
+std::atomic<uint64_t> g_android_present_count{};
+std::atomic<uint32_t> g_android_last_fb_width{};
+std::atomic<uint32_t> g_android_last_fb_height{};
+std::atomic<uint32_t> g_android_last_fb_stride{};
+std::atomic<uint32_t> g_android_last_fb_format{};
+
+bool NxemuShouldKeepVideoDiag(uint32_t count) {
+    return count <= 8 || count == 16 || count == 32 || count == 64 || (count % 600) == 0;
+}
+
+void NxemuVideoDiag(const char* category, const std::string& detail) {
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag", "%s %s", category, detail.c_str());
+#else
+    (void)category;
+    (void)detail;
+#endif
+}
+void NxemuVideoDiag(const char* category, const char* detail) {
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag", "%s %s", category, detail);
+#else
+    (void)category;
+    (void)detail;
+#endif
+}
+}
+
+extern "C" uint64_t NxemuAndroidGetVulkanCompositeCount() {
+    return g_android_composite_count.load(std::memory_order_relaxed);
+}
+
+extern "C" uint64_t NxemuAndroidGetVulkanPresentCount() {
+    return g_android_present_count.load(std::memory_order_relaxed);
+}
+
+extern "C" uint32_t NxemuAndroidGetVulkanLastFbWidth() {
+    return g_android_last_fb_width.load(std::memory_order_relaxed);
+}
+
+extern "C" uint32_t NxemuAndroidGetVulkanLastFbHeight() {
+    return g_android_last_fb_height.load(std::memory_order_relaxed);
+}
+
+extern "C" uint32_t NxemuAndroidGetVulkanLastFbStride() {
+    return g_android_last_fb_stride.load(std::memory_order_relaxed);
+}
+
+extern "C" uint32_t NxemuAndroidGetVulkanLastFbFormat() {
+    return g_android_last_fb_format.load(std::memory_order_relaxed);
+}
 
 namespace Vulkan
 {
@@ -161,6 +224,29 @@ RendererVulkan::~RendererVulkan()
 
 void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebuffers)
 {
+    static std::atomic<uint32_t> composite_log_counter{};
+    const uint32_t composite_ordinal =
+        composite_log_counter.fetch_add(1, std::memory_order_relaxed) + 1;
+    g_android_composite_count.fetch_add(1, std::memory_order_relaxed);
+    if (!framebuffers.empty()) {
+        g_android_last_fb_width.store(framebuffers[0].width, std::memory_order_relaxed);
+        g_android_last_fb_height.store(framebuffers[0].height, std::memory_order_relaxed);
+        g_android_last_fb_stride.store(framebuffers[0].stride, std::memory_order_relaxed);
+        g_android_last_fb_format.store(static_cast<u32>(framebuffers[0].pixel_format),
+                                       std::memory_order_relaxed);
+    }
+    if (NxemuShouldKeepVideoDiag(composite_ordinal)) {
+        NxemuVideoDiag(
+            "RendererVulkan.Composite",
+            std::string{"count="} + std::to_string(framebuffers.size()) +
+                " ordinal=" + std::to_string(composite_ordinal) +
+                (framebuffers.empty() ? std::string{}
+                                      : (" first_addr=" + std::to_string(framebuffers[0].address) +
+                                         " first_w=" + std::to_string(framebuffers[0].width) +
+                                         " first_h=" + std::to_string(framebuffers[0].height) +
+                                         " first_stride=" + std::to_string(framebuffers[0].stride) +
+                                         " first_format=" + std::to_string(static_cast<u32>(framebuffers[0].pixel_format)))));
+    }
     if (framebuffers.empty())
     {
         return;
@@ -175,10 +261,30 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     if (!render_window.IsShown())
     {
+        NxemuVideoDiag("RendererVulkan.CompositeSkip",
+                                                      "render_window_hidden");
         return;
     }
 
     RenderScreenshot(framebuffers);
+#if defined(__ANDROID__)
+    static std::atomic<uint32_t> android_skip_counter{};
+    const int frame_skip = g_settings != nullptr ? g_settings->GetInt(NXCoreSetting::AndroidFrameSkip) : 0;
+    if (frame_skip > 0) {
+        const uint32_t index = android_skip_counter.fetch_add(1, std::memory_order_relaxed);
+        const uint32_t period = static_cast<uint32_t>(frame_skip + 1);
+        if ((index % period) != 0) {
+            if (NxemuShouldKeepVideoDiag(composite_ordinal)) {
+                NxemuVideoDiag("RendererVulkan.FrameSkip",
+                               std::string{"skip="} + std::to_string(frame_skip) +
+                                   " ordinal=" + std::to_string(composite_ordinal));
+            }
+            gpu.RendererFrameEndNotify();
+            rasterizer.TickFrame();
+            return;
+        }
+    }
+#endif
     Frame * frame = present_manager.GetRenderFrame();
     blit_swapchain.DrawToFrame(rasterizer, frame, framebuffers,
                                render_window.GetFramebufferLayout(), swapchain.GetImageCount(),
@@ -189,6 +295,11 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     }
     scheduler.Flush(*frame->render_ready);
     present_manager.Present(frame);
+    g_android_present_count.fetch_add(1, std::memory_order_relaxed);
+    if (NxemuShouldKeepVideoDiag(composite_ordinal)) {
+        NxemuVideoDiag("RendererVulkan.Present",
+                       std::string{"submitted ordinal="} + std::to_string(composite_ordinal));
+    }
 
     gpu.RendererFrameEndNotify();
     rasterizer.TickFrame();
