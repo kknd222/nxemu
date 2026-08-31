@@ -3247,3 +3247,43 @@ ADB/真机状态：
 5. P1：官方同步必须先把当前 Android 分支提交/备份，再 fetch/merge 官方；当前工作树太脏，不能直接 merge。
 
 记录时间：2026-09-01 00:04:08 +08:00
+
+---
+
+## 2026-09-01 00:11~00:14 推送与 NCE 真机复测
+
+本轮动作：
+- 已将安卓分支推送到用户 GitHub 远程：`kknd222/android-nxemu-port-20260901`。
+- 推送结果：`android-nxemu-port-20260901 -> android-nxemu-port-20260901`。
+- 推送前提交：`0341ef5 Add Android port with NCE altstack support`。
+
+真机复测环境：
+- 设备：realme RMX3700 / Android 13 / serial `b72182d`。
+- APK：`src/android/app/build/outputs/apk/debug/app-debug.apk`。
+- NCE 参数：`-Nce 1 -NceAltStack 1`。
+- 图形参数：`GraphicsCompat=1`、`FrameSkip=0`、`ResolutionSetup=0`、`AspectRatio=4`。
+- 测试结束后已执行 `am force-stop org.nxemu.app.debug` 并锁屏。
+
+Kirby 60 秒探针：
+- 日志目录：`phone-logs/probe-script-20260901-001113`。
+- 游戏：`/sdcard/ns/rom/KirbyStar Allies v4.0.dnsp`。
+- 结果：`STOP_REASON=max-wait reached 60s`、`APP_ALIVE=True`。
+- 关键状态：`nceEnabled=true`、`cpuBackendActual=NCE`。
+- Vulkan present 从 239 增长到 3243，说明渲染持续出帧。
+- 截图确认能显示 Kirby 标题画面；HUD 显示 NCE、Internal~960x540、FB 1920x1080。截图末尾采样约 `47/60 FPS`、`Speed 78%`，需要后续进入正式关卡长测判断是否只是标题/采样/后台波动。
+
+Metal Dogs 45 秒探针：
+- 日志目录：`phone-logs/probe-script-20260901-001237`。
+- 游戏：`/sdcard/ns/rom/Metal Dogs [0100A6E01681C000][v0][JP].dnsp`。
+- 结果：`STOP_REASON=max-wait reached 45s`、`APP_ALIVE=True`。
+- 关键状态：`nceEnabled=true`、`cpuBackendActual=NCE`。
+- Vulkan present 从 39 增长到 2727，持续出帧。
+- 截图确认标题画面正常；HUD 约 `59.6/60 FPS`、`Speed 99%`。
+
+当前结论更新：
+- NCE alternate signal stack 默认 true 后没有观察到 Kirby/Metal Dogs 启动回归。
+- Kirby NCE 已可持续 60 秒不崩并显示标题画面；Metal Dogs NCE 45 秒标题满速。
+- 下一步应做 Kirby 正式关卡 3~5 分钟、Metal Dogs 进入正式游戏内容 3~5 分钟，验证切场景、输入、shader cache、音频同步和长期温度/降频。
+- UI 仍需继续 Eden 化；当前运行页 touch overlay 和 HUD 仍偏调试状态，正式默认应精简成 `FPS / Speed / Temp`，详细 HUD 只在调试开关开启时显示。
+
+记录时间：2026-09-01 00:16:00 +08:00
