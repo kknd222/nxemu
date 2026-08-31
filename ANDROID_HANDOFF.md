@@ -1,6 +1,6 @@
 # NxEmu Android 交接文档
 
-更新时间：2026-09-01 01:47:00 +08:00
+更新时间：2026-09-01 02:03:00 +08:00
 维护规则：后续每次完成阶段性开发、构建、安装、测试、定位或修复后，都要同步更新本文档，保证其他人可以随时接手。
 
 ---
@@ -18,6 +18,44 @@
 - 构建验证：`src/android` 下使用 portable Gradle/JDK 执行 `:app:assembleDebug` 已通过，产物：`src/android/app/build/outputs/apk/debug/app-debug.apk`，时间约 2026-09-01 01:40。
 - 安装验证：已通过 ADB 安装到真机 `b72182d`，`adb install -r -d app-debug.apk` 返回 `Success`；启动 `MainActivity` 5 秒无 FATAL/闪退；随后已 `am force-stop org.nxemu.app.debug` 并锁屏。
 - 待做：真机运行 Kirby/Metal Dogs 做 5 秒探针和按需延长测试；测试后记得 `am force-stop org.nxemu.app.debug` 并锁屏。
+
+---
+
+
+## 0.1 当前总体任务进度（2026-09-01 复核）
+
+当前仓库/分支状态：
+
+- `kknd222/master`：已同步官方 upstream，远端 HEAD 为 `fa9c5e4`。
+- `kknd222/android-nxemu-port-20260901`：已同步官方 upstream + Android 分支改动；安装验证提交为 `33c0e7f`，本文档复核提交在其后。
+- 最新 APK 已构建并安装到真机 `b72182d`；主界面 5 秒启动验证通过，无 FATAL/闪退；安装后已 force-stop 并锁屏。
+
+当前功能状态：
+
+- Android 工程/构建/安装：已形成可重复构建和 ADB 安装流程，当前约 **80%**。
+- 主界面/外壳：已有游戏扫描、最近游戏、驱动入口、设置入口、每游戏配置入口，当前约 **65%**；但距离 Eden 完整 Material/封面墙/二级设置体验仍有差距。
+- 运行页：已有 Surface、触控 overlay、HUD、日志、暂停/返回保护、自动日志，当前约 **65%**；仍需进一步 Eden 化、减少调试按钮感、支持更好的手柄/触控布局调整。
+- `.dnsp/.dxci` 游戏加载链路：当前约 **60%**；Metal Dogs、Kirby、Mystic Gate 均已有进入画面的记录，但不同游戏仍需要分游戏配置和长测。
+- `.nsp/.xci` 原始容器链路：当前不是主目标，仍偏低，约 **25%**；用户当前明确优先 `.dnsp/.dxci`。
+- GPU/自定义驱动链路：当前约 **72%**；可选 ZIP/外置目录/上次选择/每游戏驱动，26.2 对 Kirby 画面更稳，26.3 对部分游戏标题/场景更好但需按游戏验证。
+- NCE：当前约 **55%**；alternate signal stack 默认 true 后，Kirby/Metal Dogs 已有 NCE 短中探针稳定记录，Kirby 正式地图约 `29.6/30 FPS`、Metal Dogs 标题约满速；但仍未达到全游戏白名单/黑名单和长时间稳定标准。
+- 性能优化：当前约 **45%**；NCE 已带来明显改善，但仍缺 shader/cache、GPU 同步、HLE 日志降噪、长时间温度/降频统计。
+- 整体可用度：当前约 **60~65%**；已经不是 PoC 白屏阶段，可以安装、选驱动、跑部分游戏；离“多数游戏可稳定玩”的目标仍差 NCE 长测、驱动兼容库、UI 完整度和更多游戏覆盖。
+
+当前关键代码状态：
+
+- Java/native NCE guard 常量当前为 `false`，即不再硬拦截 NCE；但 `AppPreferences` 的稳定默认迁移会把全局和旧每游戏 `prefer_nce=false`，普通默认仍不主动开 NCE。
+- Kirby/Metal Dogs 内置推荐 profile 可请求 NCE；实际是否开 NCE 以运行页 HUD/native stats 的 `nceEnabled=true` / `CPU NCE` 为准。
+- 默认跳帧 `frameSkip=0`，默认分辨率 `ResolutionSetup=0` 即 1/2X，默认画面比例为拉伸全屏 `AspectRatio=4`。
+
+当前最高优先级：
+
+1. 真机用最新 APK 复测 Kirby 正式关卡 3~5 分钟，确认 NCE + altstack 长一点是否稳定。
+2. 复测 Metal Dogs 正式内容 3~5 分钟，确认 NCE 标题满速后进入游戏内容不再 stall。
+3. UI 继续 Eden 化：主界面、设置子菜单、每游戏配置、驱动页、运行中暂停/快捷菜单统一风格。
+4. 建立每游戏配置/白名单：NCE、驱动、分辨率、图形兼容、跳帧、HUD 详细程度。
+5. 继续同步官方 upstream 时保持流程：先 fetch、先合主线、再合 Android 分支、构建通过后推送。
+
 ---
 
 ## 1. 总目标
@@ -390,91 +428,67 @@ enum class ResolutionSetup : uint32_t {
 
 按优先级：
 
-1. **26.3 驱动下游戏进入实际画面但“进行不下去”**
-   - 需要抓实时日志、会话日志、截图。
-   - 判断是输入问题、HLE service 未实现、GPU 同步/事件、游戏逻辑卡住、过渡黑屏、还是跳帧/性能导致。
+1. **NCE 长时间稳定性与分游戏白名单仍未完成**
+   - 当前 NCE 不再是完全不可用；Kirby/Metal Dogs 已有 NCE + altstack 短中探针成功记录。
+   - 仍需 3~5 分钟以上正式内容长测，确认切场景、shader cache、音频同步、输入、温度降频。
+   - 需要建立每游戏 NCE 白名单/黑名单，不要简单全局强开。
 
-2. **NCE 未启用**
-   - 现在为了稳定 guard=true。
-   - 开 NCE 会崩，需要单独分支/测试路线修。
-   - 性能当前约 38 FPS / speed 64%，离 full speed 还有差距。
+2. **Eden 化 UI 仍未完成**
+   - 当前 UI 有功能，但仍偏工程/调试风，和 Eden 完整体验差距明显。
+   - 需要主界面封面墙、二级设置、每游戏详情/配置、驱动管理、运行中暂停菜单统一风格。
 
-3. **虚拟按键布局不合理**
-   - 当前类似底部按钮条，占画面且不像模拟器。
-   - 要参考其他 Android 模拟器做左右分区 overlay。
+3. **驱动兼容库需要按游戏固化**
+   - Kirby 用户反馈 26.2 画面正常，26.3/T25 曾出现蓝块/色块；后续默认/推荐应按游戏记录。
+   - Metal Dogs、Mystic Gate、Kirby 要分别记录 26.2/26.3/MK/v849 的效果。
 
-4. **自动驱动选择策略需要调整**
-   - 当前可能选 MK-I 或 25.1.9，不一定最佳。
-   - 对 realme / Adreno 725 / Mystic Gate，26.3 画面更正确。
-   - 需支持快速 A/B 测试和记录最后一次稳定驱动。
+4. **运行页触控/手柄体验仍需打磨**
+   - 触控按键已补齐，但大小、透明度、摇杆有效区域、暂停菜单和系统导航规避仍需继续实测。
+   - 外接手柄支持需要单独验证。
 
-5. **性能与统计**
-   - Speed/ms 已显示，但需要确认数据来源可靠。
-   - FPS 在加载/场景切换可能短暂消失，目前已有保留最近非零值兜底。
-
-6. **分辨率实际生效性不清晰**
-   - 需要输出内部渲染尺寸。
+5. **性能与日志降噪**
+   - FPS/Speed/Temp 已能显示，并能识别 30FPS 游戏目标；但 HLE/NVDRV/VI 高噪声日志仍需继续降噪。
+   - 需要记录加载进度、shader/cache 状态和 stall 原因，方便区分“加载慢”和“卡死”。
 
 ---
 
 ## 12. 推荐下一步操作清单
 
-### A. 先抓 26.3 卡住日志
+### A. 最新 APK 真机游戏复测
 
-`powershell
-='D:\project\qwenasr\mobile\android-webview\.tools\android-sdk\platform-tools\adb.exe'
-&  devices
-&  -s b72182d shell pidof org.nxemu.app.debug
-&  -s b72182d shell screencap -p /sdcard/nxemu-stuck.png
-&  -s b72182d pull /sdcard/nxemu-stuck.png 'D:\project\_nxemu_src\phone-logs\nxemu-stuck.png'
-&  -s b72182d logcat -d -v time > 'D:\project\_nxemu_src\phone-logs\full-logcat.txt'
-&  -s b72182d shell ls -lt /sdcard/ns/logs
-&  -s b72182d pull /sdcard/ns/logs/<latest-session>.txt 'D:\project\_nxemu_src\phone-logs\latest-session.txt'
-`
+使用已安装的最新 APK，优先：
 
-重点过滤：
+1. Kirby：NCE=1、NceAltStack=1、GraphicsCompat=1、FrameSkip=0、ResolutionSetup=0、AspectRatio=4，进入正式关卡 3~5 分钟。
+2. Metal Dogs：NCE=1、NceAltStack=1、FrameSkip=0，进入正式内容 3~5 分钟。
+3. Mystic Gate：对比 NCE on/off 与 26.2/26.3 驱动，确认实际游戏内容 FPS/Speed。
 
-`text
-NxEmuAndroid
-NxEmuHleDiag
-AM/applet/service
-hid/input/button
-nvhost_ctrl.EventWait
-Nvnflinger
-VI.Container.ComposeOnDisplay
-Fatal/SIG/crash/Error/Warn
-`
-
-### B. 对比驱动
+### B. 驱动 A/B 表格化
 
 按同一游戏、同一设置、同一操作路径，对比：
 
-1. Turnip-v26.3.0-devel.zip
-2. Turnip-v26.2.0-20260418.zip
+1. Turnip-v26.2.0-20260418.zip
+2. Turnip-v26.3.0-devel.zip
 3. mesa-turnip-main-V26.1-参考项目-fix-latest-crash-fix.zip
-4. 849.zip
-5. Biosensor - MK-I Phoenix.zip（已知花屏，但可看是否流程继续）
+4. v849.zip
+5. Biosensor - MK-I Phoenix.zip
 
-记录每个驱动：是否花屏、是否能对话/继续、FPS/speed、崩溃/卡住点。
+记录每个驱动：是否花屏/蓝块、是否能进入正式内容、FPS/speed、崩溃/卡住点、温度。
 
-### C. UI 改造
+### C. UI 继续 Eden 化
 
-将运行页按键从底部条改为：
+优先把 UI 从“能用的调试壳”推进到“类似 Eden 的产品壳”：
 
-- 左下：D-pad 或摇杆圆盘。
-- 右下：ABXY 菱形。
-- 中下：Select/Start。
-- 右上或侧边：+/-、菜单、日志/设置浮动小按钮。
-- 功能按钮默认折叠，点一个半透明小齿轮展开。
+- 首页：封面墙/列表切换、最近游戏、最后游戏/驱动/配置摘要。
+- 设置：分成系统、图形、CPU/NCE、输入、驱动、日志、关于等子菜单。
+- 每游戏页：独立配置、驱动、NCE、分辨率、图形兼容、日志开关、重置按钮。
+- 运行页：默认只显示 FPS/Speed/Temp，详细 HUD 和日志按钮放进暂停/快捷菜单。
 
-### D. NCE 单独修
+### D. NCE 专项
 
-- 保持默认 guard=true，不影响用户测试。
-- 增加实验开关或 debug build variant 来开 NCE。
-- 开启后抓 tombstone，定位崩溃点。
+- 不再按“完全崩溃”处理；当前重点是长测稳定、stall、分游戏兼容。
+- 继续保留 `debug.nxemu.nce.altstack`、`debug.nxemu.nce.trace` 等 A/B 调试属性。
+- 若出现回退/黑屏/无 FPS，优先拉 `/sdcard/ns/logs` 会话日志、logcat、截图和 tombstone/dropbox。
 
 ---
-
 ## 13. 参考实现方向
 
 优先参考：
@@ -503,25 +517,28 @@ Suyu Android source
 
 ## 14. 已完成进度估计
 
-粗略进度：
+截至 2026-09-01 02:03 复核，粗略进度：
 
-- Android 工程/构建/APK：约 65%
-- UI 基础功能：约 55%
-- 游戏加载 .dnsp/.dxci 链路：约 45%
-- Vulkan/自定义驱动链路：约 60%
-- 真实游戏可进入画面：约 35%
-- NCE：约 15%（条件可触发，但崩溃，默认关闭）
-- 性能优化：约 25%
-- 可交付“能玩多个游戏”的版本：约 20-25%
+- 官方 upstream 同步：**100%**（`kknd222/master` 和 `kknd222/android-nxemu-port-20260901` 均已推送）。
+- Android 工程/构建/APK/安装：**80%**（最新 APK 构建成功并已安装真机；仍需自动化冒烟测试更完善）。
+- UI 外壳基础功能：**65%**（扫描/最近游戏/驱动/设置/每游戏页已有；Eden 化视觉与菜单层级仍不足）。
+- 运行页/HUD/触控：**65%**（可显示 FPS/Speed/Temp、触控按键齐全；仍需更像模拟器产品的暂停菜单、按键编辑、外接手柄验证）。
+- `.dnsp/.dxci` 游戏加载链路：**60%**（多个游戏可进画面/内容；仍需分游戏配置和长测）。
+- `.nsp/.xci` 原始容器链路：**25%**（当前不是优先方向，仍以 `.dnsp/.dxci` 为主）。
+- Vulkan/自定义 GPU 驱动链路：**72%**（可安装/选择/记忆驱动；兼容库和自动推荐未完成）。
+- NCE/性能：**55%**（Kirby/Metal Dogs NCE + altstack 已短中测稳定并可接近满速；仍缺 3~5 分钟正式内容长测、白名单/黑名单、stall 定位）。
+- 游戏兼容性覆盖：**40%**（Mystic Gate、Metal Dogs、Kirby 有记录；样本还少，更新/DLC/本体识别仍需继续）。
+- 整体“能玩多个游戏”的交付度：**60~65%**（可测试可玩，但还不是稳定公测级）。
 
 最新关键里程碑：
 
-- Mystic+Gate.dnsp 已能在真机上进入实际游戏画面。
-- 26.3 Turnip 驱动画面显著优于 MK-I。
-- FPS/Speed/ms overlay 已能显示。
+- 官方主线和 Android 分支已同步并推送。
+- 最新 APK 已安装到 realme 真机，主界面启动 5 秒无闪退。
+- Kirby NCE + altstack：已有 90 秒正式地图探针，约 `29.6/30 FPS`、`Speed 99%`。
+- Metal Dogs NCE：已有标题/菜单满速记录，后续需正式内容 3~5 分钟。
+- 当前默认配置更适合稳定测试：跳帧 0、分辨率 1/2X、拉伸全屏、普通默认不主动开 NCE，但每游戏配置可请求 NCE。
 
 ---
-
 ## 15. 文档维护规则
 
 每次完成以下任意事项后，必须更新本文档：
