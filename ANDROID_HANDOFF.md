@@ -1,6 +1,6 @@
 # NxEmu Android 交接文档
 
-更新时间：2026-09-01 01:45:00 +08:00
+更新时间：2026-09-01 01:47:00 +08:00
 维护规则：后续每次完成阶段性开发、构建、安装、测试、定位或修复后，都要同步更新本文档，保证其他人可以随时接手。
 
 ---
@@ -16,7 +16,8 @@
   - Android JNI 的 `Systemloader().LoadRom(...)` 已适配官方新签名：`LoadRom(path, 0, -1, ApplicationLaunchType::FrontendInitiated)`。
   - `system_display_service.h` 去重合并后的 SharedFrameBuffer 声明。
 - 构建验证：`src/android` 下使用 portable Gradle/JDK 执行 `:app:assembleDebug` 已通过，产物：`src/android/app/build/outputs/apk/debug/app-debug.apk`，时间约 2026-09-01 01:40。
-- 待做：提交 Android merge commit、推送 `kknd222/android-nxemu-port-20260901`，然后真机做 5 秒探针和按需延长测试；测试后记得 `am force-stop org.nxemu.app.debug` 并锁屏。
+- 安装验证：已通过 ADB 安装到真机 `b72182d`，`adb install -r -d app-debug.apk` 返回 `Success`；启动 `MainActivity` 5 秒无 FATAL/闪退；随后已 `am force-stop org.nxemu.app.debug` 并锁屏。
+- 待做：真机运行 Kirby/Metal Dogs 做 5 秒探针和按需延长测试；测试后记得 `am force-stop org.nxemu.app.debug` 并锁屏。
 ---
 
 ## 1. 总目标
