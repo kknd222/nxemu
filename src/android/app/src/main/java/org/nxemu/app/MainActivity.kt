@@ -1260,6 +1260,21 @@ class MainActivity : Activity() {
         }
     }
 
+    private fun shortGamePath(raw: String): String {
+        val normalized = GamePathResolver.normalize(raw).replace('\\', '/')
+        val compact = normalized
+            .replaceFirst(Regex("""^/storage/emulated/0/"""), "/sdcard/")
+            .replaceFirst(Regex("""^content://com\.android\.externalstorage\.documents/tree/primary%3A"""), "SAF:/")
+            .replaceFirst(Regex("""^content://com\.android\.externalstorage\.documents/document/primary%3A"""), "SAF:/")
+        val marker = "/ns/"
+        val markerIndex = compact.indexOf(marker, ignoreCase = true)
+        if (markerIndex >= 0) {
+            return compact.substring(markerIndex).trim('/').let { "路径:$it" }
+        }
+        return compact.substringAfterLast('/').takeIf { it.isNotBlank() }?.let { "路径:…/$it" }
+            ?: "路径:未知"
+    }
+
     private fun roundedBg(color: Int, radius: Float, strokeColor: Long = 0L): GradientDrawable {
         return GradientDrawable().apply {
             setColor(color)
@@ -1931,16 +1946,17 @@ class MainActivity : Activity() {
                 item.gameDetails.text = buildString {
                     append("$ext · ${formatBytes(entry.size)} · ${classifyGameFile(entry.name)}")
                     extractTitleId(entry.name)?.let { append(" · $it") }
+                    append(" · ${shortGamePath(entry.uri.toString())}")
                 }
                 item.gameProfile.text = AppPreferences.profileSummary(this@MainActivity, entry.uri.toString())
-                applyModeLayout(item)
+                applyModeLayout(item, selected)
                 item.cardRoot.setOnClickListener { onSelect(entry) }
                 item.cardRoot.setOnLongClickListener { onLaunch(entry); true }
                 item.buttonStart.setOnClickListener { onLaunch(entry) }
                 item.buttonProperties.setOnClickListener { onProperties(entry) }
             }
 
-            private fun applyModeLayout(item: ItemGameCardBinding) {
+            private fun applyModeLayout(item: ItemGameCardBinding, selected: Boolean) {
                 when (viewMode) {
                     HOME_VIEW_LIST -> {
                         item.contentRow.orientation = LinearLayout.HORIZONTAL
@@ -1969,8 +1985,10 @@ class MainActivity : Activity() {
                             marginStart = 0
                         }
                         item.gameTitle.textSize = 12f
-                        item.gameDetails.visibility = View.GONE
-                        item.gameProfile.visibility = View.GONE
+                        item.gameDetails.visibility = if (selected) View.VISIBLE else View.GONE
+                        item.gameProfile.visibility = if (selected) View.VISIBLE else View.GONE
+                        item.gameDetails.textSize = 10.5f
+                        item.gameProfile.textSize = 10f
                         item.actionsRow.visibility = View.GONE
                     }
                     else -> {
@@ -1984,8 +2002,10 @@ class MainActivity : Activity() {
                             marginStart = 0
                         }
                         item.gameTitle.textSize = 14f
-                        item.gameDetails.visibility = View.GONE
-                        item.gameProfile.visibility = View.GONE
+                        item.gameDetails.visibility = if (selected) View.VISIBLE else View.GONE
+                        item.gameProfile.visibility = if (selected) View.VISIBLE else View.GONE
+                        item.gameDetails.textSize = 11f
+                        item.gameProfile.textSize = 10.5f
                         item.actionsRow.visibility = View.GONE
                     }
                 }
