@@ -1,8 +1,22 @@
-﻿# NxEmu Android 交接文档
+# NxEmu Android 交接文档
 
-更新时间：2026-08-31 22:19:25 +08:00
+更新时间：2026-09-01 01:45:00 +08:00
 维护规则：后续每次完成阶段性开发、构建、安装、测试、定位或修复后，都要同步更新本文档，保证其他人可以随时接手。
 
+---
+
+## 0. 2026-09-01 官方 upstream 同步记录
+
+- 官方 upstream `origin/master` 已 fetch 到 `138fb90`；用户 fork 主线 `kknd222/master` 已合并官方更新并推送，merge commit：`fa9c5e4 Merge official upstream into kknd222 master`。
+- Android 分支当前：`android-nxemu-port-20260901`，在本地已合并 `kknd222-master-sync`（含官方最新），并保留本地 Android/UI/NCE 改动。
+- Android 合并后的构建修复点：
+  - `src/core/hle/result.h` 改为兼容 shim，统一引用 `src/nxemu-os/core/hle/result.h`，避免 Android 兼容 `src/core` 与 `nxemu-os` 两套 Result 定义重复。
+  - 移除官方已删除 microprofile 后残留的 `MICROPROFILE_SCOPE`、`MicroProfileFlip()`、`EnterCPUProfile/ExitCPUProfile/EnterSVCProfile` 调用。
+  - 恢复 Android NCE 诊断需要的 `NXLoaderSetting::Has39BitAddressSpace` 和 `is_39bit` 计算。
+  - Android JNI 的 `Systemloader().LoadRom(...)` 已适配官方新签名：`LoadRom(path, 0, -1, ApplicationLaunchType::FrontendInitiated)`。
+  - `system_display_service.h` 去重合并后的 SharedFrameBuffer 声明。
+- 构建验证：`src/android` 下使用 portable Gradle/JDK 执行 `:app:assembleDebug` 已通过，产物：`src/android/app/build/outputs/apk/debug/app-debug.apk`，时间约 2026-09-01 01:40。
+- 待做：提交 Android merge commit、推送 `kknd222/android-nxemu-port-20260901`，然后真机做 5 秒探针和按需延长测试；测试后记得 `am force-stop org.nxemu.app.debug` 并锁屏。
 ---
 
 ## 1. 总目标

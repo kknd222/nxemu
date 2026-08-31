@@ -30,14 +30,14 @@ private:
         u64 buffer_id, ClientAppletResourceUserId aruid);
     Result OpenSharedLayer(u64 layer_id);
     Result ConnectSharedLayer(u64 layer_id);
+    Result GetSharedFrameBufferAcquirableEvent(OutCopyHandle<Kernel::KReadableEvent> out_event,
+                                               u64 layer_id);
     Result AcquireSharedFrameBuffer(Out<android::Fence> out_fence,
-                                    Out<std::array<s32, 4>> out_slots,
-                                    Out<s64> out_target_slot, u64 layer_id);
+                                    Out<std::array<s32, 4>> out_slots, Out<s64> out_target_slot,
+                                    u64 layer_id);
     Result PresentSharedFrameBuffer(android::Fence fence, Common::Rectangle<s32> crop_region,
                                     u32 window_transform, s32 swap_interval, u64 layer_id,
                                     s64 surface_id);
-    Result GetSharedFrameBufferAcquirableEvent(OutCopyHandle<Kernel::KReadableEvent> out_event,
-                                               u64 layer_id);
     Result CancelSharedFrameBuffer(u64 layer_id, s64 slot);
 
 private:

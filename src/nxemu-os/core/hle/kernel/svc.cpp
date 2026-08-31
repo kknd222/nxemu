@@ -4535,7 +4535,6 @@ void Call(Core::System& system, u32 imm) {
 
     uint64_t args[8];
     kernel.CurrentPhysicalCore().SaveSvcArguments(process, args);
-    kernel.EnterSVCProfile();
     const bool log_svc = ShouldLogSvc(imm);
     if (log_svc) {
         const auto ctx = thread.GetContext();
@@ -4552,7 +4551,6 @@ void Call(Core::System& system, u32 imm) {
         Call32(system, imm, args);
     }
 
-    kernel.ExitSVCProfile();
     kernel.CurrentPhysicalCore().LoadSvcArguments(process, args);
     if (log_svc) {
         const auto ctx = thread.GetContext();

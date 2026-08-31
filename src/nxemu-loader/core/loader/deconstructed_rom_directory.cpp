@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/loader/deconstructed_rom_directory.h"
@@ -253,7 +253,7 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     IOperatingSystem & operatingSystem = systemModules.OperatingSystem();
     uint64_t base_address = 0;
     uint64_t processID = 0;
-    if (!operatingSystem.CreateApplicationProcess(code_size, metadata, base_address, processID, is_hbl))
+    if (!operatingSystem.SetupCurrentProcess(code_size, metadata, base_address, processID, is_hbl))
     {
         return {LoaderResultStatus::ErrorUnableToParseKernelMetadata, {}};
     }

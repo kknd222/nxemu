@@ -61,8 +61,6 @@ add_library(yuzu_common STATIC
     lz4_compression.h
     make_unique_for_overwrite.h
     math_util.h
-    microprofile.cpp
-    microprofile.h
     multi_level_page_table.cpp
     multi_level_page_table.h
     overflow.h
@@ -182,7 +180,7 @@ target_include_directories(yuzu_common PUBLIC
     ${CMAKE_CURRENT_SOURCE_DIR}/..
 )
 
-target_link_libraries(yuzu_common PUBLIC Boost::context Boost::headers fmt::fmt microprofile stb::headers Threads::Threads)
+target_link_libraries(yuzu_common PUBLIC Boost::context Boost::headers fmt::fmt stb::headers Threads::Threads)
 target_link_libraries(yuzu_common PRIVATE lz4::lz4 zstd::zstd)
 
 create_target_directory_groups(yuzu_common)

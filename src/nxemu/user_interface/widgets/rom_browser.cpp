@@ -1,5 +1,6 @@
 #include "rom_browser.h"
 #include "user_interface/html_utils.h"
+#include "user_interface/app_events.h"
 #include "user_interface/sciter_main_window.h"
 #include "settings/ui_settings.h"
 #include <map>
@@ -22,7 +23,6 @@ namespace
 {
 enum
 {
-    EVENT_UPDATE_LIST = 0x1000,
     TIMER_UPDATE_UI = 1,
 };
 
@@ -230,7 +230,7 @@ bool WidgetRomBrowser::RenderUI()
     return false;
 }
 
-bool WidgetRomBrowser::OnEvent(SCITER_ELEMENT element, SCITER_ELEMENT source, uint32_t event_code, uint64_t /*reason*/)
+bool WidgetRomBrowser::OnEvent(SCITER_ELEMENT /*element*/, SCITER_ELEMENT source, uint32_t event_code, uint64_t /*reason*/)
 {
     if (event_code == EVENT_UPDATE_LIST && !m_updatingUI)
     {

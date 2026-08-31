@@ -3,7 +3,6 @@
 
 #include "yuzu_video_core/dma_pusher.h"
 #include "yuzu_common/cityhash.h"
-#include "yuzu_common/microprofile.h"
 #include "yuzu_common/settings.h"
 #include "yuzu_video_core/engines/maxwell_3d.h"
 #include "yuzu_video_core/gpu.h"
@@ -29,11 +28,8 @@ DmaPusher::DmaPusher(GPU & gpu_, MemoryManager & memory_manager_, Control::Chann
 
 DmaPusher::~DmaPusher() = default;
 
-MICROPROFILE_DEFINE(DispatchCalls, "GPU", "Execute command buffer", MP_RGB(128, 128, 192));
-
 void DmaPusher::DispatchCalls()
 {
-    MICROPROFILE_SCOPE(DispatchCalls);
 #if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
     __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag",
                         "Video.DmaPusher.DispatchCalls queued=%zu", dma_pushbuffer.size());

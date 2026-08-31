@@ -6,7 +6,6 @@
 #include <chrono>
 #include <cstddef>
 #include <deque>
-#include <functional>
 #include <memory>
 #include <mutex>
 #include <span>
@@ -275,6 +274,9 @@ public:
     /// Provides a constant pointer to the application process.
     [[nodiscard]] const Kernel::KProcess * ApplicationProcess() const;
 
+    void SetCurrentProcess(Kernel::KProcess * process);
+    [[nodiscard]] Kernel::KProcess * CurrentProcess() const;
+
     ICoreTiming & Timing() override;
 
     /// Provides a reference to the core timing instance.
@@ -373,12 +375,6 @@ public:
     /// Register a host thread as an auxiliary thread.
     void RegisterHostThread();
 
-    /// Enter CPU Microprofile
-    void EnterCPUProfile();
-
-    /// Exit CPU Microprofile
-    void ExitCPUProfile();
-
     /// Tells if system is running on multicore.
     [[nodiscard]] bool IsMulticore() const;
 
@@ -388,16 +384,13 @@ public:
     /// Runs a server instance until shutdown.
     void RunServer(std::unique_ptr<Service::ServerManager> && server_manager);
 
-    /// Type used for the frontend to designate a callback for System to re-launch the application
-    /// using a specified program index.
-    using ExecuteProgramCallback = std::function<void(std::size_t)>;
-
     /**
      * Registers a callback from the frontend for System to re-launch the application using a
      * specified program index.
      * @param callback Callback from the frontend to relaunch the application.
+     * @param userData Opaque pointer passed back to the callback.
      */
-    void RegisterExecuteProgramCallback(ExecuteProgramCallback && callback);
+    void RegisterExecuteProgramCallback(::ExecuteProgramCallback callback, void * userData);
 
     /**
      * Instructs the frontend to re-launch the application using the specified program_index.
@@ -411,14 +404,12 @@ public:
      */
     [[nodiscard]] std::deque<std::vector<u8>> & GetUserChannel();
 
-    /// Type used for the frontend to designate a callback for System to exit the application.
-    using ExitCallback = std::function<void()>;
-
     /**
      * Registers a callback from the frontend for System to exit the application.
      * @param callback Callback from the frontend to exit the application.
+     * @param userData Opaque pointer passed back to the callback.
      */
-    void RegisterExitCallback(ExitCallback && callback);
+    void RegisterExitCallback(::ExitCallback callback, void * userData);
 
     /// Instructs the frontend to exit the application.
     void Exit();

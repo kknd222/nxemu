@@ -32,7 +32,7 @@ public:
     bool IsShuttingDown() const override;
     bool IsPoweredOn() const override;
     void ShutdownMainProcess() override;
-    bool CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl) override;
+    bool SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl) override;
     void StartApplicationProcess(int32_t priority, int64_t stackSize, uint32_t version, StorageId baseGameStorageId, StorageId updateStorageId, uint8_t * nacpData, uint32_t nacpDataLen) override;
     void SetMainThreadStartupArguments(uint64_t argument0, uint64_t argument1, uint64_t mainThreadHandleWriteAddress) override;
     bool LoadModule(const IModuleInfo & module, uint64_t baseAddress) override;
@@ -75,15 +75,25 @@ public:
     bool GetProfileImagePath(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], char * out_path, uint32_t out_path_size) const override;
     void RegisterCheatMetadata(const uint8_t build_id[32], uint64_t main_region_begin, uint64_t main_region_size) override;
     void RequestGuestCpuSample();
+    void SetApplicationLaunchParameters(int32_t program_index, int32_t previous_program_index, ApplicationLaunchType launch_type) override;
+    void RegisterExecuteProgramCallback(ExecuteProgramCallback callback, void * userData) override;
+    void RegisterExitCallback(ExitCallback callback, void * userData) override;
+    void ExportUserChannel(UserChannelEntryCallback callback, void * userData) override;
+    void PushUserChannelEntry(const uint8_t * data, uint32_t size) override;
 
 private:
     OSManager() = delete;
     OSManager(const OSManager &) = delete;
     OSManager & operator=(const OSManager &) = delete;
 
+    bool CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl);
+
     Core::System m_coreSystem;
     ISystemModules & m_modules;
-    Kernel::KProcess * m_process;
+    Kernel::KProcess * m_applicationProcess;
     std::unique_ptr<EmuThread> m_emuThread;
     std::vector<LoadedModuleRange> m_loadedModules;
+    int32_t m_programIndex;
+    int32_t m_previousProgramIndex;
+    ApplicationLaunchType m_launchType;
 };

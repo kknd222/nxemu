@@ -522,6 +522,9 @@ nxinterface ICacheInvalidator
 };
 
 typedef void (*DeviceEnumCallback)(const char * device, void * userData);
+typedef void (*ExecuteProgramCallback)(size_t program_index, void * userData);
+typedef void (*ExitCallback)(void * userData);
+typedef void (*UserChannelEntryCallback)(const uint8_t * data, uint32_t size, void * userData);
 
 nxinterface IParamPackage
 {
@@ -668,7 +671,7 @@ nxinterface IOperatingSystem
     virtual bool IsShuttingDown() const = 0;
     virtual bool IsPoweredOn() const = 0;
     virtual void ShutdownMainProcess() = 0;
-    virtual bool CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl) = 0;
+    virtual bool SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl) = 0;
     virtual void StartApplicationProcess(int32_t priority, int64_t stackSize, uint32_t version, StorageId baseGameStorageId, StorageId updateStorageId, uint8_t * nacpData, uint32_t nacpDataLen) = 0;
     virtual void SetMainThreadStartupArguments(uint64_t argument0, uint64_t argument1, uint64_t mainThreadHandleWriteAddress) = 0;
     virtual bool LoadModule(const IModuleInfo & module, uint64_t baseAddress) = 0;
@@ -710,6 +713,11 @@ nxinterface IOperatingSystem
     virtual bool SetProfileImage(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], const uint8_t * image_data, uint32_t image_size) = 0;
     virtual bool GetProfileImagePath(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], char * out_path, uint32_t out_path_size) const = 0;
     virtual void RegisterCheatMetadata(const uint8_t build_id[32], uint64_t main_region_begin, uint64_t main_region_size) = 0;
+    virtual void SetApplicationLaunchParameters(int32_t program_index, int32_t previous_program_index, ApplicationLaunchType launch_type) = 0;
+    virtual void RegisterExecuteProgramCallback(ExecuteProgramCallback callback, void * userData) = 0;
+    virtual void RegisterExitCallback(ExitCallback callback, void * userData) = 0;
+    virtual void ExportUserChannel(UserChannelEntryCallback callback, void * userData) = 0;
+    virtual void PushUserChannelEntry(const uint8_t * data, uint32_t size) = 0;
 };
 
 EXPORT IOperatingSystem * CALL CreateOperatingSystem(ISystemModules & modules);

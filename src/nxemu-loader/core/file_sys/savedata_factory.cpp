@@ -206,6 +206,17 @@ SaveDataFactoryImpl::~SaveDataFactoryImpl()
 {
 }
 
+bool SaveDataFactoryImpl::CreateSaveData(IVirtualDirectory ** out_save_data, SaveDataSpaceId space, const SaveDataAttribute & attribute)
+{
+    FileSys::VirtualDir out_dir = m_saveDataFactory->Create(space, attribute);
+    if (out_dir == nullptr)
+    {
+        return false;
+    }
+    *out_save_data = std::make_unique<VirtualDirectoryImpl>(out_dir).release();
+    return true;
+}
+
 bool SaveDataFactoryImpl::OpenSaveData(IVirtualDirectory ** out_save_data, SaveDataSpaceId space, const SaveDataAttribute & attribute)
 {
     FileSys::VirtualDir out_dir = m_saveDataFactory->Open(space, attribute);
@@ -215,6 +226,14 @@ bool SaveDataFactoryImpl::OpenSaveData(IVirtualDirectory ** out_save_data, SaveD
     }
     *out_save_data = std::make_unique<VirtualDirectoryImpl>(out_dir).release();
     return true;
+}
+
+void SaveDataFactoryImpl::SetAutoCreate(bool state)
+{
+    if (m_saveDataFactory)
+    {
+        m_saveDataFactory->SetAutoCreate(state);
+    }
 }
 
 void SaveDataFactoryImpl::Release()

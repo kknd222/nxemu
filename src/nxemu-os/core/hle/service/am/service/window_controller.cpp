@@ -73,6 +73,7 @@ Result IWindowController::SetAppletWindowVisibility(bool visible) {
                                          std::string{"visible="} +
                                              (visible ? "true" : "false"));
     m_applet->display_layer_manager.SetWindowVisibility(visible);
+    m_applet->hid_registration.EnableAppletToGetInput(visible);
 
     if (visible) {
         m_applet->message_queue.PushMessage(AppletMessage::ChangeIntoForeground);

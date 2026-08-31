@@ -47,3 +47,4 @@ endif()
 
 set_property(TARGET nxemu-loader PROPERTY POSITION_INDEPENDENT_CODE ON)
 
+nxemu_set_module_output(nxemu-loader loader)

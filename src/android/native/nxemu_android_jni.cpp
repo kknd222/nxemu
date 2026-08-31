@@ -1,4 +1,4 @@
-﻿#include <jni.h>
+#include <jni.h>
 
 #include <array>
 #include <algorithm>
@@ -920,7 +920,7 @@ std::string LaunchPathFreshLocked(const std::string& host_path, const char* reas
     }
 
     __android_log_print(ANDROID_LOG_INFO, LogTag, "launchFresh LoadRom begin: %s", host_path.c_str());
-    const bool loaded = g_system_modules->Modules().Systemloader().LoadRom(host_path.c_str());
+    const bool loaded = g_system_modules->Modules().Systemloader().LoadRom(host_path.c_str(), 0, -1, ApplicationLaunchType::FrontendInitiated);
     g_last_boot_loaded = loaded;
     out << "launchFresh=" << (loaded ? "LoadRom accepted" : "LoadRom failed");
     return out.str();
@@ -1423,7 +1423,7 @@ Java_org_nxemu_app_NativeLibrary_bootGame(JNIEnv* env, jclass, jstring path) {
         __android_log_print(ANDROID_LOG_INFO, LogTag, "bootGame LoadRom begin: %s", raw_path);
         InstallAndroidFatalSignalDiagnostics();
         MarkLoadStage("LoadRom running");
-        const bool loaded = g_system_modules->Modules().Systemloader().LoadRom(raw_path);
+        const bool loaded = g_system_modules->Modules().Systemloader().LoadRom(raw_path, 0, -1, ApplicationLaunchType::FrontendInitiated);
         InstallAndroidFatalSignalDiagnostics();
         RefreshNceEnabledLocked("after-loadrom");
         MarkLoadStage(loaded ? "LoadRom accepted" : "LoadRom failed");

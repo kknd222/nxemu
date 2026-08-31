@@ -119,7 +119,6 @@ void PhysicalCore::RunThread(Kernel::KThread * thread)
     const auto EnterContext = [&]() {
         NXEMU_ANDROID_CPU_TRACE(Core_ARM, "Android NCE PhysicalCore EnterContext begin: core={} interrupted={}",
                  m_core_index, m_is_interrupted);
-        system.EnterCPUProfile();
 
         // Lock the core context.
         std::scoped_lock lk{m_guard};
@@ -155,8 +154,6 @@ void PhysicalCore::RunThread(Kernel::KThread * thread)
         // On exit, we no longer are running.
         m_cpucore = nullptr;
         m_current_thread = nullptr;
-
-        system.ExitCPUProfile();
         NXEMU_ANDROID_CPU_TRACE(Core_ARM, "Android NCE PhysicalCore ExitContext end: core={}", m_core_index);
     };
 

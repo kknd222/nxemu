@@ -476,7 +476,10 @@ extern IModuleSettings * g_settings;
 OSManager::OSManager(ISystemModules & modules) :
     m_modules(modules),
     m_coreSystem(modules),
-    m_process(nullptr)
+    m_applicationProcess(nullptr),
+    m_programIndex(0),
+    m_previousProgramIndex(-1),
+    m_launchType(ApplicationLaunchType::FrontendInitiated)
 {
     g_active_os_manager = this;
 }
@@ -487,16 +490,17 @@ OSManager::~OSManager()
     {
         g_active_os_manager = nullptr;
     }
-    if (m_process != nullptr)
+    if (m_applicationProcess != nullptr)
     {
-        m_process->Close();
-        m_process = nullptr;
+        m_applicationProcess->Close();
+        m_applicationProcess = nullptr;
     }
 }
 
 void OSManager::RequestGuestCpuSample()
 {
-    if (m_process == nullptr)
+    Kernel::KProcess * const process = m_coreSystem.CurrentProcess() != nullptr ? m_coreSystem.CurrentProcess() : m_applicationProcess;
+    if (process == nullptr)
     {
         Service::NxemuAndroidDiagnostics::RecordEvent("OS.CpuSample", "process=null");
         return;
@@ -504,14 +508,14 @@ void OSManager::RequestGuestCpuSample()
 
     int thread_count = 0;
     {
-        Kernel::KScopedLightLock lk(m_process->GetListLock());
-        for (auto it = m_process->GetThreadList().begin(); it != m_process->GetThreadList().end(); ++it)
+        Kernel::KScopedLightLock lk(process->GetListLock());
+        for (auto it = process->GetThreadList().begin(); it != process->GetThreadList().end(); ++it)
         {
             auto * thread = std::addressof(*it);
             const auto ctx = thread->GetContext();
             std::array<uint8_t, 32> pc_bytes{};
             const bool pc_bytes_ok =
-                m_process->GetCoreMemory().ReadBlock(ctx.pc, pc_bytes.data(), 16);
+                process->GetCoreMemory().ReadBlock(ctx.pc, pc_bytes.data(), 16);
             Service::NxemuAndroidDiagnostics::RecordEvent(
                 "OS.Thread",
                 fmt::format("tid={} state={} wait={} core={} pc={:#x} lr={:#x} sp={:#x} "
@@ -554,16 +558,23 @@ void OSManager::EmulationStarting()
 {
     g_settings->SetBool(NXOsSetting::UseSpeedLimit, true);
 
-    m_emuThread = std::make_unique<EmuThread>(m_coreSystem, m_process);
+    m_emuThread = std::make_unique<EmuThread>(m_coreSystem, m_applicationProcess);
     m_emuThread->Start();
 }
 
 void OSManager::EmulationStopping(bool wait)
 {
     g_settings->SetBool(NXOsSetting::UseSpeedLimit, true);
+    g_settings->SetBool(NXCoreSetting::Has39BitAddressSpace, false);
 
     if (m_emuThread)
     {
+        m_coreSystem.SetShuttingDown(true);
+        if (m_coreSystem.IsPoweredOn())
+        {
+            m_coreSystem.SetExitRequested(true);
+            m_coreSystem.GetAppletManager().RequestExit();
+        }
         m_emuThread->Stop();
         if (wait)
         {
@@ -606,62 +617,94 @@ void OSManager::ShutdownMainProcess()
     m_coreSystem.ShutdownMainProcess();
 }
 
+bool OSManager::SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl)
+{
+    if (m_applicationProcess == nullptr)
+    {
+        return CreateApplicationProcess(codeSize, metaData, baseAddress, processID, is_hbl);
+    }
+    Kernel::KProcess * const current = m_coreSystem.CurrentProcess();
+    if (current == nullptr)
+    {
+        UNIMPLEMENTED();
+        return false;
+    }
+    if (current->LoadFromMetadata(metaData, codeSize, 0, is_hbl).IsError())
+    {
+        return false;
+    }
+    processID = current->GetProcessId();
+    baseAddress = GetInteger(current->GetEntryPoint());
+    return true;
+}
+
 bool OSManager::CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl)
 {
-    if (m_process != nullptr)
+    if (m_applicationProcess != nullptr)
     {
         return false;
     }
     m_coreSystem.InitializeKernel(metaData.GetTitleID());
     Kernel::KernelCore & kernel = m_coreSystem.Kernel();
-    m_process = Kernel::KProcess::Create(kernel);
-    if (m_process == nullptr)
+    m_applicationProcess = Kernel::KProcess::Create(kernel);
+    if (m_applicationProcess == nullptr)
     {
         return false;
     }
-    Kernel::KProcess::Register(kernel, m_process);
-    kernel.AppendNewProcess(m_process);
-    kernel.MakeApplicationProcess(m_process);
+    Kernel::KProcess::Register(kernel, m_applicationProcess);
+    kernel.AppendNewProcess(m_applicationProcess);
+    kernel.MakeApplicationProcess(m_applicationProcess);
+    g_settings->SetBool(NXCoreSetting::Has39BitAddressSpace, metaData.GetAddressSpaceType() == ProgramAddressSpaceType::Is39Bit);
 
-    if (m_process->LoadFromMetadata(metaData, codeSize, 0, is_hbl).IsError())
+    if (m_applicationProcess->LoadFromMetadata(metaData, codeSize, 0, is_hbl).IsError())
     {
         return false;
     }
-    
+
     auto params = Service::AM::FrontendAppletParameters{
         .applet_id = Service::AM::AppletId::Application,
         .applet_type = Service::AM::AppletType::Application,
-        .launch_type = Service::AM::LaunchType::FrontendInitiated,
+        .launch_type = m_launchType == ApplicationLaunchType::ApplicationInitiated
+                           ? Service::AM::LaunchType::ApplicationInitiated
+                           : Service::AM::LaunchType::FrontendInitiated,
+        .program_index = m_programIndex,
+        .previous_program_index = m_previousProgramIndex,
     };
     params.program_id = metaData.GetTitleID();
-    m_coreSystem.GetAppletManager().CreateAndInsertByFrontendAppletParameters(m_process->GetProcessId(), params);
+    m_coreSystem.GetAppletManager().CreateAndInsertByFrontendAppletParameters(m_applicationProcess->GetProcessId(), params);
 
-    processID = m_process->GetProcessId();
-    baseAddress = GetInteger(m_process->GetEntryPoint());
+    processID = m_applicationProcess->GetProcessId();
+    baseAddress = GetInteger(m_applicationProcess->GetEntryPoint());
     Service::NxemuAndroidDiagnostics::RecordEvent(
         "OS.CreateApplicationProcess",
         fmt::format("program_id={:016X} codeSize={:#x} entry={:#x} processID={} is_hbl={}",
                     metaData.GetTitleID(), codeSize, baseAddress, processID, is_hbl));
+
+    m_programIndex = 0;
+    m_previousProgramIndex = -1;
+    m_launchType = ApplicationLaunchType::FrontendInitiated;
     return true;
 }
 
 void OSManager::StartApplicationProcess(int32_t priority, int64_t stackSize, uint32_t version, StorageId baseGameStorageId, StorageId updateStorageId, uint8_t * nacpData, uint32_t nacpDataLen)
 {
-    m_coreSystem.AddGlueRegistrationForProcess(*m_process, version, baseGameStorageId, updateStorageId, nacpData, nacpDataLen);
-    m_process->Run(priority, stackSize);
+    m_coreSystem.AddGlueRegistrationForProcess(*m_applicationProcess, version, baseGameStorageId, updateStorageId, nacpData, nacpDataLen);
+    m_applicationProcess->Run(priority, stackSize);
 }
 
 void OSManager::SetMainThreadStartupArguments(uint64_t argument0, uint64_t argument1, uint64_t mainThreadHandleWriteAddress)
 {
-    if (m_process != nullptr)
+    Kernel::KProcess * const process = m_coreSystem.CurrentProcess() != nullptr ? m_coreSystem.CurrentProcess() : m_applicationProcess;
+    if (process != nullptr)
     {
-        m_process->SetMainThreadStartupArguments(argument0, argument1, mainThreadHandleWriteAddress);
+        process->SetMainThreadStartupArguments(argument0, argument1, mainThreadHandleWriteAddress);
     }
 }
 
 bool OSManager::LoadModule(const IModuleInfo & module, uint64_t baseAddress)
 {
-    if (m_process == nullptr)
+    Kernel::KProcess * const process = m_coreSystem.CurrentProcess() != nullptr ? m_coreSystem.CurrentProcess() : m_applicationProcess;
+    if (process == nullptr)
     {
         return false;
     }
@@ -679,17 +722,18 @@ bool OSManager::LoadModule(const IModuleInfo & module, uint64_t baseAddress)
                                                 module.RODataSegmentSize(),
                                                 module.DataSegmentAddr(),
                                                 module.DataSegmentSize()});
-    m_process->LoadModule(module, baseAddress);
+    process->LoadModule(module, baseAddress);
     return true;
 }
 
 bool OSManager::ReadApplicationMemory(uint64_t address, void * out_buffer, uint64_t size)
 {
-    if (m_process == nullptr || out_buffer == nullptr || size == 0)
+    Kernel::KProcess * const process = m_coreSystem.CurrentProcess() != nullptr ? m_coreSystem.CurrentProcess() : m_applicationProcess;
+    if (process == nullptr || out_buffer == nullptr || size == 0)
     {
         return false;
     }
-    return m_process->GetCoreMemory().ReadBlock(address, out_buffer, size);
+    return process->GetCoreMemory().ReadBlock(address, out_buffer, size);
 }
 
 void OSManager::RegisterCheatMetadata(const uint8_t build_id_raw[32], uint64_t main_region_begin, uint64_t main_region_size)
@@ -1118,4 +1162,43 @@ bool OSManager::GetProfileImagePath(const uint8_t uuid_bytes[HOST_PROFILE_UUID_S
 
     std::memcpy(out_path, path.c_str(), path.size() + 1);
     return true;
+}
+
+void OSManager::SetApplicationLaunchParameters(int32_t program_index, int32_t previous_program_index, ApplicationLaunchType launch_type)
+{
+    m_programIndex = program_index;
+    m_previousProgramIndex = previous_program_index;
+    m_launchType = launch_type;
+}
+
+void OSManager::RegisterExecuteProgramCallback(ExecuteProgramCallback callback, void * userData)
+{
+    m_coreSystem.RegisterExecuteProgramCallback(callback, userData);
+}
+
+void OSManager::RegisterExitCallback(ExitCallback callback, void * userData)
+{
+    m_coreSystem.RegisterExitCallback(callback, userData);
+}
+
+void OSManager::ExportUserChannel(UserChannelEntryCallback callback, void * userData)
+{
+    if (callback == nullptr)
+    {
+        return;
+    }
+    for (const auto & entry : m_coreSystem.GetUserChannel())
+    {
+        callback(entry.data(), (uint32_t)entry.size(), userData);
+    }
+}
+
+void OSManager::PushUserChannelEntry(const uint8_t * data, uint32_t size)
+{
+    if (data == nullptr || size == 0)
+    {
+        m_coreSystem.GetUserChannel().emplace_back();
+        return;
+    }
+    m_coreSystem.GetUserChannel().emplace_back(data, data + size);
 }

@@ -5,7 +5,6 @@
 #include <atomic>
 
 #include "yuzu_audio_core/audio_core.h"
-#include "yuzu_common/microprofile.h"
 #include "yuzu_common/hardware_properties.h"
 #include "yuzu_common/hex_util.h"
 #include "core/core.h"
@@ -35,10 +34,9 @@
 #include <nxemu-module-spec/system_loader.h>
 #include <nxemu-video/video_settings_identifiers.h>
 
-MICROPROFILE_DEFINE(ARM_CPU0, "ARM", "CPU 0", MP_RGB(255, 64, 64));
-MICROPROFILE_DEFINE(ARM_CPU1, "ARM", "CPU 1", MP_RGB(255, 64, 64));
-MICROPROFILE_DEFINE(ARM_CPU2, "ARM", "CPU 2", MP_RGB(255, 64, 64));
-MICROPROFILE_DEFINE(ARM_CPU3, "ARM", "CPU 3", MP_RGB(255, 64, 64));
+#ifdef _WIN32
+#include "yuzu_common/windows/timer_resolution.h"
+#endif
 
 extern IModuleSettings * g_settings;
 
@@ -68,6 +66,12 @@ struct System::Impl {
     void Initialize(System& system)
     {
         is_multicore = true; // osSettings.use_multi_core;
+
+#ifdef _WIN32
+        const std::chrono::nanoseconds timer_resolution = Common::Windows::SetCurrentTimerResolutionToMaximum();
+        core_timing.SetTimerResolutionNs(timer_resolution);
+        LOG_INFO(Core, "Host Timer Resolution: {:.4f} ms", std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(timer_resolution).count());
+#endif
 
         core_timing.SetMulticore(is_multicore);
         core_timing.Initialize([&system]() { system.RegisterHostThread(); });
@@ -174,11 +178,6 @@ struct System::Impl {
         exit_locked = false;
         exit_requested = false;
 
-        microprofile_cpu[0] = MICROPROFILE_TOKEN(ARM_CPU0);
-        microprofile_cpu[1] = MICROPROFILE_TOKEN(ARM_CPU1);
-        microprofile_cpu[2] = MICROPROFILE_TOKEN(ARM_CPU2);
-        microprofile_cpu[3] = MICROPROFILE_TOKEN(ARM_CPU3);
-
         perf_stats = std::make_unique<PerfStats>(titleID);
 
         // Reset counters and set time origin to current frame
@@ -283,16 +282,18 @@ struct System::Impl {
     bool is_multicore{};
     bool is_async_gpu{};
 
-    ExecuteProgramCallback execute_program_callback;
+    ::ExecuteProgramCallback execute_program_callback{};
+    void * execute_program_user_data{};
+    ::ExitCallback exit_callback{};
+    void * exit_user_data{};
     std::stop_source stop_event;
-
-    std::array<u64, Hardware::NUM_CPU_CORES> dynarmic_ticks{};
-    std::array<MicroProfileToken, Hardware::NUM_CPU_CORES> microprofile_cpu{};
 
     std::array<Core::GPUDirtyMemoryManager, Hardware::NUM_CPU_CORES>
         gpu_dirty_memory_managers;
 
     std::deque<std::vector<u8>> user_channel;
+
+    Kernel::KProcess * current_process{nullptr};
 };
 
 System::System(ISystemModules & modules) : 
@@ -439,6 +440,16 @@ const Kernel::GlobalSchedulerContext & System::GlobalSchedulerContext() const
 Kernel::KProcess * System::ApplicationProcess()
 {
     return impl->kernel.ApplicationProcess();
+}
+
+void System::SetCurrentProcess(Kernel::KProcess * process)
+{
+    impl->current_process = process;
+}
+
+Kernel::KProcess * System::CurrentProcess() const
+{
+    return impl->current_process;
 }
 
 Core::DeviceMemory & System::DeviceMemory()
@@ -674,18 +685,6 @@ void System::RegisterHostThread()
     impl->kernel.RegisterHostThread();
 }
 
-void System::EnterCPUProfile()
-{
-    std::size_t core = impl->kernel.GetCurrentHostThreadID();
-    impl->dynarmic_ticks[core] = MicroProfileEnter(impl->microprofile_cpu[core]);
-}
-
-void System::ExitCPUProfile()
-{
-    std::size_t core = impl->kernel.GetCurrentHostThreadID();
-    MicroProfileLeave(impl->microprofile_cpu[core], impl->dynarmic_ticks[core]);
-}
-
 bool System::IsMulticore() const
 {
     return impl->is_multicore;
@@ -726,16 +725,17 @@ void System::RunServer(std::unique_ptr<Service::ServerManager> && server_manager
     return impl->kernel.RunServer(std::move(server_manager));
 }
 
-void System::RegisterExecuteProgramCallback(ExecuteProgramCallback && callback)
+void System::RegisterExecuteProgramCallback(::ExecuteProgramCallback callback, void * userData)
 {
-    impl->execute_program_callback = std::move(callback);
+    impl->execute_program_callback = callback;
+    impl->execute_program_user_data = userData;
 }
 
 void System::ExecuteProgram(std::size_t program_index)
 {
     if (impl->execute_program_callback)
     {
-        impl->execute_program_callback(program_index);
+        impl->execute_program_callback(program_index, impl->execute_program_user_data);
     }
     else
     {
@@ -748,10 +748,22 @@ std::deque<std::vector<u8>> & System::GetUserChannel()
     return impl->user_channel;
 }
 
+void System::RegisterExitCallback(::ExitCallback callback, void * userData)
+{
+    impl->exit_callback = callback;
+    impl->exit_user_data = userData;
+}
 
 void System::Exit()
 {
-    UNIMPLEMENTED();
+    if (impl->exit_callback)
+    {
+        impl->exit_callback(impl->exit_user_data);
+    }
+    else
+    {
+        LOG_CRITICAL(Core, "exit_callback must be initialized by the frontend");
+    }
 }
 
 } // namespace Core

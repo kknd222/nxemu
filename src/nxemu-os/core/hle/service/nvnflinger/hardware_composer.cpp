@@ -3,7 +3,6 @@
 
 #include <boost/container/small_vector.hpp>
 
-#include "yuzu_common/microprofile.h"
 #include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
 #include "core/hle/service/nxemu_android_diagnostics.h"
 #include "core/hle/service/nvnflinger/buffer_item.h"
@@ -142,7 +141,6 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
     }
 
     // Render MicroProfile.
-    MicroProfileFlip();
 
     // Android/Switch nvnflinger composition is driven by vsync. Keep the compositor cadence
     // stable even if a guest submits unusual swap intervals; release timing still tracks the
