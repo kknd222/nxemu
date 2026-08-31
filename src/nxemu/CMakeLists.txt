@@ -19,6 +19,7 @@ add_executable(nxemu
     user_interface/key_mappings.h
     user_interface/notification.cpp
     user_interface/notification.h
+    user_interface/app_events.h
     user_interface/sciter_main_window.cpp
     user_interface/sciter_main_window.h
     user_interface/widgets/rom_browser.cpp
@@ -77,3 +78,26 @@ target_link_libraries(nxemu PRIVATE
     Vulkan::Headers
     ${CMAKE_DL_LIBS}
 )
+nxemu_set_app_output(nxemu)
+
+# Runtime needs the Sciter engine beside the executable
+if(WIN32)
+    set(_nxemu_sciter_lib "${CMAKE_SOURCE_DIR}/external/sciterui/src/3rd_party/sciter-js-sdk-main/bin/windows.d2d/x64/sciter.dll")
+    set(_nxemu_sciter_dest "sciter.dll")
+elseif(APPLE)
+    set(_nxemu_sciter_lib "${CMAKE_SOURCE_DIR}/external/sciterui/src/3rd_party/sciter-js-sdk-main/bin/macosx/libsciter.dylib")
+    set(_nxemu_sciter_dest "libsciter.dylib")
+elseif(ARCHITECTURE_arm64)
+    set(_nxemu_sciter_lib "${CMAKE_SOURCE_DIR}/external/sciterui/src/3rd_party/sciter-js-sdk-main/bin/linux/arm64/libsciter.so")
+    set(_nxemu_sciter_dest "libsciter.so")
+else()
+    set(_nxemu_sciter_lib "${CMAKE_SOURCE_DIR}/external/sciterui/src/3rd_party/sciter-js-sdk-main/bin/linux/x64/libsciter.so")
+    set(_nxemu_sciter_dest "libsciter.so")
+endif()
+
+if(EXISTS "${_nxemu_sciter_lib}")
+    add_custom_command(TARGET nxemu POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different "${_nxemu_sciter_lib}" "$<TARGET_FILE_DIR:nxemu>/${_nxemu_sciter_dest}"
+        COMMENT "Copy Sciter engine next to nxemu"
+    )
+endif()

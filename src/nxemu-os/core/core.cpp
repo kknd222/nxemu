@@ -34,6 +34,10 @@
 #include <nxemu-module-spec/system_loader.h>
 #include <nxemu-video/video_settings_identifiers.h>
 
+#ifdef _WIN32
+#include "yuzu_common/windows/timer_resolution.h"
+#endif
+
 extern IModuleSettings * g_settings;
 
 namespace Core {
@@ -62,6 +66,12 @@ struct System::Impl {
     void Initialize(System& system)
     {
         is_multicore = true; // osSettings.use_multi_core;
+
+#ifdef _WIN32
+        const std::chrono::nanoseconds timer_resolution = Common::Windows::SetCurrentTimerResolutionToMaximum();
+        core_timing.SetTimerResolutionNs(timer_resolution);
+        LOG_INFO(Core, "Host Timer Resolution: {:.4f} ms", std::chrono::duration_cast<std::chrono::duration<double, std::milli>>(timer_resolution).count());
+#endif
 
         core_timing.SetMulticore(is_multicore);
         core_timing.Initialize([&system]() { system.RegisterHostThread(); });
@@ -272,7 +282,10 @@ struct System::Impl {
     bool is_multicore{};
     bool is_async_gpu{};
 
-    ExecuteProgramCallback execute_program_callback;
+    ::ExecuteProgramCallback execute_program_callback{};
+    void * execute_program_user_data{};
+    ::ExitCallback exit_callback{};
+    void * exit_user_data{};
     std::stop_source stop_event;
 
     std::array<Core::GPUDirtyMemoryManager, Hardware::NUM_CPU_CORES>
@@ -712,16 +725,17 @@ void System::RunServer(std::unique_ptr<Service::ServerManager> && server_manager
     return impl->kernel.RunServer(std::move(server_manager));
 }
 
-void System::RegisterExecuteProgramCallback(ExecuteProgramCallback && callback)
+void System::RegisterExecuteProgramCallback(::ExecuteProgramCallback callback, void * userData)
 {
-    impl->execute_program_callback = std::move(callback);
+    impl->execute_program_callback = callback;
+    impl->execute_program_user_data = userData;
 }
 
 void System::ExecuteProgram(std::size_t program_index)
 {
     if (impl->execute_program_callback)
     {
-        impl->execute_program_callback(program_index);
+        impl->execute_program_callback(program_index, impl->execute_program_user_data);
     }
     else
     {
@@ -734,10 +748,22 @@ std::deque<std::vector<u8>> & System::GetUserChannel()
     return impl->user_channel;
 }
 
+void System::RegisterExitCallback(::ExitCallback callback, void * userData)
+{
+    impl->exit_callback = callback;
+    impl->exit_user_data = userData;
+}
 
 void System::Exit()
 {
-    UNIMPLEMENTED();
+    if (impl->exit_callback)
+    {
+        impl->exit_callback(impl->exit_user_data);
+    }
+    else
+    {
+        LOG_CRITICAL(Core, "exit_callback must be initialized by the frontend");
+    }
 }
 
 } // namespace Core

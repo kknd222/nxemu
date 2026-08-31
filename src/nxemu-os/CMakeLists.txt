@@ -53,7 +53,6 @@ target_include_directories(nxemu-os PRIVATE
     ${CMAKE_SOURCE_DIR}/external
     ${CMAKE_BINARY_DIR}/generated
     ${CMAKE_SOURCE_DIR}/external/boost
-    ${CMAKE_SOURCE_DIR}/src/3rd_party/microprofile
     ${CMAKE_SOURCE_DIR}/src/3rd_party/nx_tzdb/include
     ${CMAKE_SOURCE_DIR}/src/3rd_party
     ${CMAKE_SOURCE_DIR}/src/3rd_party/stb
@@ -79,10 +78,21 @@ target_link_libraries(nxemu-os PRIVATE
 
 if(ANDROID)
     target_link_libraries(nxemu-os PRIVATE log)
-    # Use BSD socket headers and TranslateIPv4(in_addr) path (same as Linux/macOS).
+endif()
+
+# Use BSD socket headers and TranslateIPv4(in_addr) path (Linux/macOS/Android).
+if(UNIX)
     target_compile_definitions(nxemu-os PRIVATE YUZU_UNIX=1)
 endif()
 
+# 128-bit atomics used by OS networking / room code — need cmpxchg16b on x86_64.
+if(CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|AMD64|amd64")
+    target_compile_options(nxemu-os PRIVATE -mcx16)
+    target_link_libraries(nxemu-os PRIVATE atomic)
+endif()
+
 set_property(TARGET nxemu-os PROPERTY POSITION_INDEPENDENT_CODE ON)
+
+nxemu_set_module_output(nxemu-os operating_system)
 
 endif()

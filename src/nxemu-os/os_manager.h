@@ -59,6 +59,11 @@ public:
     bool SetProfileImage(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], const uint8_t * image_data, uint32_t image_size) override;
     bool GetProfileImagePath(const uint8_t uuid[HOST_PROFILE_UUID_SIZE], char * out_path, uint32_t out_path_size) const override;
     void RegisterCheatMetadata(const uint8_t build_id[32], uint64_t main_region_begin, uint64_t main_region_size) override;
+    void SetApplicationLaunchParameters(int32_t program_index, int32_t previous_program_index, ApplicationLaunchType launch_type) override;
+    void RegisterExecuteProgramCallback(ExecuteProgramCallback callback, void * userData) override;
+    void RegisterExitCallback(ExitCallback callback, void * userData) override;
+    void ExportUserChannel(UserChannelEntryCallback callback, void * userData) override;
+    void PushUserChannelEntry(const uint8_t * data, uint32_t size) override;
 
 private:
     OSManager() = delete;
@@ -71,4 +76,7 @@ private:
     ISystemModules & m_modules;
     Kernel::KProcess * m_applicationProcess;
     std::unique_ptr<EmuThread> m_emuThread;
+    int32_t m_programIndex;
+    int32_t m_previousProgramIndex;
+    ApplicationLaunchType m_launchType;
 };
