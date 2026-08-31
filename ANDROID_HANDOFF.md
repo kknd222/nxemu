@@ -3287,3 +3287,33 @@ Metal Dogs 45 秒探针：
 - UI 仍需继续 Eden 化；当前运行页 touch overlay 和 HUD 仍偏调试状态，正式默认应精简成 `FPS / Speed / Temp`，详细 HUD 只在调试开关开启时显示。
 
 记录时间：2026-09-01 00:16:00 +08:00
+
+---
+
+## 2026-09-01 00:17~00:20 Kirby 正式地图 90 秒探针
+
+目的：
+- 验证 Kirby 不只是在标题/存档页可 NCE，而是能进入正式地图/关卡选择内容。
+- 验证精简 HUD 是否符合用户要求：只显示 FPS、Speed、Temp。
+
+测试参数：
+- 游戏：`/sdcard/ns/rom/KirbyStar Allies v4.0.dnsp`。
+- 日志目录：`phone-logs/probe-script-20260901-001719`。
+- 参数：`Nce=1`、`NceAltStack=1`、`PerfHudDetailed=0`、`GraphicsCompat=1`、`FrameSkip=0`、`ResolutionSetup=0`、`AspectRatio=4`。
+- 输入序列：`A@5:200,A@8:200,A@8:200,A@8:200`。
+- 探针：约 90 秒，截图间隔 15 秒。
+
+结果：
+- `STOP_REASON=max-wait reached 92s`。
+- `APP_ALIVE=True`。
+- 最终截图确认已经进入 Kirby 正式地图/关卡选择画面。
+- 精简 HUD 显示：`FPS 29.6/30 | Speed 99% | Temp 34.3℃ batt`。
+
+结论：
+- Kirby 的 30FPS 场景里，`29.6/30 + Speed 99%` 应按满速理解；不是所有游戏都以 60FPS 为目标。
+- 当前 FPS 目标识别在 Kirby 场景有效，能把目标帧率显示为 `/30`。
+- NCE + altstack 在 Kirby 正式地图阶段至少 90 秒稳定，无闪退/回退。
+- 后续还需要 3~5 分钟以上手动/自动长测，包括进入实际可操作关卡、切场景、shader cache 和音频同步。
+- 测试命令外层 timeout 需要大于 `InitialWait + 输入延迟总和 + MaxWait + 截图/拉日志开销`，否则脚本已跑完但 shell 可能截断最后输出；后续人工执行长探针时应额外留 30~60 秒余量。
+
+记录时间：2026-09-01 00:22:00 +08:00
