@@ -737,6 +737,14 @@ std::string EnsureRuntimeInitialized() {
     SettingsStore& settings = SettingsStore::GetInstance();
     if (!g_native_library_dir.empty()) {
         settings.SetString(NXCoreSetting::ModuleDirectory, g_native_library_dir.c_str());
+        // Official upstream moved desktop modules under loader/cpu/video/operating_system
+        // subdirectories. Android APK native libraries are still packaged flat under
+        // nativeLibraryDir, so keep Android module filenames flat or SystemModules::Setup()
+        // will look for non-existent loader/libnxemu-loader.so style paths.
+        settings.SetString(NXCoreSetting::ModuleLoader, "libnxemu-loader.so");
+        settings.SetString(NXCoreSetting::ModuleCpu, "libnxemu-cpu.so");
+        settings.SetString(NXCoreSetting::ModuleVideo, "libnxemu-video.so");
+        settings.SetString(NXCoreSetting::ModuleOs, "libnxemu-os.so");
     }
     Settings::values.use_auto_stub.SetValue(true);
     ApplyGpuDriverSettingsLocked();

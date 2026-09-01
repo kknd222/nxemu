@@ -3443,3 +3443,39 @@ Metal Dogs 45 秒探针：
 2. 复现 Kirby/Mystic Gate。
 3. 复制诊断日志，重点看 `systemModulesDiagnostic:` 区块。
 4. 根据具体失败项继续修模块加载、符号导出、so 依赖、Video Initialize 或 OS Initialize。
+
+
+## 2026-09-01 13:32 本轮热修（官方模块子目录变更导致 Android SystemModules invalid）
+
+### 新增判断
+- 对比用户日志和官方同步记录后，确认高概率回归来自官方 `#167 Modules: Update the modules so they go in to a directory instead of the root dir`。
+- Android APK 的 native libs 实际仍平铺在 `nativeLibraryDir`：
+  - `libnxemu-loader.so`
+  - `libnxemu-cpu.so`
+  - `libnxemu-video.so`
+  - `libnxemu-os.so`
+- 官方默认值已变成：
+  - `loader/libnxemu-loader.so`
+  - `cpu/libnxemu-cpu.so`
+  - `video/libnxemu-video.so`
+  - `operating_system/libnxemu-os.so`
+- Android 运行时只覆盖了 `ModuleDirectory`，没有覆盖四个模块文件名，所以 `SystemModules::Setup()` 会在 APK nativeLibraryDir 下寻找不存在的子目录路径，最终 `SystemModules setup invalid`，游戏未进入 LoadRom。
+
+### 本轮修复
+- 修改 `src/android/native/nxemu_android_jni.cpp`：在 `EnsureRuntimeInitialized()` 设置 `ModuleDirectory=g_native_library_dir` 后，Android 强制覆盖：
+  - `ModuleLoader=libnxemu-loader.so`
+  - `ModuleCpu=libnxemu-cpu.so`
+  - `ModuleVideo=libnxemu-video.so`
+  - `ModuleOs=libnxemu-os.so`
+- 保留上一条提交加入的 `systemModulesDiagnostic:` 明细日志。若还有问题，下次复制日志会继续指出具体模块/Initialize 失败项。
+
+### 构建验证
+- 新 APK 构建成功：`D:\project\_nxemu_src\src\android\app\build\outputs\apk\debug\app-debug.apk`
+- 构建时间：2026-09-01 13:32:53
+- APK 大小：15,328,106 bytes
+- 已检查 APK 内 so，确认模块库平铺在 `lib/arm64-v8a/` 下。
+
+### 与“之前能进游戏”的关系
+- 之前能进游戏的版本是在官方模块子目录改动合并前或 Android 尚未受该默认值影响时测试的。
+- 当时不是特殊 USB 参数让它能运行，主要测试参数是：真机 ADB、26.2/26.3 驱动按游戏切换、Kirby/Metal Dogs 多数场景使用 NCE+altstack，部分稳定包曾对 Kirby 强制 Dynarmic 规避 NCE crash。
+- 当前这次 `SystemModules invalid` 比 NCE/驱动更早发生，属于模块路径回归；本轮 APK 应优先验证它是否恢复 `LoadRom accepted` 和 FPS 出帧。
