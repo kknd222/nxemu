@@ -1452,10 +1452,20 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
             lastVulkanCompositeCount = compositeCount
         }
         val speed = stats.extractDouble("speedPercent")
+        val nativeGameFps = stats.extractDouble("gameFps")
+        val nativeSystemFps = stats.extractDouble("systemFps")
+        val nativePresentFps = stats.extractDouble("derivedPresentFps")
+        val nativeCompositeFps = stats.extractDouble("derivedCompositeFps")
         val frameAgeMs = nowMs - lastFrameCounterMs
         val displayRenderFps = when {
             lastSafeRenderFps > 0.0 -> lastSafeRenderFps
+            lastSafeCompositeFps > 0.0 -> lastSafeCompositeFps
+            nativeGameFps > 0.0 -> nativeGameFps
+            nativeSystemFps > 0.0 -> nativeSystemFps
+            nativePresentFps > 0.0 -> nativePresentFps
+            nativeCompositeFps > 0.0 -> nativeCompositeFps
             frameAgeMs < 4500L && lastNonZeroRenderFps > 0.0 -> lastNonZeroRenderFps
+            frameAgeMs < 4500L && lastNonZeroCompositeFps > 0.0 -> lastNonZeroCompositeFps
             else -> 0.0
         }
         updateInferredTargetFps(displayRenderFps, stats.extractDouble("targetGameFpsAuto"))
@@ -1468,19 +1478,22 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         val displaySpeed = when {
             displayRenderFps > 0.0 -> fallbackSpeed
             nativeTarget > 0.0 && speed > 0.0 -> speed
+            speed > 0.0 -> speed
             else -> 0.0
         }
         perfView.text = performanceOverlayText(stats, displayRenderFps, displaySpeed)
     }
 
     private fun performanceOverlayText(stats: String, displayRenderFps: Double, displaySpeed: Double): String {
-        val fpsText = if (lastVulkanPresentCount > 0.0) displayRenderFps.format1() else "--"
-        val targetText = if (lastVulkanPresentCount > 0.0 && inferredTargetFps > 0.0) {
+        val hasFrameCounter = lastVulkanPresentCount > 0.0 || lastVulkanCompositeCount > 0.0
+        val hasAnyFps = displayRenderFps > 0.0
+        val fpsText = if (hasAnyFps) displayRenderFps.format1() else "采集中"
+        val targetText = if (hasAnyFps && inferredTargetFps > 0.0) {
             "/${inferredTargetFps.formatTargetFps()}"
         } else {
             ""
         }
-        val speedText = if (displaySpeed > 0.0) "${displaySpeed.format0()}%" else "--"
+        val speedText = if (displaySpeed > 0.0) "${displaySpeed.format0()}%" else if (hasFrameCounter) "0%" else "采集中"
         val tempText = readDeviceTemperatureText()
         if (!perfHudDetailed) {
             return "FPS $fpsText$targetText | Speed $speedText | Temp $tempText"
@@ -1493,6 +1506,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
         val compositeFps = stats.extractDouble("derivedCompositeFps")
         val presentCount = stats.extractDouble("vulkanPresentCount")
         val compositeCount = stats.extractDouble("vulkanCompositeCount")
+        val counterSymbols = stats.extractString("vulkanCounterSymbols").ifBlank { "?" }
         val fbWidth = stats.extractDouble("vulkanLastFbWidth").toInt()
         val fbHeight = stats.extractDouble("vulkanLastFbHeight").toInt()
         val compat = stats.extractBoolean("graphicsCompat")
@@ -1508,7 +1522,7 @@ class EmulationActivity : Activity(), SurfaceHolder.Callback {
             appendLine("FPS $fpsText$targetText | Speed $speedText | ${formatMs(frameMs)} | Temp $tempText")
             appendLine("CPU $backend nce=$nce | Skip $frameSkip | Res ${resolutionLabel()} $internalSize | ASTC $astc | ${aspectRatioLabel()}")
             appendLine("GPU $driver | acc=$gpuAccuracy reactive=$reactive asyncG=$asyncGpu asyncS=$asyncShader cache=$pipelineCache compat=$compat")
-            append("P ${presentFps.format1()}fps #${presentCount.format0()} | C ${compositeFps.format1()}fps #${compositeCount.format0()} | FB ${fbWidth}x${fbHeight}")
+            append("P ${presentFps.format1()}fps #${presentCount.format0()} | C ${compositeFps.format1()}fps #${compositeCount.format0()} | FB ${fbWidth}x${fbHeight} | ctr $counterSymbols")
         }.trimEnd()
     }
 

@@ -843,6 +843,10 @@ uint32_t GetDynamicU32Symbol(const char* symbol) {
     return fn != nullptr ? fn() : 0;
 }
 
+bool HasDynamicSymbol(const char* symbol) {
+    return ResolveOptionalSymbol(symbol) != nullptr;
+}
+
 uint64_t GetHblNextLoadPathAddress() {
     return GetDynamicU64Symbol("NxemuGetLastHblNextLoadPathAddress");
 }
@@ -1207,6 +1211,9 @@ Java_org_nxemu_app_NativeLibrary_setPerformanceProfile(JNIEnv* env, jclass, jint
 extern "C" JNIEXPORT jstring JNICALL
 Java_org_nxemu_app_NativeLibrary_getPerformanceStats(JNIEnv* env, jclass) {
     std::ostringstream out;
+    const bool has_composite_counter = HasDynamicSymbol("NxemuAndroidGetVulkanCompositeCount");
+    const bool has_present_counter = HasDynamicSymbol("NxemuAndroidGetVulkanPresentCount");
+    const bool has_fb_counter = HasDynamicSymbol("NxemuAndroidGetVulkanLastFbWidth");
     const uint64_t composite_count = GetDynamicU64Symbol("NxemuAndroidGetVulkanCompositeCount");
     const uint64_t present_count = GetDynamicU64Symbol("NxemuAndroidGetVulkanPresentCount");
     const uint32_t fb_width = GetDynamicU32Symbol("NxemuAndroidGetVulkanLastFbWidth");
@@ -1229,6 +1236,9 @@ Java_org_nxemu_app_NativeLibrary_getPerformanceStats(JNIEnv* env, jclass) {
         out << "nceRequested=" << (g_android_prefer_nce ? "true" : "false") << "\n";
     }
 
+    out << "vulkanCounterSymbols=present:" << (has_present_counter ? "1" : "0")
+        << ",composite:" << (has_composite_counter ? "1" : "0")
+        << ",fb:" << (has_fb_counter ? "1" : "0") << "\n";
     out << "vulkanCompositeCount=" << composite_count << "\n";
     out << "vulkanPresentCount=" << present_count << "\n";
     out << "vulkanLastFbWidth=" << fb_width << "\n";

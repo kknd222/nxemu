@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
@@ -50,6 +50,12 @@
 
 extern IModuleSettings * g_settings;
 
+#if defined(__ANDROID__)
+#define NXEMU_ANDROID_DIAG_EXPORT __attribute__((visibility("default"))) __attribute__((used))
+#else
+#define NXEMU_ANDROID_DIAG_EXPORT
+#endif
+
 namespace {
 std::atomic<uint64_t> g_android_composite_count{};
 std::atomic<uint64_t> g_android_present_count{};
@@ -80,27 +86,27 @@ void NxemuVideoDiag(const char* category, const char* detail) {
 }
 }
 
-extern "C" uint64_t NxemuAndroidGetVulkanCompositeCount() {
+extern "C" NXEMU_ANDROID_DIAG_EXPORT uint64_t NxemuAndroidGetVulkanCompositeCount() {
     return g_android_composite_count.load(std::memory_order_relaxed);
 }
 
-extern "C" uint64_t NxemuAndroidGetVulkanPresentCount() {
+extern "C" NXEMU_ANDROID_DIAG_EXPORT uint64_t NxemuAndroidGetVulkanPresentCount() {
     return g_android_present_count.load(std::memory_order_relaxed);
 }
 
-extern "C" uint32_t NxemuAndroidGetVulkanLastFbWidth() {
+extern "C" NXEMU_ANDROID_DIAG_EXPORT uint32_t NxemuAndroidGetVulkanLastFbWidth() {
     return g_android_last_fb_width.load(std::memory_order_relaxed);
 }
 
-extern "C" uint32_t NxemuAndroidGetVulkanLastFbHeight() {
+extern "C" NXEMU_ANDROID_DIAG_EXPORT uint32_t NxemuAndroidGetVulkanLastFbHeight() {
     return g_android_last_fb_height.load(std::memory_order_relaxed);
 }
 
-extern "C" uint32_t NxemuAndroidGetVulkanLastFbStride() {
+extern "C" NXEMU_ANDROID_DIAG_EXPORT uint32_t NxemuAndroidGetVulkanLastFbStride() {
     return g_android_last_fb_stride.load(std::memory_order_relaxed);
 }
 
-extern "C" uint32_t NxemuAndroidGetVulkanLastFbFormat() {
+extern "C" NXEMU_ANDROID_DIAG_EXPORT uint32_t NxemuAndroidGetVulkanLastFbFormat() {
     return g_android_last_fb_format.load(std::memory_order_relaxed);
 }
 

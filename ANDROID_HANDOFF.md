@@ -1,6 +1,6 @@
 # NxEmu Android 交接文档
 
-更新时间：2026-09-01 02:03:00 +08:00
+更新时间：2026-09-01 12:30:00 +08:00
 维护规则：后续每次完成阶段性开发、构建、安装、测试、定位或修复后，都要同步更新本文档，保证其他人可以随时接手。
 
 ---
@@ -3370,3 +3370,39 @@ Metal Dogs 45 秒探针：
 - 继续方向：Fragment/二级设置结构、Material 式列表项、游戏详情页封面与 Metadata、运行中暂停菜单、驱动/输入/日志页统一视觉。
 
 记录时间：2026-09-01 00:31:00 +08:00
+
+## 2026-09-01 12:30 FPS/Speed `--` 诊断与修复
+
+用户反馈：当前 Android 版本进入游戏后 HUD 显示 `FPS --` / `Speed --`，且手机暂时不在电脑旁，无法即时 ADB 抓日志。
+
+本轮本地诊断结论：
+
+- 运行页 HUD 的 FPS/Speed 主要来自 `NativeLibrary.getPerformanceStats()`。
+- Android native 当前为避免 core perf stats 生命周期崩溃，使用 Vulkan present/composite counter 推导 FPS/Speed。
+- 如果 `libnxemu-video.so` 中 `NxemuAndroidGetVulkanPresentCount` / `NxemuAndroidGetVulkanCompositeCount` 没有被动态符号表导出，或者 present 暂时不增长，Java 侧原逻辑会长期显示 `--`。
+
+本轮修复：
+
+1. `src/yuzu_video_core/renderer_vulkan/renderer_vulkan.cpp`
+   - 给 `NxemuAndroidGetVulkanCompositeCount`、`NxemuAndroidGetVulkanPresentCount`、`NxemuAndroidGetVulkanLastFbWidth/Height/Stride/Format` 增加 Android default visibility + used 标记，确保 `dlsym()` 能解析到。
+2. `src/android/native/nxemu_android_jni.cpp`
+   - `getPerformanceStats()` 新增 `vulkanCounterSymbols=present:...,composite:...,fb:...` 输出，方便用户只靠复制日志也能判断是符号解析失败还是渲染没出帧。
+3. `src/android/app/src/main/java/org/nxemu/app/EmulationActivity.kt`
+   - HUD 不再只依赖 `vulkanPresentCount`。
+   - 新兜底顺序：present delta -> composite delta -> native `gameFps/systemFps` -> native `derivedPresentFps/derivedCompositeFps` -> 最近非零值。
+   - 如果仍无任何帧数据，显示 `采集中`，详细 HUD 显示 counter symbol 状态，避免只看到一排 `--` 无法诊断。
+
+构建验证：
+
+- APK 构建成功：`src/android/app/build/outputs/apk/debug/app-debug.apk`
+- 构建时间：2026-09-01 12:24:08
+- APK 大小：15,323,182 bytes
+- 已用 `llvm-nm -D` 验证 `libnxemu-video.so` 导出：
+  - `NxemuAndroidGetVulkanCompositeCount`
+  - `NxemuAndroidGetVulkanPresentCount`
+  - `NxemuAndroidGetVulkanLastFbWidth/Height/Stride/Format`
+
+待用户回家/手机可用后验证：
+
+- 安装最新 APK 后进游戏观察 HUD：应显示 FPS/Speed 数值；若还未出帧，会显示 `采集中`。
+- 若仍异常，复制诊断日志，重点看 `vulkanCounterSymbols`、`vulkanPresentCount`、`vulkanCompositeCount`、`derivedPresentFps`、`derivedCompositeFps`。
