@@ -3406,3 +3406,40 @@ Metal Dogs 45 秒探针：
 
 - 安装最新 APK 后进游戏观察 HUD：应显示 FPS/Speed 数值；若还未出帧，会显示 `采集中`。
 - 若仍异常，复制诊断日志，重点看 `vulkanCounterSymbols`、`vulkanPresentCount`、`vulkanCompositeCount`、`derivedPresentFps`、`derivedCompositeFps`。
+
+
+## 2026-09-01 13:xx 本轮更新（SystemModules 失败细化诊断）
+
+### 用户输入
+- 用户提供最新版 copy-button 日志，版本 `0.6.0-462-65abc63-173-gb06ea2a-dirty-debug`。
+- 现象：Kirby 路径存在、驱动 26.2 已安装，但 FPS/Speed 显示“采集中”，游戏未加载。
+
+### 日志结论
+- `gameExists=true`、`gameSize=4231293897`：ROM 路径和文件存在。
+- `vulkanCounterSymbols=present:1,composite:1,fb:1`：上一轮 Vulkan counter 导出修复在该包中已经生效。
+- `vulkanPresentCount=0`、`vulkanCompositeCount=0`：没有任何画面帧产生。
+- `SystemModules setup invalid`、`modules=none_or_invalid`、`lastBootLoaded=false`：真正失败点仍是 SystemModules 初始化失败，LoadRom 没进入。
+- `nceRequested=true` 但 `nceEnabled=false/cpuBackendActual=Dynarmic`：本次不是 NCE 崩溃，NCE 尚未进入。
+- `input ... input=failed` 是 SystemModules 没起来后的连带结果，不是单独的输入映射问题。
+
+### 本轮代码修复
+- `src/nxemu-core/modules/module_base.h/.cpp`
+  - 新增 `ModuleBase::LastLoadDiagnostic()`。
+  - `ModuleBase::Load()` 记录：模块路径、期望类型、dlopen 结果、`dlerror`、`GetModuleInfo`、模块名/类型/版本、通用导出、模块专用导出、`ModuleInitialize` 返回值。
+- `src/nxemu-core/modules/system_modules.h/.cpp`
+  - 新增 `SystemModules::LastSetupDiagnostic()`。
+  - `SystemModules::Setup()` 记录：`moduleDir`、loader/cpu/video/os 文件名、每个模块加载明细、CreateSystemLoader/CreateCpu/CreateOS/CreateVideo、各 Initialize 步骤。
+  - 修正失败模块被置空后诊断丢失的问题：`LoadModule()` 现在返回失败明细文本。
+- `src/android/native/nxemu_android_jni.cpp`
+  - `EnsureSystemModulesReady()` 在 copy-button 日志/runtimeStatus 中输出 `systemModulesDiagnostic:`。
+
+### 构建验证
+- 已执行 `:app:assembleDebug --stacktrace`，构建成功。
+- 输出 APK：`D:\project\_nxemu_src\src\android\app\build\outputs\apk\debug\app-debug.apk`。
+- 下一次用户复制日志时，应能看到具体失败位置，例如：`loaderModule=failed` / `cpuModule=failed` / `videoModule=failed` / `osModule=failed`、`dlerror=...`、`CreateVideo=failed`、`VideoInitialize=failed` 等。
+
+### 下一步
+1. 安装本轮 APK 到手机。
+2. 复现 Kirby/Mystic Gate。
+3. 复制诊断日志，重点看 `systemModulesDiagnostic:` 区块。
+4. 根据具体失败项继续修模块加载、符号导出、so 依赖、Video Initialize 或 OS Initialize。

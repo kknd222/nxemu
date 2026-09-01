@@ -1071,6 +1071,9 @@ std::string EnsureSystemModulesReady() {
     std::ostringstream out;
     out << runtime << "\n";
     out << "modules=" << (g_system_modules->IsValid() ? "valid" : "invalid");
+    if (!g_system_modules->LastSetupDiagnostic().empty()) {
+        out << "\nsystemModulesDiagnostic:\n" << g_system_modules->LastSetupDiagnostic();
+    }
     if (g_system_modules->IsValid()) {
         out << "\n";
         ForceAndroidPlayer1InputLocked(&out);
