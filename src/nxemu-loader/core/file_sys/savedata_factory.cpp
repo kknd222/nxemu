@@ -67,7 +67,11 @@ SaveDataFactory::~SaveDataFactory() = default;
 VirtualDir SaveDataFactory::Create(SaveDataSpaceId space, const SaveDataAttribute& meta) const
 {
     const auto save_directory = GetFullPath(program_id, dir, space, meta.type, meta.program_id, u128{meta.user_id[0], meta.user_id[1]}, meta.system_save_data_id);
-    return dir->CreateDirectoryRelative(save_directory);
+    LOG_INFO(Service_FS, "SaveTrace SaveDataFactory::Create begin path={}", save_directory);
+    auto result = dir->CreateDirectoryRelative(save_directory);
+    LOG_INFO(Service_FS, "SaveTrace SaveDataFactory::Create end path={} success={}", save_directory,
+             result != nullptr);
+    return result;
 }
 
 VirtualDir SaveDataFactory::Open(SaveDataSpaceId space, const SaveDataAttribute& meta) const

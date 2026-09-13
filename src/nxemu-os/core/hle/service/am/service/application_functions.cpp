@@ -128,7 +128,8 @@ Result IApplicationFunctions::PopLaunchParameter(Out<SharedPointer<IStorage>> ou
 
 Result IApplicationFunctions::EnsureSaveData(Out<u64> out_size, Common::UUID user_id)
 {
-    LOG_INFO(Service_AM, "called, uid={}", user_id.FormattedString());
+    LOG_INFO(Service_AM, "SaveTrace EnsureSaveData begin program_id={:016X}, uid={}",
+             m_applet->program_id, user_id.FormattedString());
 
     ISystemloader & loader = system.GetSystemloader();
     SaveDataAttribute attribute{};
@@ -139,8 +140,10 @@ Result IApplicationFunctions::EnsureSaveData(Out<u64> out_size, Common::UUID use
 
     IVirtualDirectoryPtr save_data;
     bool opened = ISaveDataControllerPtr(loader.FileSystemController().OpenSaveDataController())->CreateSaveData(save_data.GetAddressForSet(), SaveDataSpaceId::User, attribute);
+    LOG_INFO(Service_AM, "SaveTrace EnsureSaveData create returned opened={}", opened);
     R_TRY(opened ? ResultSuccess : FileSys::ResultTargetNotFound);
     *out_size = 0;
+    LOG_INFO(Service_AM, "SaveTrace EnsureSaveData end success");
     R_SUCCEED();
 }
 

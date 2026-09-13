@@ -216,9 +216,14 @@ Result FSP_SRV::OpenSdCardFileSystem(OutInterface<IFileSystem> out_interface)
 
 Result FSP_SRV::CreateSaveDataFileSystem(FileSys::SaveDataCreationInfo save_create_struct, SaveDataAttribute save_struct, u128 uid) 
 {
-    LOG_DEBUG(Service_FS, "called save_struct = {}, uid = {:016X}{:016X}", DebugInfo(save_struct), uid[1], uid[0]);
-    UNIMPLEMENTED();
-    R_SUCCEED();
+    LOG_INFO(Service_FS, "SaveTrace CreateSaveDataFileSystem begin save_struct={}, uid={:016X}{:016X}",
+             DebugInfo(save_struct), uid[1], uid[0]);
+
+    IVirtualDirectoryPtr save_data_dir;
+    const bool created = save_data_controller->CreateSaveData(
+        save_data_dir.GetAddressForSet(), SaveDataSpaceId::User, save_struct);
+    LOG_INFO(Service_FS, "SaveTrace CreateSaveDataFileSystem end created={}", created);
+    R_RETURN(created ? ResultSuccess : FileSys::ResultTargetNotFound);
 }
 
 Result FSP_SRV::CreateSaveDataFileSystemBySystemSaveDataId(SaveDataAttribute save_struct, FileSys::SaveDataCreationInfo save_create_struct)
