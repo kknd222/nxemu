@@ -83,6 +83,8 @@ class SciterMainWindow :
         TIMER_OPEN_GAME_CONFIG,
         TIMER_DEFERRED_STOP_GAME,
         TIMER_DEFERRED_FILE_EXIT,
+        TIMER_STARTUP_LOAD_GAME,
+        TIMER_STARTUP_INSTALL_FIRMWARE,
     };
 
 public:
@@ -94,6 +96,9 @@ public:
     void ShowConfig(const char * startPage);
     void ShowGameConfig(const char * gamePath);
     void LoadGame(const char * path);
+    void InstallFirmware(const char * path);
+    void QueueLoadGame(const char * path);
+    void QueueInstallFirmware(const char * path);
     void OpenGameSaveDataLocation(const char * gamePath);
     void OpenGameModDataLocation(const char * gamePath);
     void OpenSaveDataFolderForUser(uint64_t programId, const uint8_t uuidBytes[HOST_PROFILE_UUID_SIZE]);
@@ -240,6 +245,8 @@ private:
     bool m_firmwareInstallInProgress;
     bool m_firmwareInstallUiActive;
     std::thread m_firmwareInstallThread;
+    std::string m_pendingStartupGame;
+    std::string m_pendingStartupFirmware;
     bool m_mouseCursorHidden;
     uint64_t m_lastMouseActivityTick;
     int32_t m_lastTrackedMouseX;

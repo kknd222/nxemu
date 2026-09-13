@@ -5,6 +5,8 @@
 #include <common/path.h>
 #include <common/std_string.h>
 #include <memory>
+#include <string>
+#include <vector>
 #include <nxemu-core/app_init.h>
 #include <nxemu-core/version.h>
 #include <yuzu_common/fs/path_util.h>
@@ -16,6 +18,47 @@
 #include <widgets/tooltip_host.h>
 #include "user_interface/widgets/rom_browser.h"
 #include <windows.h>
+#include <shellapi.h>
+
+namespace
+{
+struct StartupOptions
+{
+    std::string game;
+    std::string firmware;
+};
+
+StartupOptions ParseStartupOptions()
+{
+    StartupOptions options;
+    int argc = 0;
+    LPWSTR * argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv == nullptr)
+    {
+        return options;
+    }
+
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string arg = Common::FS::PathToUTF8String(argv[i]);
+        if ((arg == "--load" || arg == "-l") && i + 1 < argc)
+        {
+            options.game = Common::FS::PathToUTF8String(argv[++i]);
+        }
+        else if (arg == "--install-firmware" && i + 1 < argc)
+        {
+            options.firmware = Common::FS::PathToUTF8String(argv[++i]);
+        }
+        else if (!arg.empty() && arg[0] != '-' && options.game.empty())
+        {
+            options.game = arg;
+        }
+    }
+
+    LocalFree(argv);
+    return options;
+}
+}
 
 void RegisterWidgets(ISciterUI & sciterUI)
 {
@@ -80,6 +123,7 @@ static void EnablePerMonitorDpiAwareness()
 
 int WINAPI WinMain(_In_ HINSTANCE /*hInstance*/, _In_opt_ HINSTANCE /*hPrevInstance*/, _In_ LPSTR /*lpszArgs*/, _In_ int /*nWinMode*/)
 {
+    const StartupOptions startup = ParseStartupOptions();
     EnablePerMonitorDpiAwareness();
     bool res = AppInit(&Notification::GetInstance(), Path(Path::MODULE_DIRECTORY), Common::FS::PathToUTF8String(Common::FS::GetDefaultAppStorageDirectory()).c_str());
 
@@ -102,6 +146,14 @@ int WINAPI WinMain(_In_ HINSTANCE /*hInstance*/, _In_opt_ HINSTANCE /*hPrevInsta
         RegisterWidgets(*sciterUI);
         SciterMainWindow window(*sciterUI, stdstr_f("NXEmu %s", VER_FILE_VERSION_STR).c_str());
         window.Show();
+        if (!startup.firmware.empty())
+        {
+            window.QueueInstallFirmware(startup.firmware.c_str());
+        }
+        else if (!startup.game.empty())
+        {
+            window.QueueLoadGame(startup.game.c_str());
+        }
         sciterUI->Run();
     }
     if (sciterUI != nullptr)

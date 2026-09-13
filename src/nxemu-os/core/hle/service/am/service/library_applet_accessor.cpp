@@ -25,6 +25,7 @@ ILibraryAppletAccessor::ILibraryAppletAccessor(Core::System& system_,
         {30, D<&ILibraryAppletAccessor::GetResult>, "GetResult"},
         {50, nullptr, "SetOutOfFocusApplicationSuspendingEnabled"},
         {60, D<&ILibraryAppletAccessor::PresetLibraryAppletGpuTimeSliceZero>, "PresetLibraryAppletGpuTimeSliceZero"},
+        {90, D<&ILibraryAppletAccessor::Unknown90>, "Unknown90"},
         {100, D<&ILibraryAppletAccessor::PushInData>, "PushInData"},
         {101, D<&ILibraryAppletAccessor::PopOutData>, "PopOutData"},
         {102, nullptr, "PushExtraStorage"},
@@ -65,6 +66,11 @@ Result ILibraryAppletAccessor::GetResult(Out<Result> out_result) {
 
 Result ILibraryAppletAccessor::PresetLibraryAppletGpuTimeSliceZero() {
     LOG_INFO(Service_AM, "(STUBBED) called");
+    R_SUCCEED();
+}
+
+Result ILibraryAppletAccessor::Unknown90(s64 param_1, s64 param_2) {
+    LOG_WARNING(Service_AM, "(STUBBED) called, param_1={} param_2={}", param_1, param_2);
     R_SUCCEED();
 }
 

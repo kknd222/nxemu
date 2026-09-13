@@ -4,6 +4,7 @@
 #pragma once
 
 #include <array>
+#include <atomic>
 
 #include "yuzu_common/common_types.h"
 
@@ -45,8 +46,18 @@ struct Lifo {
         }
         buffer_tail = GetNextEntryIndex();
         const auto& previous_entry = ReadPreviousEntry();
-        entries[buffer_tail].sampling_number = previous_entry.sampling_number + 1;
-        entries[buffer_tail].state = new_state;
+        auto& entry = entries[buffer_tail];
+
+        // AtomicStorage::sampling_number is a sequence lock, not the state's
+        // logical sample number. Readers in newer nnSdk versions reject odd
+        // values and retry until the value is unchanged after copying State.
+        // Leaving an entry at previous + 1 therefore makes every other slot
+        // look permanently busy and can trap GetSixAxisSensorStates forever.
+        const s64 completed_sequence = previous_entry.sampling_number + 2;
+        std::atomic_ref<s64> sequence{entry.sampling_number};
+        sequence.store(completed_sequence - 1, std::memory_order_release);
+        entry.state = new_state;
+        sequence.store(completed_sequence, std::memory_order_release);
     }
 };
 

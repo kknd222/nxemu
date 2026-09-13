@@ -184,6 +184,7 @@ IHidServer::IHidServer(Core::System& system_, std::shared_ptr<ResourceManager> r
         {1003, C<&IHidServer::IsFirmwareUpdateNeededForNotification>, "IsFirmwareUpdateNeededForNotification"},
         {1004, C<&IHidServer::SetTouchScreenResolution>, "SetTouchScreenResolution"},
         {2000, nullptr, "ActivateDigitizer"},
+        {3150, C<&IHidServer::SetMouseLibraryVersion>, "SetMouseLibraryVersion"}, // 21.0.0+
     };
     // clang-format on
 
@@ -1428,6 +1429,11 @@ Result IHidServer::SetTouchScreenResolution(u32 width, u32 height,
              aruid.pid);
 
     GetResourceManager()->GetTouchScreen()->SetTouchScreenResolution(width, height, aruid.pid);
+    R_SUCCEED();
+}
+
+Result IHidServer::SetMouseLibraryVersion(ClientAppletResourceUserId aruid) {
+    LOG_INFO(Service_HID, "(STUBBED) called, applet_resource_user_id={}", aruid.pid);
     R_SUCCEED();
 }
 

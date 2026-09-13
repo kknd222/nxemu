@@ -2,7 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <cinttypes>
+#include <cstdlib>
 #include <cstring>
+#include <filesystem>
+#include <fstream>
 #include <vector>
 
 #include "core/core.h"
@@ -174,6 +177,17 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Systemloader & loader, ISystemMod
     if (!load_into_process)
     {
         return load_base + image_size;
+    }
+
+    if (const char* dump_dir = std::getenv("NXEMU_DUMP_NSO_DIR");
+        dump_dir != nullptr && *dump_dir != '\0')
+    {
+        std::error_code ec;
+        std::filesystem::create_directories(dump_dir, ec);
+        const auto dump_path = std::filesystem::path{dump_dir} / (name + ".bin");
+        std::ofstream dump{dump_path, std::ios::binary | std::ios::trunc};
+        dump.write(reinterpret_cast<const char*>(program_image.data()),
+                   static_cast<std::streamsize>(program_image.size()));
     }
 
     // Load codeset for current process

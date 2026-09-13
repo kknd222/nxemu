@@ -922,9 +922,19 @@ void BufferQueueProducer::Transact(u32 code, std::span<const u8> parcel_data,
         status = SetBufferCount(buffer_count);
         break;
     }
-    case TransactionId::GetBufferHistory:
-        LOG_WARNING(Service_Nvnflinger, "(STUBBED) called, transaction=GetBufferHistory");
+    case TransactionId::GetBufferHistory: {
+        // The reply contains an operation status and the number of history
+        // records before the transaction status appended below. Returning
+        // only the latter leaves newer SDK clients parsing an incomplete
+        // parcel and repeatedly polling the producer.
+        [[maybe_unused]] const s32 requested_count = parcel_in.Read<s32>();
+        LOG_DEBUG(Service_Nvnflinger,
+                  "(STUBBED) called, transaction=GetBufferHistory, requested_count={}",
+                  requested_count);
+        parcel_out.Write(Status::NoError);
+        parcel_out.Write<s32>(0);
         break;
+    }
     default:
         ASSERT_MSG(false, "Unimplemented TransactionId {}", code);
         break;
