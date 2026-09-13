@@ -97,8 +97,14 @@ void FileSystemController::SetPackedUpdate(FileSys::ProcessId process_id, FileSy
 
 ISaveDataController * FileSystemController::OpenSaveDataController() const
 {
-    std::shared_ptr<SaveDataController> dataController(std::make_shared<SaveDataController>(loader, CreateSaveDataFactory(FileSys::ProgramId{})));
-    return std::make_unique<SaveDataControllerPtr>(dataController).release();
+    std::scoped_lock lk{save_data_controller_lock};
+    if (!save_data_controller)
+    {
+        LOG_INFO(Service_FS, "SaveTrace creating shared SaveDataController");
+        save_data_controller =
+            std::make_shared<SaveDataController>(loader, CreateSaveDataFactory(FileSys::ProgramId{}));
+    }
+    return std::make_unique<SaveDataControllerPtr>(save_data_controller).release();
 }
 
 IFileSysRegisteredCache & FileSystemController::GetSystemNANDContents() const

@@ -11,6 +11,7 @@
 #include <nxemu-module-spec/system_loader.h>
 
 class Systemloader;
+class SaveDataController;
 
 namespace FileSys {
 class RomFSFactory;
@@ -67,6 +68,12 @@ private:
     };
     std::mutex registration_lock;
     std::map<FileSys::ProcessId, Registration> registrations;
+
+    // EnsureSaveData may request this controller repeatedly during a session. Recreating the
+    // factory each time also reruns SaveDataFactory's temporary-storage cleanup while the title
+    // is live, which can stall the guest before it ever reaches file creation.
+    mutable std::mutex save_data_controller_lock;
+    mutable std::shared_ptr<SaveDataController> save_data_controller;
 
     std::unique_ptr<FileSys::SDMCFactory> sdmc_factory;
     std::unique_ptr<FileSys::BISFactory> bis_factory;
