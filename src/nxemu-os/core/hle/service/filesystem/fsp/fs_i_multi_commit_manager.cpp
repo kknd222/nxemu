@@ -10,7 +10,7 @@ namespace Service::FileSystem {
 IMultiCommitManager::IMultiCommitManager(Core::System& system_)
     : ServiceFramework{system_, "IMultiCommitManager"} {
     static const FunctionInfo functions[] = {
-        {1, nullptr, "Add"},
+        {1, D<&IMultiCommitManager::Add>, "Add"},
         {2, D<&IMultiCommitManager::Commit>, "Commit"},
     };
     RegisterHandlers(functions);
@@ -18,8 +18,18 @@ IMultiCommitManager::IMultiCommitManager(Core::System& system_)
 
 IMultiCommitManager::~IMultiCommitManager() = default;
 
+Result IMultiCommitManager::Add(std::shared_ptr<IFileSystem> filesystem) {
+    LOG_INFO(Service_FS, "SaveTrace MultiCommit Add filesystem={}",
+             static_cast<const void*>(filesystem.get()));
+    filesystems.emplace_back(std::move(filesystem));
+    R_SUCCEED();
+}
+
 Result IMultiCommitManager::Commit() {
-    LOG_WARNING(Service_FS, "(STUBBED) called");
+    LOG_INFO(Service_FS, "SaveTrace MultiCommit Commit count={}", filesystems.size());
+    for (const auto& filesystem : filesystems) {
+        R_TRY(filesystem->Commit());
+    }
 
     R_SUCCEED();
 }

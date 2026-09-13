@@ -7,6 +7,7 @@
 #include "core/hle/service/cmif_types.h"
 #include "core/hle/service/filesystem/filesystem.h"
 #include "core/hle/service/service.h"
+#include <string>
 
 class IVirtualFilePtr;
 
@@ -15,10 +16,11 @@ namespace Service::FileSystem {
 class IFile final : public ServiceFramework<IFile>
 {
 public:
-    explicit IFile(Core::System & system_, IVirtualFilePtr && file_);
+    explicit IFile(Core::System & system_, IVirtualFilePtr && file_, std::string path_);
 
 private:
     std::unique_ptr<FileSys::Fsa::IFile> backend;
+    std::string path;
 
     Result Read(FileSys::ReadOption option, Out<s64> out_size, s64 offset, const OutBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure> out_buffer, s64 size);
     Result Write(const InBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure> buffer, FileSys::WriteOption option, s64 offset, s64 size);

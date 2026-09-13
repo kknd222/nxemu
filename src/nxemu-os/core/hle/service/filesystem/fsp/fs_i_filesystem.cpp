@@ -39,9 +39,10 @@ IFileSystem::IFileSystem(Core::System & system_, IVirtualDirectoryPtr && dir_, S
 
 Result IFileSystem::CreateFile(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path, s32 option, s64 size)
 {
-    LOG_DEBUG(Service_FS, "called. file={}, option=0x{:X}, size=0x{:08X}", path->str, option, size);
-
-    R_RETURN(backend->CreateFile(FileSys::Path(path->str), size));
+    const Result result = backend->CreateFile(FileSys::Path(path->str), size);
+    LOG_INFO(Service_FS, "SaveTrace CreateFile path='{}' option=0x{:X} size={} result=0x{:08X}",
+             path->str, option, size, result.raw);
+    R_RETURN(result);
 }
 
 Result IFileSystem::DeleteFile(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path)
@@ -53,9 +54,10 @@ Result IFileSystem::DeleteFile(const InLargeData<FileSys::Sf::Path, BufferAttr_H
 
 Result IFileSystem::CreateDirectory(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path)
 {
-    LOG_DEBUG(Service_FS, "called. directory={}", path->str);
-
-    R_RETURN(backend->CreateDirectory(FileSys::Path(path->str)));
+    const Result result = backend->CreateDirectory(FileSys::Path(path->str));
+    LOG_INFO(Service_FS, "SaveTrace CreateDirectory path='{}' result=0x{:08X}", path->str,
+             result.raw);
+    R_RETURN(result);
 }
 
 Result IFileSystem::DeleteDirectory(const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path)
@@ -91,12 +93,13 @@ Result IFileSystem::RenameFile(const InLargeData<FileSys::Sf::Path, BufferAttr_H
 
 Result IFileSystem::OpenFile(OutInterface<IFile> out_interface, const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path, u32 mode)
 {
-    LOG_DEBUG(Service_FS, "called. file={}, mode={}", path->str, mode);
-
     IVirtualFilePtr vfs_file;
-    R_TRY(backend->OpenFile(vfs_file.GetAddressForSet(), FileSys::Path(path->str).GetString(), static_cast<VirtualFileOpenMode>(mode)));
+    const Result result = backend->OpenFile(vfs_file.GetAddressForSet(), FileSys::Path(path->str).GetString(), static_cast<VirtualFileOpenMode>(mode));
+    LOG_INFO(Service_FS, "SaveTrace OpenFile path='{}' mode=0x{:X} result=0x{:08X}", path->str,
+             mode, result.raw);
+    R_TRY(result);
 
-    *out_interface = std::make_shared<IFile>(system, std::move(vfs_file));
+    *out_interface = std::make_shared<IFile>(system, std::move(vfs_file), path->str);
     R_SUCCEED();
 }
 
@@ -124,7 +127,9 @@ Result IFileSystem::GetEntryType(Out<u32> out_type, const InLargeData<FileSys::S
 
 Result IFileSystem::Commit()
 {
-    LOG_WARNING(Service_FS, "(STUBBED) called");
+    // The current VFS writes directly to the host file. Commit is therefore a
+    // durability boundary rather than a delayed data copy.
+    LOG_INFO(Service_FS, "SaveTrace Commit filesystem={}", static_cast<const void*>(this));
 
     R_SUCCEED();
 }

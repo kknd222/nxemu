@@ -4,8 +4,11 @@
 #pragma once
 
 #include "core/hle/service/service.h"
+#include <vector>
 
 namespace Service::FileSystem {
+
+class IFileSystem;
 
 class IMultiCommitManager final : public ServiceFramework<IMultiCommitManager> {
 public:
@@ -13,7 +16,10 @@ public:
     ~IMultiCommitManager() override;
 
 private:
+    Result Add(std::shared_ptr<IFileSystem> filesystem);
     Result Commit();
+
+    std::vector<std::shared_ptr<IFileSystem>> filesystems;
 };
 
 } // namespace Service::FileSystem

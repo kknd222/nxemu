@@ -7,9 +7,10 @@
 
 namespace Service::FileSystem {
 
-IFile::IFile(Core::System& system_, IVirtualFilePtr && file_) : 
+IFile::IFile(Core::System& system_, IVirtualFilePtr && file_, std::string path_) :
     ServiceFramework{system_, "IFile"}, 
-    backend{std::make_unique<FileSys::Fsa::IFile>(std::move(file_))}
+    backend{std::make_unique<FileSys::Fsa::IFile>(std::move(file_))},
+    path{std::move(path_)}
 {
     // clang-format off
     static const FunctionInfo functions[] = {
@@ -35,14 +36,17 @@ Result IFile::Read(FileSys::ReadOption option, Out<s64> out_size, s64 offset, co
 
 Result IFile::Write(const InBuffer<BufferAttr_HipcMapAlias | BufferAttr_HipcMapTransferAllowsNonSecure> buffer, FileSys::WriteOption option, s64 offset, s64 size)
 {
-    LOG_DEBUG(Service_FS, "called, option={}, offset=0x{:X}, length={}", option.value, offset, size);
-    R_RETURN(backend->Write(offset, buffer.data(), size, option));
+    const Result result = backend->Write(offset, buffer.data(), size, option);
+    LOG_INFO(Service_FS, "SaveTrace Write path='{}' option={} offset=0x{:X} length={} result=0x{:08X}",
+             path, option.value, offset, size, result.raw);
+    R_RETURN(result);
 }
 
 Result IFile::Flush()
 {
-    LOG_DEBUG(Service_FS, "called");
-    R_RETURN(backend->Flush());
+    const Result result = backend->Flush();
+    LOG_INFO(Service_FS, "SaveTrace Flush path='{}' result=0x{:08X}", path, result.raw);
+    R_RETURN(result);
 }
 
 Result IFile::SetSize(s64 size)
