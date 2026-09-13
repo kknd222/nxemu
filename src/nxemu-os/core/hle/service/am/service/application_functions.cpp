@@ -234,8 +234,10 @@ Result IApplicationFunctions::GetDisplayVersion(Out<DisplayVersion> out_display_
     R_SUCCEED();
 }
 
-Result IApplicationFunctions::ExtendSaveData(Out<u64> out_required_size, SaveDataType type, Common::UUID user_id, u64 normal_size, u64 journal_size)
+Result IApplicationFunctions::ExtendSaveData(Out<u64> out_required_size, SaveDataSizeInput input, u64 normal_size, u64 journal_size)
 {
+    const auto type = static_cast<SaveDataType>(input.type);
+    const auto& user_id = input.user_id;
     LOG_DEBUG(Service_AM, "called with type={} user_id={} normal={:#x} journal={:#x}", static_cast<u8>(type), user_id.FormattedString(), normal_size, journal_size);
 
     uint64_t raw_user_id[2]{};
@@ -251,8 +253,10 @@ Result IApplicationFunctions::ExtendSaveData(Out<u64> out_required_size, SaveDat
     R_SUCCEED();
 }
 
-Result IApplicationFunctions::GetSaveDataSize(Out<u64> out_normal_size, Out<u64> out_journal_size, SaveDataType type, Common::UUID user_id)
+Result IApplicationFunctions::GetSaveDataSize(Out<u64> out_normal_size, Out<u64> out_journal_size, SaveDataSizeInput input)
 {
+    const auto type = static_cast<SaveDataType>(input.type);
+    const auto& user_id = input.user_id;
     uint64_t raw_user_id[2]{};
     static_assert(sizeof(raw_user_id) == sizeof(user_id.uuid));
     std::memcpy(&raw_user_id, user_id.uuid.data(), sizeof(raw_user_id));

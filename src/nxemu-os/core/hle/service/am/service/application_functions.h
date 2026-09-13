@@ -18,6 +18,12 @@ namespace Service::AM {
 struct Applet;
 class IStorage;
 
+struct alignas(8) SaveDataSizeInput {
+    u64 type;
+    Common::UUID user_id;
+};
+static_assert(sizeof(SaveDataSizeInput) == 0x18);
+
 class IApplicationFunctions final : public ServiceFramework<IApplicationFunctions> {
 public:
     explicit IApplicationFunctions(Core::System& system_, std::shared_ptr<Applet> applet);
@@ -30,10 +36,10 @@ private:
     Result GetDesiredLanguage(Out<u64> out_language_code);
     Result SetTerminateResult(Result terminate_result);
     Result GetDisplayVersion(Out<DisplayVersion> out_display_version);
-    Result ExtendSaveData(Out<u64> out_required_size, SaveDataType type,
-                          Common::UUID user_id, u64 normal_size, u64 journal_size);
+    Result ExtendSaveData(Out<u64> out_required_size, SaveDataSizeInput input,
+                          u64 normal_size, u64 journal_size);
     Result GetSaveDataSize(Out<u64> out_normal_size, Out<u64> out_journal_size,
-                           SaveDataType type, Common::UUID user_id);
+                           SaveDataSizeInput input);
     Result CreateCacheStorage(Out<u32> out_target_media, Out<u64> out_required_size, u16 index,
                               u64 normal_size, u64 journal_size);
     Result GetSaveDataSizeMax(Out<u64> out_max_normal_size, Out<u64> out_max_journal_size);
