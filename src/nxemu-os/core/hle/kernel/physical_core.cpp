@@ -11,6 +11,62 @@
 #include "core/hle/kernel/physical_core.h"
 #include "core/hle/kernel/svc.h"
 
+#include <chrono>
+#include <cstdlib>
+#include <fstream>
+#include <mutex>
+
+#include <fmt/format.h>
+
+namespace {
+
+// Lightweight guest-side sampling used while diagnosing games which keep the
+// host CPU busy without issuing any further HLE calls.  This deliberately
+// bypasses the normal asynchronous logger so it remains useful when the last
+// visible log line itself is where execution appears to stall.
+void WriteGuestTrace(const Kernel::KThread& thread, ICpuCore& cpu, u32 core_index,
+                     CpuHaltReason halt_reason) {
+    const char* path = std::getenv("NXEMU_GUEST_TRACE_FILE");
+    if (path == nullptr || *path == '\0') {
+        return;
+    }
+
+    thread_local auto last_sample = std::chrono::steady_clock::time_point{};
+    const auto now = std::chrono::steady_clock::now();
+    if (last_sample.time_since_epoch().count() != 0 &&
+        now - last_sample < std::chrono::seconds{1}) {
+        return;
+    }
+    last_sample = now;
+
+    CpuThreadContext context{};
+    cpu.GetContext(context);
+
+    u64 previous_fp{};
+    u64 caller_lr{};
+    if (auto* process = thread.GetOwnerKProcess(); process != nullptr && context.fp != 0 &&
+        process->GetMemory().IsValidVirtualAddressRange(context.fp, 16)) {
+        previous_fp = process->GetMemory().Read64(context.fp);
+        caller_lr = process->GetMemory().Read64(context.fp + 8);
+    }
+
+    const auto line = fmt::format(
+        "core={} tid={:016X} halt={} pc={:016X} lr={:016X} sp={:016X} fp={:016X} "
+        "caller_lr={:016X} prev_fp={:016X} x0={:016X} x1={:016X} x2={:016X} x3={:016X} "
+        "x19={:016X} x20={:016X} x21={:016X} x22={:016X} x23={:016X} x24={:016X}\n",
+        core_index, thread.GetThreadId(), static_cast<u32>(halt_reason), context.pc, context.lr,
+        context.sp, context.fp, caller_lr, previous_fp, context.r[0], context.r[1], context.r[2],
+        context.r[3], context.r[19], context.r[20], context.r[21], context.r[22], context.r[23],
+        context.r[24]);
+
+    static std::mutex file_mutex;
+    std::scoped_lock lock{file_mutex};
+    std::ofstream output{path, std::ios::app | std::ios::binary};
+    output.write(line.data(), static_cast<std::streamsize>(line.size()));
+}
+
+} // namespace
+
 namespace Kernel {
 
 PhysicalCore::PhysicalCore(KernelCore & kernel, uint32_t core_index) :
@@ -104,6 +160,8 @@ void PhysicalCore::RunThread(Kernel::KThread * thread)
             {
                 hr = interface->RunThread(thread);
             }
+
+            WriteGuestTrace(*thread, *interface, m_core_index, hr);
 
             ExitContext();
         }

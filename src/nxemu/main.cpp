@@ -5,6 +5,8 @@
 #include <common/path.h>
 #include <common/std_string.h>
 #include <memory>
+#include <string>
+#include <vector>
 #include <nxemu-core/app_init.h>
 #include <nxemu-core/version.h>
 #include <yuzu_common/fs/path_util.h>
@@ -112,6 +114,14 @@ static int RunApplication(const char * arg0)
         RegisterWidgets(*sciterUI);
         SciterMainWindow window(*sciterUI, stdstr_f("NXEmu %s", VER_FILE_VERSION_STR).c_str());
         window.Show();
+        if (!startup.firmware.empty())
+        {
+            window.QueueInstallFirmware(startup.firmware.c_str());
+        }
+        else if (!startup.game.empty())
+        {
+            window.QueueLoadGame(startup.game.c_str());
+        }
         sciterUI->Run();
     }
     if (sciterUI != nullptr)

@@ -90,6 +90,8 @@ class SciterMainWindow :
         TIMER_OPEN_GAME_CONFIG,
         TIMER_DEFERRED_STOP_GAME,
         TIMER_DEFERRED_FILE_EXIT,
+        TIMER_STARTUP_LOAD_GAME,
+        TIMER_STARTUP_INSTALL_FIRMWARE,
     };
 
 public:
@@ -256,6 +258,8 @@ private:
     bool m_firmwareInstallUiActive;
     int32_t m_firmwareInstallLastTotal;
     std::thread m_firmwareInstallThread;
+    std::string m_pendingStartupGame;
+    std::string m_pendingStartupFirmware;
     bool m_mouseCursorHidden;
     uint64_t m_lastMouseActivityTick;
     int32_t m_lastTrackedMouseX;

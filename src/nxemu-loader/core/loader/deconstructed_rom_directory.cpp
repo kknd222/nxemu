@@ -233,7 +233,9 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 
         next_load_addr = *tentative_next_load_addr;
         modules.insert_or_assign(load_addr, module);
-        LOG_DEBUG(Loader, "loaded module {} @ {:#X}", module, load_addr);
+        // Keep module bases in release logs as they are required to translate
+        // guest PCs produced by the diagnostic sampler back to NSO offsets.
+        LOG_INFO(Loader, "loaded module {} @ {:#X}", module, load_addr);
     }
 
     is_loaded = true;

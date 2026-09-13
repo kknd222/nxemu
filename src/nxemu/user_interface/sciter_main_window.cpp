@@ -744,6 +744,31 @@ void SciterMainWindow::LoadGame(const char * path, int32_t program_index, Applic
     UpdateEmulationStatusText();
 }
 
+void SciterMainWindow::InstallFirmware(const char * path)
+{
+    BeginFirmwareInstall(path);
+}
+
+void SciterMainWindow::QueueLoadGame(const char * path)
+{
+    if (path == nullptr || path[0] == '\0')
+    {
+        return;
+    }
+    m_pendingStartupGame = path;
+    m_rootElement.SetTimer(250, (uint32_t *)TIMER_STARTUP_LOAD_GAME);
+}
+
+void SciterMainWindow::QueueInstallFirmware(const char * path)
+{
+    if (path == nullptr || path[0] == '\0')
+    {
+        return;
+    }
+    m_pendingStartupFirmware = path;
+    m_rootElement.SetTimer(250, (uint32_t *)TIMER_STARTUP_INSTALL_FIRMWARE);
+}
+
 void SciterMainWindow::OpenGameSaveDataLocation(const char * gamePath)
 {
     const uint64_t programId = ReadProgramIdForGame(m_modules, gamePath);
@@ -2512,6 +2537,28 @@ bool SciterMainWindow::OnTimer(SCITER_ELEMENT /*element*/, uint32_t * timerId)
     else if (timerId == (uint32_t *)TIMER_DEFERRED_FILE_EXIT)
     {
         DoFileExit();
+        return false;
+    }
+    else if (timerId == (uint32_t *)TIMER_STARTUP_LOAD_GAME)
+    {
+        m_rootElement.SetTimer(0, (uint32_t *)TIMER_STARTUP_LOAD_GAME);
+        const std::string path = std::move(m_pendingStartupGame);
+        m_pendingStartupGame.clear();
+        if (!path.empty())
+        {
+            LoadGame(path.c_str());
+        }
+        return false;
+    }
+    else if (timerId == (uint32_t *)TIMER_STARTUP_INSTALL_FIRMWARE)
+    {
+        m_rootElement.SetTimer(0, (uint32_t *)TIMER_STARTUP_INSTALL_FIRMWARE);
+        const std::string path = std::move(m_pendingStartupFirmware);
+        m_pendingStartupFirmware.clear();
+        if (!path.empty())
+        {
+            InstallFirmware(path.c_str());
+        }
         return false;
     }
     return true;

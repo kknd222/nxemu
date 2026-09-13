@@ -14,6 +14,9 @@
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/physical_core.h"
 
+#include <chrono>
+#include <cstdlib>
+
 namespace Core {
 
 CpuManager::CpuManager(System& system_) : system{system_} {}
@@ -27,9 +30,32 @@ void CpuManager::Initialize() {
         core_data[core].host_thread =
             std::jthread([this, core](std::stop_token token) { RunThread(token, core); });
     }
+
+    // When guest tracing is requested, do not rely on the emulated scheduler
+    // to return control from Dynarmic. A broken timer/synchronization path is
+    // one of the conditions this diagnostic is intended to detect.
+    if (const char* trace_path = std::getenv("NXEMU_GUEST_TRACE_FILE");
+        trace_path != nullptr && *trace_path != '\0') {
+        diagnostic_interrupt_thread = std::jthread([this](std::stop_token token) {
+            while (!token.stop_requested()) {
+                std::this_thread::sleep_for(std::chrono::seconds{1});
+                if (token.stop_requested()) {
+                    break;
+                }
+                auto& kernel = system.Kernel();
+                for (std::size_t core = 0; core < num_cores; ++core) {
+                    kernel.PhysicalCore(core).Interrupt();
+                }
+            }
+        });
+    }
 }
 
 void CpuManager::Shutdown() {
+    if (diagnostic_interrupt_thread.joinable()) {
+        diagnostic_interrupt_thread.request_stop();
+        diagnostic_interrupt_thread.join();
+    }
     for (std::size_t core = 0; core < num_cores; core++) {
         if (core_data[core].host_thread.joinable()) {
             core_data[core].host_thread.request_stop();

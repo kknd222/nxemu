@@ -535,10 +535,95 @@ private:
     }
 };
 
+// ssl:s was added in Horizon 15.0.0 for privileged/system clients.  Newer
+// titles may connect to it during early SDK initialization even when they do
+// not perform any network traffic.  Leaving the service unregistered makes
+// sm:GetService wait forever and prevents the application from presenting its
+// first frame.
+class ISslServiceForSystem final : public ServiceFramework<ISslServiceForSystem> {
+public:
+    explicit ISslServiceForSystem(Core::System& system_)
+        : ServiceFramework{system_, "ssl:s"} {
+        // clang-format off
+        static const FunctionInfo functions[] = {
+            {0, nullptr, "CreateContext"},
+            {1, nullptr, "GetContextCount"},
+            {2, nullptr, "GetCertificates"},
+            {3, nullptr, "GetCertificateBufSize"},
+            {4, nullptr, "DebugIoctl"},
+            {5, &ISslServiceForSystem::SetInterfaceVersion, "SetInterfaceVersion"},
+            {6, nullptr, "FlushSessionCache"},
+            {7, nullptr, "SetDebugOption"},
+            {8, nullptr, "GetDebugOption"},
+            {9, nullptr, "ClearTls12FallbackFlag"},
+            {100, &ISslServiceForSystem::CreateContextForSystem, "CreateContextForSystem"},
+            {101, &ISslServiceForSystem::SetThreadCoreMask, "SetThreadCoreMask"},
+            {102, &ISslServiceForSystem::GetThreadCoreMask, "GetThreadCoreMask"},
+            {103, &ISslServiceForSystem::VerifySignature, "VerifySignature"},
+        };
+        // clang-format on
+
+        RegisterHandlers(functions);
+    }
+
+private:
+    void CreateContextForSystem(HLERequestContext& ctx) {
+        struct Parameters {
+            SslVersion ssl_version;
+            INSERT_PADDING_BYTES(0x4);
+            u64 pid_placeholder;
+        };
+        static_assert(sizeof(Parameters) == 0x10, "Parameters is an invalid size");
+
+        IPC::RequestParser rp{ctx};
+        const auto parameters = rp.PopRaw<Parameters>();
+        LOG_WARNING(Service_SSL, "(STUBBED) called, api_version={}, pid_placeholder={}",
+                    parameters.ssl_version.api_version, parameters.pid_placeholder);
+
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushIpcInterface<ISslContext>(system, parameters.ssl_version);
+    }
+
+    void SetInterfaceVersion(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const u32 ssl_version = rp.Pop<u32>();
+        LOG_DEBUG(Service_SSL, "called, ssl_version={}", ssl_version);
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void SetThreadCoreMask(HLERequestContext& ctx) {
+        IPC::RequestParser rp{ctx};
+        const u64 core_mask = rp.Pop<u64>();
+        LOG_WARNING(Service_SSL, "(STUBBED) called, core_mask={:016X}", core_mask);
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+
+    void GetThreadCoreMask(HLERequestContext& ctx) {
+        LOG_WARNING(Service_SSL, "(STUBBED) called");
+
+        IPC::ResponseBuilder rb{ctx, 4};
+        rb.Push(ResultSuccess);
+        rb.Push<u64>(0);
+    }
+
+    void VerifySignature(HLERequestContext& ctx) {
+        LOG_WARNING(Service_SSL, "(STUBBED) called");
+
+        IPC::ResponseBuilder rb{ctx, 2};
+        rb.Push(ResultSuccess);
+    }
+};
+
 void LoopProcess(Core::System& system) {
     auto server_manager = std::make_unique<ServerManager>(system);
 
     server_manager->RegisterNamedService("ssl", std::make_shared<ISslService>(system));
+    server_manager->RegisterNamedService("ssl:s", std::make_shared<ISslServiceForSystem>(system));
     ServerManager::RunServer(std::move(server_manager));
 }
 

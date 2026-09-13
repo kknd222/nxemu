@@ -93,6 +93,7 @@ private:
 
     std::unique_ptr<Common::Barrier> gpu_barrier{};
     std::array<CoreData, Hardware::NUM_CPU_CORES> core_data{};
+    std::jthread diagnostic_interrupt_thread{};
 
     bool is_async_gpu{};
     bool is_multicore{};
