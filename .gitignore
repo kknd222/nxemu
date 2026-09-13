@@ -68,3 +68,6 @@ src/android/app/build/
 src/android/local.properties
 src/android/*.iml
 src/android/app/*.iml
+
+__pycache__/
+*.pyc

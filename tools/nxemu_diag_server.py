@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import re
+import subprocess
 import threading
 import time
 from collections import deque
@@ -40,12 +42,13 @@ STAGE_EVENTS = {
 
 
 class State:
-    def __init__(self, root: Path, title_id: str):
+    def __init__(self, root: Path, title_id: str, default_rom: Path | None):
         self.root = root
         self.log = root / "user" / "log" / "nxemu_log.txt"
         self.events_file = root / "user" / "log" / "nxemu_events.jsonl"
         self.save = root / "user" / "nand" / "user" / "save" / "0000000000000000"
         self.title_id = title_id.upper()
+        self.default_rom = default_rom
         self.lock = threading.Lock()
         self.events: deque[dict] = deque(maxlen=10000)
         self.seq = 0
@@ -123,6 +126,43 @@ class State:
                           "mtime": p.stat().st_mtime} for p in root.rglob("*") if p.is_file())
         return {"roots": [str(p) for p in roots], "file_count": len(files), "files": files}
 
+    def start_nxemu(self, rom: str | None = None) -> dict:
+        if self.process_status()["running"]:
+            return {"ok": False, "error": "NXEmu is already running"}
+        image = Path(rom) if rom else self.default_rom
+        if image is None or not image.is_file() or image.suffix.lower() != ".dxci":
+            return {"ok": False, "error": "A valid .dxci path is required"}
+        proc = subprocess.Popen([str(self.root / "nxemu.exe"), "--load", str(image)],
+                                cwd=self.root, close_fds=True,
+                                creationflags=subprocess.CREATE_NEW_PROCESS_GROUP)
+        self.emit("nxemu_started", pid=proc.pid, rom=str(image))
+        return {"ok": True, "pid": proc.pid, "rom": str(image)}
+
+    def stop_nxemu(self, force: bool = False) -> dict:
+        processes = self.process_status()["processes"]
+        if not processes:
+            return {"ok": True, "stopped": []}
+        stopped = []
+        for item in processes:
+            pid = item["pid"]
+            if force:
+                psutil.Process(pid).kill()
+            else:
+                enum_windows = ctypes.windll.user32.EnumWindows
+                callback_type = ctypes.WINFUNCTYPE(ctypes.c_bool, ctypes.c_void_p, ctypes.c_void_p)
+
+                def close_window(hwnd, _):
+                    owner = ctypes.c_ulong()
+                    ctypes.windll.user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+                    if owner.value == pid:
+                        ctypes.windll.user32.PostMessageW(hwnd, 0x0010, 0, 0)  # WM_CLOSE
+                    return True
+
+                enum_windows(callback_type(close_window), 0)
+            stopped.append(pid)
+        self.emit("nxemu_stop_requested", pids=stopped, force=force)
+        return {"ok": True, "stopped": stopped, "force": force}
+
 
 class Handler(BaseHTTPRequestHandler):
     state: State
@@ -154,6 +194,19 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"lines": lines[-count:]})
         self.send_json({"error": "not found"}, 404)
 
+    def do_POST(self):
+        length = int(self.headers.get("Content-Length", "0"))
+        try:
+            body = json.loads(self.rfile.read(length) or b"{}")
+        except json.JSONDecodeError:
+            return self.send_json({"error": "invalid JSON"}, 400)
+        if self.path == "/control/start":
+            result = self.state.start_nxemu(body.get("rom"))
+            return self.send_json(result, 200 if result["ok"] else 409)
+        if self.path == "/control/stop":
+            return self.send_json(self.state.stop_nxemu(bool(body.get("force", False))))
+        self.send_json({"error": "not found"}, 404)
+
     def log_message(self, fmt, *args):
         return
 
@@ -162,9 +215,11 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--root", type=Path, default=Path(r"D:\NXEmu"))
     parser.add_argument("--title-id", default="0100F08026D0C000")
+    parser.add_argument("--rom", type=Path,
+                        default=Path(r"F:\NS\[0100F08026D0C000] [v0].dxci"))
     parser.add_argument("--port", type=int, default=32180)
     args = parser.parse_args()
-    state = State(args.root, args.title_id)
+    state = State(args.root, args.title_id, args.rom)
     Handler.state = state
     threading.Thread(target=state.watch, name="nxemu-log-watch", daemon=True).start()
     ThreadingHTTPServer(("127.0.0.1", args.port), Handler).serve_forever()
