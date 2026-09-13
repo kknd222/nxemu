@@ -318,6 +318,7 @@
     <ClCompile Include="core\hle\service\kernel_helpers.cpp" />
     <ClCompile Include="core\hle\service\server_manager.cpp" />
     <ClCompile Include="core\hle\service\service.cpp" />
+    <ClCompile Include="core\hle\service\nxemu_android_diagnostics.cpp" />
     <ClCompile Include="core\hle\service\services.cpp" />
     <ClCompile Include="core\hle\service\acc\acc.cpp" />
     <ClCompile Include="core\hle\service\acc\acc_aa.cpp" />
@@ -801,6 +802,7 @@
     <ClInclude Include="core\hle\service\cmif_types.h" />
     <ClInclude Include="core\hle\service\kernel_helpers.h" />
     <ClInclude Include="core\hle\service\service.h" />
+    <ClInclude Include="core\hle\service\nxemu_android_diagnostics.h" />
     <ClInclude Include="core\hle\service\services.h" />
     <ClInclude Include="core\hle\service\acc\acc.h" />
     <ClInclude Include="core\hle\service\acc\acc_aa.h" />

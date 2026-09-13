@@ -103,6 +103,9 @@ public:
     void ShowConfig(const char * startPage);
     void ShowGameConfig(const char * gamePath);
     void LoadGame(const char * path, int32_t program_index = 0, ApplicationLaunchType launch_type = ApplicationLaunchType::FrontendInitiated);
+    void InstallFirmware(const char * path);
+    void QueueLoadGame(const char * path);
+    void QueueInstallFirmware(const char * path);
     void OpenGameSaveDataLocation(const char * gamePath);
     void OpenGameModDataLocation(const char * gamePath);
     void OpenSaveDataFolderForUser(uint64_t programId, const uint8_t uuidBytes[HOST_PROFILE_UUID_SIZE]);

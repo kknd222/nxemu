@@ -7,7 +7,7 @@
 
 namespace
 {
-const char * kPressShortcut = "Press shortcut…";
+const char * kPressShortcut = "Press shortcut...";
 
 bool ElementIsOrInside(SCITER_ELEMENT descendant, const SciterElement & ancestor)
 {

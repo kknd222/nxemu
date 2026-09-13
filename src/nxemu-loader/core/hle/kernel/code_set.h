@@ -100,11 +100,11 @@ struct CodeSet :
     {
         return segments[2].size;
     }
-    uint64_t PatchSegmentAddr(void) const
+    uint64_t PatchSegmentAddr(void) const override
     {
         return patch_segment.addr.GetValue();
     }
-    uint64_t PatchSegmentSize(void) const
+    uint64_t PatchSegmentSize(void) const override
     {
         return patch_segment.size;
     }
@@ -141,14 +141,8 @@ struct CodeSet :
         return patch_segment;
     }
 
-    uint64_t PatchSegmentAddr(void) const override {
-        return patch_segment.addr.GetValue();
-    }
     uint64_t PatchSegmentOffset(void) const override {
         return patch_segment.offset;
-    }
-    uint64_t PatchSegmentSize(void) const override {
-        return patch_segment.size;
     }
 
     uint32_t PatchPostHandlerCount(void) const override {

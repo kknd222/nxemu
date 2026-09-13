@@ -20,7 +20,48 @@
 
 #ifdef WIN32
 #include <windows.h>
+#include <shellapi.h>
 #endif
+
+namespace
+{
+struct StartupOptions
+{
+    std::string game;
+    std::string firmware;
+};
+
+StartupOptions ParseStartupOptions()
+{
+    StartupOptions options;
+#ifdef WIN32
+    int argc = 0;
+    LPWSTR* argv = CommandLineToArgvW(GetCommandLineW(), &argc);
+    if (argv == nullptr)
+    {
+        return options;
+    }
+    for (int i = 1; i < argc; ++i)
+    {
+        const std::string arg = Common::FS::PathToUTF8String(argv[i]);
+        if ((arg == "--load" || arg == "-l") && i + 1 < argc)
+        {
+            options.game = Common::FS::PathToUTF8String(argv[++i]);
+        }
+        else if (arg == "--install-firmware" && i + 1 < argc)
+        {
+            options.firmware = Common::FS::PathToUTF8String(argv[++i]);
+        }
+        else if (!arg.empty() && arg[0] != '-' && options.game.empty())
+        {
+            options.game = arg;
+        }
+    }
+    LocalFree(argv);
+#endif
+    return options;
+}
+}
 
 void RegisterWidgets(ISciterUI & sciterUI)
 {
@@ -88,6 +129,7 @@ static void EnablePerMonitorDpiAwareness()
 
 static int RunApplication(const char * arg0) 
 {
+    const StartupOptions startup = ParseStartupOptions();
     bool has_broken_vulkan = false;
     bool is_child = false;
     if (CheckEnvVars(&is_child)) {

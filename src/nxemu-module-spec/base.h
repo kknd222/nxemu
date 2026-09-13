@@ -26,7 +26,7 @@
 
 enum
 {
-    MODULE_LOADER_SPECS_VERSION = 0x012D,
+    MODULE_LOADER_SPECS_VERSION = 0x012E,
     MODULE_VIDEO_SPECS_VERSION = 0x011E,
     MODULE_CPU_SPECS_VERSION = 0x0113,
     MODULE_OPERATING_SYSTEM_SPECS_VERSION = 0x011C,
@@ -282,7 +282,16 @@ nxinterface IModuleInfo
     virtual uint64_t DataSegmentOffset(void) const = 0;
     virtual uint64_t DataSegmentSize(void) const = 0;
     virtual uint64_t PatchSegmentAddr(void) const = 0;
+    virtual uint64_t PatchSegmentOffset(void) const = 0;
     virtual uint64_t PatchSegmentSize(void) const = 0;
+    virtual uint32_t PatchPostHandlerCount(void) const { return 0; }
+    virtual bool PatchPostHandler(uint32_t index, uint64_t * module_pc, uint64_t * patch_pc) const
+    {
+        (void)index;
+        (void)module_pc;
+        (void)patch_pc;
+        return false;
+    }
 };
 
 nxinterface IProcess

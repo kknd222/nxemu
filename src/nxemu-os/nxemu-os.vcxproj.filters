@@ -852,6 +852,9 @@
     <ClInclude Include="core\hle\service\service.h">
       <Filter>Header Files\core\hle\service</Filter>
     </ClInclude>
+    <ClInclude Include="core\hle\service\nxemu_android_diagnostics.h">
+      <Filter>Header Files\core\hle\service</Filter>
+    </ClInclude>
     <ClInclude Include="core\hle\service\services.h">
       <Filter>Header Files\core\hle\service</Filter>
     </ClInclude>
@@ -2435,6 +2438,9 @@
       <Filter>Source Files\core\hle\service</Filter>
     </ClCompile>
     <ClCompile Include="core\hle\service\service.cpp">
+      <Filter>Source Files\core\hle\service</Filter>
+    </ClCompile>
+    <ClCompile Include="core\hle\service\nxemu_android_diagnostics.cpp">
       <Filter>Source Files\core\hle\service</Filter>
     </ClCompile>
     <ClCompile Include="core\hle\service\services.cpp">
