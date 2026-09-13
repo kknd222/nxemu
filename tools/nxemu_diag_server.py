@@ -119,7 +119,9 @@ class State:
         return {"running": bool(matches), "processes": matches}
 
     def save_status(self) -> dict:
-        roots = list(self.save.glob(f"*/{self.title_id}")) if self.save.exists() else []
+        roots = ([p for p in self.save.glob(f"*/{self.title_id}")
+                  if re.fullmatch(r"[0-9A-Fa-f]{32}", p.parent.name)]
+                 if self.save.exists() else [])
         files = []
         for root in roots:
             files.extend({"path": str(p), "size": p.stat().st_size,
