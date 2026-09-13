@@ -113,7 +113,7 @@ bool ShouldTraceAndroidNceCpuCore() {
         }                            \
     } while (false)
 #else
-#define NXEMU_ANDROID_CPU_TRACE(...) LOG_INFO(__VA_ARGS__)
+#define NXEMU_ANDROID_CPU_TRACE(...) ((void)0)
 #endif
 
 std::atomic<int> g_cpu_snapshot_budget{0};

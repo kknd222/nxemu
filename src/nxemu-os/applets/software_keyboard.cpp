@@ -12,6 +12,8 @@ void DefaultSoftwareKeyboardApplet::Close() {}
 void DefaultSoftwareKeyboardApplet::InitializeKeyboard(
     bool is_inline, const KeyboardInitializeHostParameters * initialize_parameters, void * user_data_normal, SwkbdSubmitNormalFn submit_normal, void * user_data_inline, SwkbdSubmitInlineFn submit_inline)
 {
+    LOG_INFO(Service_AM, "SwkbdTrace Initialize is_inline={} normal_callback={} inline_callback={}",
+             is_inline, submit_normal != nullptr, submit_inline != nullptr);
     user_data_normal_ = user_data_normal;
     submit_normal_ = submit_normal;
     user_data_inline_ = user_data_inline;
@@ -42,7 +44,7 @@ void DefaultSoftwareKeyboardApplet::InitializeKeyboard(
 
 void DefaultSoftwareKeyboardApplet::ShowNormalKeyboard() const
 {
-    LOG_WARNING(Service_AM, "(STUBBED) called, backend requested to show the normal software keyboard.");
+    LOG_INFO(Service_AM, "SwkbdTrace ShowNormalKeyboard auto-submit name='nxemu'");
 
     SubmitNormalText(u"nxemu");
 }
@@ -96,9 +98,11 @@ void DefaultSoftwareKeyboardApplet::SubmitNormalText(std::u16string text) const
 {
     if (!submit_normal_)
     {
+        LOG_ERROR(Service_AM, "SwkbdTrace SubmitNormalText callback is null");
         return;
     }
 
+    LOG_INFO(Service_AM, "SwkbdTrace SubmitNormalText length={} confirmed=true", text.size());
     submit_normal_(user_data_normal_, static_cast<uint32_t>(Service::AM::Frontend::SwkbdResult::Ok), reinterpret_cast<const uint16_t *>(text.data()), static_cast<uint32_t>(text.size()), true);
 }
 

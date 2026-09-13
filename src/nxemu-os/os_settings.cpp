@@ -591,7 +591,11 @@ void InitializeOsSettingDefaults()
     osSettings.error_applet_mode = AppletMode::LLE;
     osSettings.net_connect_applet_mode = AppletMode::HLE;
     osSettings.player_select_applet_mode = AppletMode::HLE;
-    osSettings.swkbd_applet_mode = AppletMode::LLE;
+    // NXEmu does not yet provide a complete guest swkbd renderer/input path.
+    // When firmware is installed, LLE can launch successfully but then leave
+    // games waiting forever for text input. Keep swkbd on the working HLE
+    // frontend until the guest applet is fully supported.
+    osSettings.swkbd_applet_mode = AppletMode::HLE;
     osSettings.mii_edit_applet_mode = AppletMode::LLE;
     osSettings.web_applet_mode = AppletMode::HLE;
     osSettings.shop_applet_mode = AppletMode::HLE;

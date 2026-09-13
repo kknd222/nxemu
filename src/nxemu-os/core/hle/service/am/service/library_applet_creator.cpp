@@ -30,7 +30,10 @@ bool ShouldCreateGuestApplet(AppletId applet_id)
     case AppletId::Error: return osSettings.error_applet_mode == AppletMode::LLE;
     case AppletId::NetConnect: return osSettings.net_connect_applet_mode == AppletMode::LLE;
     case AppletId::ProfileSelect: return osSettings.player_select_applet_mode == AppletMode::LLE;
-    case AppletId::SoftwareKeyboard: return osSettings.swkbd_applet_mode == AppletMode::LLE;
+    case AppletId::SoftwareKeyboard:
+        LOG_INFO(Service_AM, "SwkbdTrace route={}",
+                 osSettings.swkbd_applet_mode == AppletMode::LLE ? "LLE" : "HLE");
+        return osSettings.swkbd_applet_mode == AppletMode::LLE;
     case AppletId::MiiEdit: return osSettings.mii_edit_applet_mode == AppletMode::LLE;
     case AppletId::Web: return osSettings.web_applet_mode == AppletMode::LLE;
     case AppletId::Shop: return osSettings.shop_applet_mode == AppletMode::LLE;

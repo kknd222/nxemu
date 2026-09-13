@@ -119,6 +119,13 @@ public:
 
         bytes_written += file->WriteString(FormatLogMessage(entry).append(1, '\n'));
 
+        const auto now = std::chrono::steady_clock::now();
+        if (now - last_flush >= std::chrono::seconds(1))
+        {
+            file->Flush();
+            last_flush = now;
+        }
+
         using namespace Common::Literals;
         // Prevent logs from exceeding a set maximum size in the event that log entries are spammed.
         const auto write_limit = Settings::values.extended_logging.GetValue() ? 1_GiB : 100_MiB;
@@ -150,6 +157,7 @@ private:
     std::unique_ptr<FS::IOFile> file;
     bool enabled = true;
     std::size_t bytes_written = 0;
+    std::chrono::steady_clock::time_point last_flush{std::chrono::steady_clock::now()};
 };
 
 /**
