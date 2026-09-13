@@ -38,17 +38,17 @@ enum class ProcessorArchitecture
     AArch32,
 };
 
-enum class CpuHaltReason
+enum class CpuHaltReason : uint64_t
 {
-    StepThread,
-    CacheInvalidation,
-    DataAbort,
-    BreakLoop,
-    SupervisorCall,
-    SupervisorCallBreakLoop,
-    InstructionBreakpoint,
-    PrefetchAbort,
-    PrefetchAbortBreakLoop,
+    StepThread = 1ULL << 0,
+    CacheInvalidation = 1ULL << 1,
+    DataAbort = 1ULL << 2,
+    BreakLoop = 1ULL << 3,
+    SupervisorCall = 1ULL << 4,
+    SupervisorCallBreakLoop = (1ULL << 4) | (1ULL << 3),
+    InstructionBreakpoint = 1ULL << 5,
+    PrefetchAbort = 1ULL << 6,
+    PrefetchAbortBreakLoop = (1ULL << 6) | (1ULL << 3),
 };
 
 struct CpuDebugWatchpoint
@@ -82,6 +82,8 @@ nxinterface IMemory
     virtual uint32_t Read32(uint64_t addr) = 0;
     virtual uint64_t Read64(uint64_t addr) = 0;
     virtual bool ReadBlock(uint64_t src_addr, void * dest_buffer, uint64_t size) = 0;
+    virtual bool WriteBlock(uint64_t dest_addr, const void * src_buffer, uint64_t size) = 0;
+    virtual bool InvalidateNCE(uint64_t vaddr, uint64_t size) = 0;
 
     virtual void Write8(uint64_t addr, uint8_t value) = 0;
     virtual void Write16(uint64_t addr, uint16_t value) = 0;
@@ -153,6 +155,8 @@ nxinterface IPatchCollection
 {
     virtual void PatchText(int32_t patch_index, const uint8_t * program_image, uint32_t image_size, uint32_t code_offset, uint32_t code_size) = 0;
     virtual void Relocate(int32_t patch_index, uint64_t load_base, uint8_t * program_image, uint32_t * image_size, uint32_t code_offset, uint32_t code_size, uint64_t * segment_addr, uint32_t * segment_size) = 0;
+    virtual uint32_t GetPostHandlerCount() const { return 0; }
+    virtual bool GetPostHandler(uint32_t index, uint64_t * module_pc, uint64_t * patch_pc) const { (void)index; (void)module_pc; (void)patch_pc; return false; }
     virtual uint32_t GetTotalPatchSize() const = 0;
     virtual uint32_t GetPreTextSize(int32_t patch_index) const = 0;
     virtual int32_t GetLastIndex() const = 0;

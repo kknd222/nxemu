@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright © 2020 Skyline Team and Contributors
+﻿// SPDX-FileCopyrightText: Copyright © 2020 Skyline Team and Contributors
 // SPDX-License-Identifier: MPL-2.0
 
 #pragma once
@@ -147,3 +147,4 @@ static_assert(Exclusive(0xC85F7C00).AsOrdered() == 0xC85FFC00);
 static_assert(Exclusive(0xC8200440).AsOrdered() == 0xC8208440);
 
 } // namespace Core::NCE
+

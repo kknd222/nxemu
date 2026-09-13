@@ -10,6 +10,7 @@
 #include "core/hle/service/cmif_serialization.h"
 #include "core/hle/service/glue/glue_manager.h"
 #include "core/hle/service/ns/application_manager_interface.h"
+#include "core/hle/service/nxemu_android_diagnostics.h"
 #include "core/hle/service/ns/service_getter_interface.h"
 #include "core/hle/service/sm/sm.h"
 #include <nxemu-module-spec/system_loader.h>
@@ -326,6 +327,8 @@ Result IApplicationFunctions::EndBlockingHomeButton()
 Result IApplicationFunctions::NotifyRunning(Out<bool> out_became_running)
 {
     LOG_WARNING(Service_AM, "(STUBBED) called");
+    NxemuAndroidDiagnostics::RecordEvent("AM.Application.NotifyRunning",
+                                         "became_running=true");
     *out_became_running = true;
     R_SUCCEED();
 }
@@ -437,6 +440,8 @@ Result IApplicationFunctions::GetPreviousProgramIndex(Out<s32> out_previous_prog
 Result IApplicationFunctions::GetGpuErrorDetectedSystemEvent(OutCopyHandle<Kernel::KReadableEvent> out_event)
 {
     LOG_WARNING(Service_AM, "(STUBBED) called");
+    NxemuAndroidDiagnostics::RecordEvent("AM.Application.GetGpuErrorDetectedSystemEvent",
+                                         "return gpu_error_detected_event");
     *out_event = m_applet->gpu_error_detected_event.GetHandle();
     R_SUCCEED();
 }

@@ -1,0 +1,273 @@
+===== NxEmu Android Auto Session Log =====
+created=2026-08-14 09:51:50.182 +0800
+package=org.nxemu.app.debug
+device=vivo V2362A
+android=12 sdk=32
+abis=x86_64, arm64-v8a, x86, armeabi-v7a, armeabi
+nativeLibraryDir=/data/app/~~RN2GRTYPXF8Tj5uO-ShaAQ==/org.nxemu.app.debug-Ec-nt3TIPMIMnYWyJ63iyw==/lib/arm64
+gamePath=/data/user/0/org.nxemu.app.debug/files/test_roms/hbmenu.nro
+originalGamePath=/data/user/0/org.nxemu.app.debug/files/test_roms/hbmenu.nro
+
+----- 2026-08-14 09:51:50.183 +0800 [activity-create] -----
+thread=main
+autoOutputLog=true
+sessionLogFile=/storage/emulated/0/Android/data/org.nxemu.app.debug/files/logs/nxemu-session-20260814-095150-171-hbmenu.nro.txt
+originalGamePath=/data/user/0/org.nxemu.app.debug/files/test_roms/hbmenu.nro
+gamePath=/data/user/0/org.nxemu.app.debug/files/test_roms/hbmenu.nro
+pathRepair:
+original=/data/user/0/org.nxemu.app.debug/files/test_roms/hbmenu.nro
+resolved=/data/user/0/org.nxemu.app.debug/files/test_roms/hbmenu.nro
+repaired=false
+reason=exists
+
+
+----- 2026-08-14 09:51:50.224 +0800 [performance-profile-activity-create] -----
+thread=main
+setPerformanceProfile=ok
+performanceProfile=android-default
+frameSkip=0
+resolutionSetup=0
+forceMaxClock=false
+asyncShaders=false
+asyncGpu=false
+asyncPresentation=false
+fastGpuTime=false
+nceRequested=true
+cpuBackendSetting=0
+nceEligible39Bit=false
+nceFastmem=false
+nceEnabled=false
+cpuBackendActual=Dynarmic
+cpuAccuracy=0
+nativeBuildOptimized=true
+androidFullTrace=false
+
+----- 2026-08-14 09:51:50.226 +0800 [perf-snapshot-0] -----
+thread=NxEmuPerfSampler
+performance:
+performanceProfile=android-default
+frameSkip=0
+resolutionSetup=0
+forceMaxClock=false
+asyncShaders=false
+asyncGpu=false
+asyncPresentation=false
+fastGpuTime=false
+nceRequested=true
+cpuBackendSetting=0
+nceEligible39Bit=false
+nceFastmem=false
+nceEnabled=false
+cpuBackendActual=Dynarmic
+cpuAccuracy=0
+nativeBuildOptimized=true
+androidFullTrace=false
+systemFps=0
+gameFps=0
+frametimeMs=0
+speedPercent=0
+loadProgress:
+loadProgress=ok
+currentStage=created
+elapsedMs=0
+currentStageElapsedMs=0
+stageCount=0
+stages:
+
+
+----- 2026-08-14 09:51:50.225 +0800 [activity-create-ui-ready] -----
+thread=main
+ui=ready
+settings: frameSkip=0 resolution=3/4X preferNce=true
+
+----- 2026-08-14 09:51:50.325 +0800 [surface-created] -----
+thread=main
+surface=Surface(name=null)/@0x3a29e7d
+
+----- 2026-08-14 09:51:50.334 +0800 [boot-schedule] -----
+thread=main
+surfaceAlive=true gamePath=/data/user/0/org.nxemu.app.debug/files/test_roms/hbmenu.nro
+
+----- 2026-08-14 09:51:50.337 +0800 [surface-changed] -----
+thread=main
+format=4 width=1280 height=720 surface=Surface(name=null)/@0x3a29e7d
+
+----- 2026-08-14 09:51:50.345 +0800 [boot-thread-begin] -----
+thread=NxEmuBootThread
+thread=NxEmuBootThread
+
+----- 2026-08-14 09:51:50.361 +0800 [native-initialize] -----
+thread=NxEmuBootThread
+true
+
+----- 2026-08-14 09:51:50.353 +0800 [surface-reattach] -----
+thread=main
+surface=ok
+width=1280
+height=720
+
+snapshot:
+surfaceAlive=true bootStarted=true stopRequested=false
+perfOverlay=Game FPS -- | Sys -- | Speed --% | --ms
+Temp 36.0℃ batt | Skip 0 | Res 3/4X | NCE 请求/未启用
+Load created | -- total | -- stage
+performanceStats:
+performanceProfile=android-default
+frameSkip=0
+resolutionSetup=0
+forceMaxClock=false
+asyncShaders=false
+asyncGpu=false
+asyncPresentation=false
+fastGpuTime=false
+nceRequested=true
+cpuBackendSetting=0
+nceEligible39Bit=false
+nceFastmem=false
+nceEnabled=false
+cpuBackendActual=Dynarmic
+cpuAccuracy=0
+nativeBuildOptimized=true
+androidFullTrace=false
+systemFps=0
+gameFps=0
+frametimeMs=0
+speedPercent=0
+loadProgress:
+loadProgress=ok
+currentStage=surface attached
+elapsedMs=23
+currentStageElapsedMs=23
+stageCount=1
+stages:
+  0ms surface attached
+
+runtimeStatus:
+runtimeInitialized=false
+shutdownRequested=false
+surface=attached
+modules=none_or_invalid
+lastBootAttempted=false
+lastBootLoaded=false
+lastBootPath=
+filesDir=
+moduleDir=
+gpuDriver:
+gpuHookLibDir=
+gpuCustomDriverDir=
+gpuCustomDriverName=
+gpuFileRedirectDir=
+gpuCustomDriverSupported=false
+performance:
+performanceProfile=android-default
+frameSkip=0
+resolutionSetup=0
+forceMaxClock=false
+asyncShaders=false
+asyncGpu=false
+asyncPresentation=false
+fastGpuTime=false
+nceRequested=true
+cpuBackendSetting=0
+nceEligible39Bit=false
+nceFastmem=false
+nceEnabled=false
+cpuBackendActual=Dynarmic
+cpuAccuracy=0
+nativeBuildOptimized=true
+androidFullTrace=false
+hblDiagnostics:
+hblEnvConfigured=false
+mainThreadStartupDiagnostics:
+mainThreadStartupConfigured=false
+loadRomDiagnostics:
+loadRomDiagnostics=not-run
+nceLoaderDiagnostics:
+nceLoaderDiagnostics=not-run
+osServiceDiagnostics:
+osServiceDiagnostics=ok
+eventCount=0
+counters:
+recent:
+
+nextLoadStatus:
+nextLoadPathAddr=0x0
+nextLoadArgvAddr=0x0
+nextLoadPending=false
+nextLoadGuestPath=
+nextLoadHostPath=
+nextLoadHostExists=false
+nextLoadArgvSize=0
+lastStatus=surface=ok
+width=1280
+height=720
+
+----- 2026-08-14 09:51:50.365 +0800 [gpu-driver-initialize] -----
+thread=NxEmuBootThread
+initializeGpuDriver=ok
+gpuHookLibDir=/data/app/~~RN2GRTYPXF8Tj5uO-ShaAQ==/org.nxemu.app.debug-Ec-nt3TIPMIMnYWyJ63iyw==/lib/arm64/
+gpuCustomDriverDir=/data/user/0/org.nxemu.app.debug/files/gpu_driver/current/
+gpuCustomDriverName=
+gpuFileRedirectDir=/storage/emulated/0/Android/data/org.nxemu.app.debug/files/gpu/vk_file_redirect/
+gpuCustomDriverSupported=false
+performanceProfile=android-default
+frameSkip=0
+resolutionSetup=0
+forceMaxClock=false
+asyncShaders=false
+asyncGpu=false
+asyncPresentation=false
+fastGpuTime=false
+nceRequested=true
+cpuBackendSetting=0
+nceEligible39Bit=false
+nceFastmem=false
+nceEnabled=false
+cpuBackendActual=Dynarmic
+cpuAccuracy=0
+nativeBuildOptimized=true
+androidFullTrace=false
+
+----- 2026-08-14 09:51:50.375 +0800 [runtime-initialize] -----
+thread=NxEmuBootThread
+runtime=initialized
+baseDir=/data/user/0/org.nxemu.app.debug/files
+appDir=/data/user/0/org.nxemu.app.debug/files/user
+moduleDir=/data/app/~~RN2GRTYPXF8Tj5uO-ShaAQ==/org.nxemu.app.debug-Ec-nt3TIPMIMnYWyJ63iyw==/lib/arm64
+gpuDriver:
+gpuHookLibDir=/data/app/~~RN2GRTYPXF8Tj5uO-ShaAQ==/org.nxemu.app.debug-Ec-nt3TIPMIMnYWyJ63iyw==/lib/arm64/
+gpuCustomDriverDir=/data/user/0/org.nxemu.app.debug/files/gpu_driver/current/
+gpuCustomDriverName=
+gpuFileRedirectDir=/storage/emulated/0/Android/data/org.nxemu.app.debug/files/gpu/vk_file_redirect/
+gpuCustomDriverSupported=false
+performance:
+performanceProfile=android-default
+frameSkip=0
+resolutionSetup=1
+forceMaxClock=true
+asyncShaders=true
+asyncGpu=true
+asyncPresentation=true
+fastGpuTime=true
+nceRequested=true
+cpuBackendSetting=1
+nceEligible39Bit=false
+nceFastmem=true
+nceEnabled=false
+cpuBackendActual=Dynarmic
+cpuAccuracy=0
+nativeBuildOptimized=true
+androidFullTrace=false
+
+----- 2026-08-14 09:51:50.376 +0800 [surface-attach] -----
+thread=NxEmuBootThread
+surface=ok
+width=1280
+height=720
+
+----- 2026-08-14 09:51:50.377 +0800 [boot-game-begin] -----
+thread=NxEmuBootThread
+gamePath=/data/user/0/org.nxemu.app.debug/files/test_roms/hbmenu.nro
+exists=true
+size=2455539
+

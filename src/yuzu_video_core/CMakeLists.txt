@@ -333,18 +333,29 @@ if (YUZU_USE_BUNDLED_FFMPEG AND NOT (WIN32 OR ANDROID))
     add_dependencies(video_core ffmpeg-build)
 endif()
 
+set(_NXEMU_ANDROID_DISABLE_FFMPEG_DEFAULT OFF)
+if(ANDROID AND ANDROID_ABI STREQUAL "x86_64")
+    set(_NXEMU_ANDROID_DISABLE_FFMPEG_DEFAULT ON)
+endif()
+option(NXEMU_ANDROID_DISABLE_FFMPEG
+    "Disable FFmpeg/NVDEC in Android diagnostic builds that do not have ABI-matched FFmpeg libs"
+    ${_NXEMU_ANDROID_DISABLE_FFMPEG_DEFAULT})
+
 if(NOT FFmpeg_INCLUDE_DIR)
     set(FFmpeg_INCLUDE_DIR "${CMAKE_SOURCE_DIR}/external/ffmpeg/include")
 endif()
 
-if(ANDROID AND NOT FFmpeg_LIBRARIES)
+if(NXEMU_ANDROID_DISABLE_FFMPEG)
+    target_compile_definitions(video_core PRIVATE NXEMU_DISABLE_FFMPEG=1)
+    message(STATUS "video_core: FFmpeg disabled for this build")
+elseif(ANDROID AND NOT FFmpeg_LIBRARIES)
     # Static link order matters. Expected layout: external/ffmpeg/lib/<abi>/lib*.a
     set(_ffmpeg_android_root "${CMAKE_SOURCE_DIR}/external/ffmpeg/lib/${ANDROID_ABI}")
     if(EXISTS "${_ffmpeg_android_root}/libffmpeg.so")
         set(FFmpeg_LIBRARIES "${_ffmpeg_android_root}/libffmpeg.so")
     else()
         set(_ffmpeg_android_names
-            libavutil libswresample libavcodec libavfilter libswscale)
+            libavfilter libavformat libavcodec libswscale libswresample libavutil)
         set(_ffmpeg_android_ok TRUE)
         foreach(_n IN LISTS _ffmpeg_android_names)
             if(NOT EXISTS "${_ffmpeg_android_root}/${_n}.a")
@@ -369,8 +380,10 @@ if(ANDROID AND NOT FFmpeg_LIBRARIES)
 endif()
 
 target_include_directories(video_core PRIVATE ${FFmpeg_INCLUDE_DIR})
-target_link_libraries(video_core PRIVATE ${FFmpeg_LIBRARIES})
-target_link_options(video_core PRIVATE ${FFmpeg_LDFLAGS})
+if(NOT NXEMU_ANDROID_DISABLE_FFMPEG)
+    target_link_libraries(video_core PRIVATE ${FFmpeg_LIBRARIES})
+    target_link_options(video_core PRIVATE ${FFmpeg_LDFLAGS})
+endif()
 
 add_dependencies(video_core host_shaders)
 target_include_directories(video_core PRIVATE ${HOST_SHADERS_INCLUDE})
@@ -429,8 +442,11 @@ if (YUZU_ENABLE_LTO)
   set_property(TARGET video_core PROPERTY INTERPROCEDURAL_OPTIMIZATION TRUE)
 endif()
 
-if (ANDROID AND ARCHITECTURE_arm64)
+option(NXEMU_ANDROID_ENABLE_ADRENOTOOLS "Enable adrenotools on Android builds" OFF)
+
+if (ANDROID AND ARCHITECTURE_arm64 AND NXEMU_ANDROID_ENABLE_ADRENOTOOLS)
     target_link_libraries(video_core PRIVATE adrenotools)
+    target_compile_definitions(video_core PRIVATE NXEMU_USE_ADRENOTOOLS=1)
 endif()
 
 if(ANDROID)

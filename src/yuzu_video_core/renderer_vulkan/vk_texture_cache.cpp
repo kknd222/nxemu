@@ -7,6 +7,10 @@
 #include <vector>
 #include <boost/container/small_vector.hpp>
 
+#if defined(ANDROID) || defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
+
 #include "yuzu_common/bit_cast.h"
 #include "yuzu_common/bit_util.h"
 #include "yuzu_common/settings.h"
@@ -40,10 +44,38 @@ using VideoCommon::ImageType;
 using VideoCommon::SubresourceRange;
 using VideoCore::Surface::BytesPerBlock;
 using VideoCore::Surface::IsPixelFormatASTC;
+using VideoCore::Surface::IsPixelFormatBCn;
 using VideoCore::Surface::IsPixelFormatInteger;
 using VideoCore::Surface::SurfaceType;
 
 namespace {
+bool ReadAndroidBoolProperty(const char* name, bool default_value) {
+#if defined(ANDROID) || defined(__ANDROID__)
+    char value[PROP_VALUE_MAX]{};
+    const int len = __system_property_get(name, value);
+    if (len <= 0) {
+        return default_value;
+    }
+    if (value[0] == '1' || value[0] == 'y' || value[0] == 'Y' || value[0] == 't' ||
+        value[0] == 'T') {
+        return true;
+    }
+    if (value[0] == '0' || value[0] == 'n' || value[0] == 'N' || value[0] == 'f' ||
+        value[0] == 'F') {
+        return false;
+    }
+#endif
+    return default_value;
+}
+
+bool ForceAstcTranscodeForAndroid() {
+    return ReadAndroidBoolProperty("debug.nxemu.force_astc_transcode", false);
+}
+
+bool ForceBcnTranscodeForAndroid() {
+    return ReadAndroidBoolProperty("debug.nxemu.force_bcn_transcode", false);
+}
+
 constexpr VkBorderColor ConvertBorderColor(const std::array<float, 4>& color) {
     if (color == std::array<float, 4>{0, 0, 0, 0}) {
         return VK_BORDER_COLOR_FLOAT_TRANSPARENT_BLACK;
@@ -1372,7 +1404,8 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
       runtime{&runtime_}, original_image(MakeImage(runtime_.device, runtime_.memory_allocator, info,
                                                    runtime->ViewFormats(info.format))),
       aspect_mask(ImageAspectMask(info.format)) {
-    if (IsPixelFormatASTC(info.format) && !runtime->device.IsOptimalAstcSupported()) {
+    if (IsPixelFormatASTC(info.format) &&
+        (!runtime->device.IsOptimalAstcSupported() || ForceAstcTranscodeForAndroid())) {
         switch (videoSettings.accelerate_astc) {
         case AstcDecodeMode::Gpu:
             if (videoSettings.astc_recompression ==
@@ -1390,7 +1423,8 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
         flags |= VideoCommon::ImageFlagBits::Converted;
         flags |= VideoCommon::ImageFlagBits::CostlyLoad;
     }
-    if (IsPixelFormatBCn(info.format) && !runtime->device.IsOptimalBcnSupported()) {
+    if (IsPixelFormatBCn(info.format) &&
+        (!runtime->device.IsOptimalBcnSupported() || ForceBcnTranscodeForAndroid())) {
         flags |= VideoCommon::ImageFlagBits::Converted;
         flags |= VideoCommon::ImageFlagBits::CostlyLoad;
     }

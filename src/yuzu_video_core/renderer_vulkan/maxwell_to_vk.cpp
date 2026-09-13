@@ -3,6 +3,10 @@
 
 #include <iterator>
 
+#if defined(ANDROID) || defined(__ANDROID__)
+#include <sys/system_properties.h>
+#endif
+
 #include "yuzu_common/yuzu_assert.h"
 #include "yuzu_common/common_types.h"
 #include "yuzu_common/logging/log.h"
@@ -234,6 +238,33 @@ constexpr bool IsZetaFormat(PixelFormat pixel_format) {
            pixel_format < PixelFormat::MaxDepthStencilFormat;
 }
 
+bool ReadAndroidBoolProperty(const char* name, bool default_value) {
+#if defined(ANDROID) || defined(__ANDROID__)
+    char value[PROP_VALUE_MAX]{};
+    const int len = __system_property_get(name, value);
+    if (len <= 0) {
+        return default_value;
+    }
+    if (value[0] == '1' || value[0] == 'y' || value[0] == 'Y' || value[0] == 't' ||
+        value[0] == 'T') {
+        return true;
+    }
+    if (value[0] == '0' || value[0] == 'n' || value[0] == 'N' || value[0] == 'f' ||
+        value[0] == 'F') {
+        return false;
+    }
+#endif
+    return default_value;
+}
+
+bool ForceAstcTranscodeForAndroid() {
+    return ReadAndroidBoolProperty("debug.nxemu.force_astc_transcode", false);
+}
+
+bool ForceBcnTranscodeForAndroid() {
+    return ReadAndroidBoolProperty("debug.nxemu.force_bcn_transcode", false);
+}
+
 } // Anonymous namespace
 
 FormatInfo SurfaceFormat(const Device& device, FormatType format_type, bool with_srgb,
@@ -241,7 +272,8 @@ FormatInfo SurfaceFormat(const Device& device, FormatType format_type, bool with
     ASSERT(static_cast<size_t>(pixel_format) < std::size(tex_format_tuples));
     FormatTuple tuple = tex_format_tuples[static_cast<size_t>(pixel_format)];
     // Transcode on hardware that doesn't support ASTC natively
-    if (!device.IsOptimalAstcSupported() && VideoCore::Surface::IsPixelFormatASTC(pixel_format)) {
+    if ((!device.IsOptimalAstcSupported() || ForceAstcTranscodeForAndroid()) &&
+        VideoCore::Surface::IsPixelFormatASTC(pixel_format)) {
         const bool is_srgb = with_srgb && VideoCore::Surface::IsPixelFormatSRGB(pixel_format);
 
         switch (videoSettings.astc_recompression) {
@@ -262,7 +294,8 @@ FormatInfo SurfaceFormat(const Device& device, FormatType format_type, bool with
         }
     }
     // Transcode on hardware that doesn't support BCn natively
-    if (!device.IsOptimalBcnSupported() && VideoCore::Surface::IsPixelFormatBCn(pixel_format)) {
+    if ((!device.IsOptimalBcnSupported() || ForceBcnTranscodeForAndroid()) &&
+        VideoCore::Surface::IsPixelFormatBCn(pixel_format)) {
         const bool is_srgb = with_srgb && VideoCore::Surface::IsPixelFormatSRGB(pixel_format);
         if (pixel_format == PixelFormat::BC4_SNORM) {
             tuple.format = VK_FORMAT_R8_SNORM;

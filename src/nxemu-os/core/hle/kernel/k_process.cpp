@@ -14,8 +14,28 @@
 #include <nxemu-cpu/cpu_settings_identifiers.h>
 #include "os_settings.h"
 #include <random>
+#include <sstream>
+#include <mutex>
 
 extern IModuleSettings * g_settings;
+
+
+namespace {
+std::mutex g_main_thread_startup_diagnostic_mutex;
+std::string g_main_thread_startup_diagnostic = "mainThreadStartupConfigured=false";
+
+void SetMainThreadStartupDiagnostic(std::string text)
+{
+    std::lock_guard lock{g_main_thread_startup_diagnostic_mutex};
+    g_main_thread_startup_diagnostic = std::move(text);
+}
+} // namespace
+
+extern "C" const char * NxemuGetLastMainThreadStartupDiagnostics()
+{
+    std::lock_guard lock{g_main_thread_startup_diagnostic_mutex};
+    return g_main_thread_startup_diagnostic.c_str();
+}
 
 namespace Kernel
 {
@@ -1095,8 +1115,10 @@ Result KProcess::Run(s32 priority, size_t stack_size)
     };
 
     // Initialize the thread.
-    R_TRY(KThread::InitializeUserThread(m_kernel.System(), main_thread, this->GetEntryPoint(), 0,
-                                        stack_top, priority, m_ideal_core_id, this));
+    R_TRY(KThread::InitializeUserThread(m_kernel.System(), main_thread, this->GetEntryPoint(),
+                                        static_cast<uintptr_t>(m_main_thread_argument0), stack_top,
+                                        priority, m_ideal_core_id, this));
+    main_thread->GetContext().r[1] = m_main_thread_argument1;
 
     // Register the thread, and commit our reservation.
     KThread::Register(m_kernel, main_thread);
@@ -1105,10 +1127,34 @@ Result KProcess::Run(s32 priority, size_t stack_size)
     // Add the thread to our handle table.
     Handle thread_handle;
     R_TRY(m_handle_table.Add(std::addressof(thread_handle), main_thread));
+    if (m_main_thread_handle_write_address != 0)
+    {
+        const uint64_t thread_handle_value = thread_handle;
+        this->GetCoreMemory().WriteBlock(m_main_thread_handle_write_address, &thread_handle_value, sizeof(thread_handle_value));
+    }
 
-    // Set the thread arguments.
-    main_thread->GetContext().r[0] = 0;
-    main_thread->GetContext().r[1] = thread_handle;
+    const bool use_default_nso_arguments = m_main_thread_argument0 == 0 && m_main_thread_argument1 == 0;
+
+    // Set the default NSO-style thread arguments only when the loader did not provide
+    // explicit startup arguments. Homebrew NRO/libnx ABI requires x0=config context and
+    // x1=UINT64_MAX; overwriting them here makes envSetup treat the process as NSO,
+    // which leaves envHasNextLoad() false and hbmenu shows launchInit() failed.
+    if (use_default_nso_arguments)
+    {
+        main_thread->GetContext().r[0] = 0;
+        main_thread->GetContext().r[1] = thread_handle;
+    }
+
+    std::ostringstream startup_diag;
+    startup_diag << "mainThreadStartupConfigured=true\n";
+    startup_diag << "mainThreadArgsOverwritten=" << (use_default_nso_arguments ? "true" : "false") << "\n";
+    startup_diag << "mainThreadArg0Requested=0x" << std::hex << m_main_thread_argument0 << "\n";
+    startup_diag << "mainThreadArg1Requested=0x" << std::hex << m_main_thread_argument1 << "\n";
+    startup_diag << "mainThreadContextR0=0x" << std::hex << main_thread->GetContext().r[0] << "\n";
+    startup_diag << "mainThreadContextR1=0x" << std::hex << main_thread->GetContext().r[1] << "\n";
+    startup_diag << "mainThreadHandle=0x" << std::hex << static_cast<uint64_t>(thread_handle) << "\n";
+    startup_diag << "mainThreadHandleWriteAddress=0x" << std::hex << m_main_thread_handle_write_address.GetValue();
+    SetMainThreadStartupDiagnostic(startup_diag.str());
 
     // Update our state.
     this->ChangeState((state == State::Created) ? State::Running : State::RunningAttached);

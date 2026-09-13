@@ -8,6 +8,7 @@
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/romfs_factory.h"
 #include "core/loader/nso.h"
+#include "loader_settings_identifiers.h"
 #include "system_loader.h"
 #include "yuzu_common/interface_pointer.h"
 #include "yuzu_common/interface_pointer_def.h"
@@ -15,11 +16,26 @@
 #include "yuzu_common/settings.h"
 #include <nxemu-cpu/cpu_settings_identifiers.h>
 #include <nxemu-module-spec/cpu.h>
+#include <sstream>
 
 using IPatchCollectionPtr = InterfacePtr<IPatchCollection>;
 template class InterfacePtr<IPatchCollection>;
 
 extern IModuleSettings * g_settings;
+
+namespace {
+std::string g_last_nce_loader_diagnostics = "nceLoaderDiagnostics=not-run";
+
+void SetLastNceLoaderDiagnostics(std::string text)
+{
+    g_last_nce_loader_diagnostics = std::move(text);
+}
+} // namespace
+
+extern "C" const char * NxemuGetLastNceLoaderDiagnostics()
+{
+    return g_last_nce_loader_diagnostics.c_str();
+}
 
 namespace Loader {
 
@@ -153,7 +169,27 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     }
     metadata.Print();
 
+    const bool is_39bit = metadata.GetAddressSpaceType() == ProgramAddressSpaceType::Is39Bit;
     const bool is_application = metadata.GetPoolPartition() == PoolPartition::Application;
+    g_settings->SetBool(NXLoaderSetting::Has39BitAddressSpace, is_39bit);
+    LOG_INFO(Loader,
+             "Android NCE eligibility: title_id={:016X} address_space={} is_39bit={} pool={} is_application={} cpu_backend={} nce_enabled_after_metadata={}",
+             metadata.GetTitleID(), static_cast<int>(metadata.GetAddressSpaceType()), is_39bit,
+             static_cast<int>(metadata.GetPoolPartition()), is_application,
+             g_settings->GetInt(NXCpuSetting::CpuBackend),
+             g_settings->GetBool(NXCpuSetting::NceEnabled));
+
+    {
+        std::ostringstream diag;
+        diag << "nceLoaderDiagnostics=metadata\n";
+        diag << "isApplication=" << (is_application ? "true" : "false") << "\n";
+        diag << "has39BitAddressSpace=" << (is_39bit ? "true" : "false") << "\n";
+        diag << "addressSpaceType=" << static_cast<int>(metadata.GetAddressSpaceType()) << "\n";
+        diag << "poolPartition=" << static_cast<int>(metadata.GetPoolPartition()) << "\n";
+        diag << "cpuBackendSetting=" << g_settings->GetInt(NXCpuSetting::CpuBackend) << "\n";
+        diag << "nceEnabledAfterMetadata=" << (g_settings->GetBool(NXCpuSetting::NceEnabled) ? "true" : "false");
+        SetLastNceLoaderDiagnostics(diag.str());
+    }
 
     IPatchCollectionPtr patch_ctx(systemModules.Cpu().CreatePatchCollection(is_application));
     const std::array static_modules = {"rtld", "main", "subsdk0", "subsdk1", "subsdk2", "subsdk3", "subsdk4", "subsdk5", "subsdk6", "subsdk7", "subsdk8", "subsdk9", "sdk"};
@@ -189,11 +225,26 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     {
         if (is_application && g_settings->GetBool(NXCpuSetting::NceEnabled))
         {
-            UNIMPLEMENTED();
-            return 0;
+            auto& memory = systemModules.OperatingSystem().DeviceMemory();
+            memory.EnableDirectMappedAddress();
+            return reinterpret_cast<uint64_t>(memory.VirtualBasePointer());
         }
         return 0;
     }();
+
+    {
+        std::ostringstream diag;
+        diag << "nceLoaderDiagnostics=direct-map\n";
+        diag << "isApplication=" << (is_application ? "true" : "false") << "\n";
+        diag << "has39BitAddressSpace=" << (is_39bit ? "true" : "false") << "\n";
+        diag << "cpuBackendSetting=" << g_settings->GetInt(NXCpuSetting::CpuBackend) << "\n";
+        diag << "nceEnabledBeforeProcess=" << (g_settings->GetBool(NXCpuSetting::NceEnabled) ? "true" : "false") << "\n";
+        diag << "directMapAttempted="
+             << ((is_application && g_settings->GetBool(NXCpuSetting::NceEnabled)) ? "true" : "false") << "\n";
+        diag << "directMapBase=0x" << std::hex << fastmem_base << std::dec << "\n";
+        diag << "patchTotalSize=" << (patch_ctx ? patch_ctx->GetTotalPatchSize() : 0);
+        SetLastNceLoaderDiagnostics(diag.str());
+    }
 
     // Add patch size to the total module size
     code_size += patch_ctx ? patch_ctx->GetTotalPatchSize() : 0;
@@ -323,3 +374,6 @@ LoaderResultStatus AppLoader_DeconstructedRomDirectory::ReadNSOModules(Modules& 
 }
 
 } // namespace Loader
+
+
+

@@ -17,8 +17,16 @@ namespace Tegra::Control {
 ChannelState::ChannelState(s32 bind_id_) : bind_id{bind_id_}, initialized{} {}
 
 void ChannelState::Init(GPU& gpu, u64 program_id_) {
-    ASSERT(memory_manager);
     program_id = program_id_;
+    if (!memory_manager) {
+        // Android / newer NV clients may allocate the GPFIFO channel before
+        // nvhost_as_gpu binds the address space. Keep the program id and let
+        // IChannelStatePtr::SetMemoryManager finish the real initialization.
+        return;
+    }
+    if (initialized) {
+        return;
+    }
     dma_pusher = std::make_unique<Tegra::DmaPusher>(gpu, *memory_manager, *this);
     maxwell_3d = std::make_unique<Engines::Maxwell3D>(*memory_manager);
     fermi_2d = std::make_unique<Engines::Fermi2D>(*memory_manager);
@@ -75,6 +83,10 @@ void IChannelStatePtr::Init(uint64_t programId)
 void IChannelStatePtr::SetMemoryManager(uint32_t id)
 {
     m_channelState->memory_manager = m_registry.GetMemoryManager(id);
+    if (m_channelState->memory_manager && !m_channelState->initialized &&
+        m_channelState->program_id != 0) {
+        m_gpu.InitChannel(*m_channelState, m_channelState->program_id);
+    }
 }
 
 void IChannelStatePtr::Release()

@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.18)
+﻿cmake_minimum_required(VERSION 3.18)
 project(nxemu-cpu LANGUAGES C CXX ASM)
  
 set(CMAKE_CXX_STANDARD 20)
@@ -45,6 +45,8 @@ add_library(nxemu-cpu SHARED
     cpu_enum_strings.h
     cpu_manager.cpp
     cpu_manager.h
+    patch/patch_collection.cpp
+    patch/patch_collection.h
     cpu_settings.cpp
     cpu_settings.h
     cpu_settings_identifiers.h
@@ -56,6 +58,17 @@ add_library(nxemu-cpu SHARED
     nxemu-cpu.cpp
     arm_dynarmic_32.h
     exclusive_monitor_interface.h
+    nce/arm_nce.cpp
+    nce/arm_nce.h
+    nce/arm_nce.s
+    nce/arm_nce_asm_definitions.h
+    nce/guest_context.h
+    nce/instructions.h
+    nce/interpreter_visitor.cpp
+    nce/interpreter_visitor.h
+    nce/patcher.cpp
+    nce/patcher.h
+    nce/visitor_base.h
     dynarmic/backend/block_range_information.cpp
     dynarmic/backend/block_range_information.h
     dynarmic/backend/exception_handler.h
@@ -324,6 +337,7 @@ if(ARCHITECTURE_x86_64)
     )
  
     target_sources(nxemu-cpu PRIVATE
+        dynarmic/backend/exception_handler_generic.cpp
         dynarmic/common/spin_lock_x64.cpp
         dynarmic/common/x64_disassemble.cpp
         dynarmic/backend/exception_handler_posix.cpp
@@ -444,6 +458,10 @@ target_link_libraries(nxemu-cpu PRIVATE
 
 if(ANDROID)
     target_link_libraries(nxemu-cpu PRIVATE log)
+endif()
+
+if(ARCHITECTURE_arm64)
+    set_source_files_properties(nce/arm_nce.s PROPERTIES COMPILE_FLAGS "-x assembler-with-cpp")
 endif()
 
 nxemu_set_module_output(nxemu-cpu cpu)

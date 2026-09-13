@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <map>
 
 #include "core/hle/service/nvdrv/core/container.h"

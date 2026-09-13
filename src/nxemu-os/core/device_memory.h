@@ -1,4 +1,4 @@
-// SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+﻿// SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -28,9 +28,19 @@ public:
     DeviceMemory(const DeviceMemory&) = delete;
 
     //IDeviceMemory
-    const uint8_t * BackingBasePointer() const
+    const uint8_t * BackingBasePointer() const override
     {
         return buffer.BackingBasePointer();
+    }
+
+    uint8_t * VirtualBasePointer() override
+    {
+        return buffer.VirtualBasePointer();
+    }
+
+    void EnableDirectMappedAddress() override
+    {
+        buffer.EnableDirectMappedAddress();
     }
 
     template <typename T>
@@ -72,3 +82,4 @@ public:
 };
 
 } // namespace Core
+

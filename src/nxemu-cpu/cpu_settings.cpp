@@ -49,7 +49,7 @@ public:
 };
 
 static CpuSetting settings[] = {
-#if defined(_M_ARM64) || defined(ARCHITECTURE_arm64)
+#if (defined(_M_ARM64) || defined(ARCHITECTURE_arm64)) && !defined(__ANDROID__)
     {NXCpuSetting::CpuBackend, "cpu", "cpu_backend", &cpuSettings.cpu_backend, CpuBackend::Nce},
 #else
     {NXCpuSetting::CpuBackend, "cpu", "cpu_backend", &cpuSettings.cpu_backend, CpuBackend::Dynarmic},

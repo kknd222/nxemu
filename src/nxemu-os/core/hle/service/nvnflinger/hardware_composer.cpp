@@ -4,6 +4,7 @@
 #include <boost/container/small_vector.hpp>
 
 #include "core/hle/service/nvdrv/devices/nvdisp_disp0.h"
+#include "core/hle/service/nxemu_android_diagnostics.h"
 #include "core/hle/service/nvnflinger/buffer_item.h"
 #include "core/hle/service/nvnflinger/buffer_item_consumer.h"
 #include "core/hle/service/nvnflinger/hardware_composer.h"
@@ -48,6 +49,8 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
     // Set default speed limit to 100%.
     *out_speed_scale = 1.0f;
 
+    this->ReleaseFramebuffersLocked(display);
+
     // Determine the number of vsync periods to wait before composing again.
     std::optional<s32> swap_interval{};
     bool has_acquired_buffer{};
@@ -58,6 +61,15 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
 
         // Try to fetch the framebuffer (either new or stale).
         const auto result = this->CacheFramebufferLocked(*layer, consumer_id);
+        if (result != CacheStatus::NoBufferAvailable || m_frame_number <= 20 ||
+            (m_frame_number % 60) == 0) {
+            Service::NxemuAndroidDiagnostics::RecordEvent(
+                "Nvnflinger.HWC.CacheFramebuffer",
+                "consumer_id=" + std::to_string(consumer_id) +
+                    " status=" + std::to_string(static_cast<u32>(result)) +
+                    " visible=" + (layer->visible ? std::string{"true"} : std::string{"false"}) +
+                    " frame=" + std::to_string(m_frame_number));
+        }
 
         // If we failed, skip this layer.
         if (result == CacheStatus::NoBufferAvailable) {
@@ -105,40 +117,59 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
     }
 
     // If any new buffers were acquired, we can present.
-    if (has_acquired_buffer) {
+    if (has_acquired_buffer && !composition_stack.empty()) {
         // Sort by Z-index.
         std::stable_sort(composition_stack.begin(), composition_stack.end(),
                          [&](auto& l, auto& r) { return l.z_index < r.z_index; });
 
         // Composite.
+        Service::NxemuAndroidDiagnostics::RecordEvent(
+            "Nvnflinger.HWC.ComposeLocked",
+            "present=true layers=" + std::to_string(composition_stack.size()));
         nvdisp.Composite(composition_stack);
+    } else {
+        static u64 no_present_counter{};
+        ++no_present_counter;
+        if (no_present_counter <= 20 || (no_present_counter % 60) == 0) {
+            Service::NxemuAndroidDiagnostics::RecordEvent(
+                "Nvnflinger.HWC.ComposeLocked",
+                "present=false acquired=" +
+                    (has_acquired_buffer ? std::string{"true"} : std::string{"false"}) +
+                    " layers=" + std::to_string(composition_stack.size()) +
+                    " frame=" + std::to_string(m_frame_number));
+        }
     }
 
-    // Advance by at least one frame.
-    const u32 frame_advance = swap_interval.value_or(1);
+    // Render MicroProfile.
+
+    // Android/Switch nvnflinger composition is driven by vsync. Keep the compositor cadence
+    // stable even if a guest submits unusual swap intervals; release timing still tracks the
+    // buffer's requested interval.
+    const u32 frame_advance = 1;
     m_frame_number += frame_advance;
 
-    // Release any necessary framebuffers.
+    return frame_advance;
+}
+
+void HardwareComposer::ReleaseFramebuffersLocked(Display& display) {
     for (auto& [layer_id, framebuffer] : m_framebuffers) {
-        if (framebuffer.release_frame_number > m_frame_number) {
-            // Not yet ready to release this framebuffer.
+        if (!framebuffer.is_acquired) {
             continue;
         }
 
-        if (!framebuffer.is_acquired) {
-            // Already released.
+        if (framebuffer.release_frame_number > m_frame_number) {
             continue;
         }
 
         if (const auto layer = display.stack.FindLayer(layer_id); layer != nullptr) {
-            // TODO: support release fence
-            // This is needed to prevent screen tearing
             layer->buffer_item_consumer->ReleaseBuffer(framebuffer.item, android::Fence::NoFence());
             framebuffer.is_acquired = false;
+            Service::NxemuAndroidDiagnostics::RecordEvent(
+                "Nvnflinger.HWC.ReleaseFramebuffer",
+                "consumer_id=" + std::to_string(layer_id) +
+                    " frame=" + std::to_string(m_frame_number));
         }
     }
-
-    return frame_advance;
 }
 
 void HardwareComposer::RemoveLayerLocked(Display& display, ConsumerId consumer_id) {
@@ -162,13 +193,26 @@ bool HardwareComposer::TryAcquireFramebufferLocked(Layer& layer, Framebuffer& fr
     // Attempt the update.
     const auto status = layer.buffer_item_consumer->AcquireBuffer(&framebuffer.item, {}, false);
     if (status != android::Status::NoError) {
+        if (status != android::Status::NoBufferAvailable) {
+            Service::NxemuAndroidDiagnostics::RecordEvent(
+                "Nvnflinger.HWC.TryAcquireFramebuffer",
+                "consumer_id=" + std::to_string(layer.consumer_id) +
+                    " status=" + std::to_string(static_cast<s32>(status)));
+        }
         return false;
     }
 
     // We succeeded, so set the new release frame info.
     framebuffer.release_frame_number =
-        NormalizeSwapInterval(nullptr, framebuffer.item.swap_interval);
+        m_frame_number + NormalizeSwapInterval(nullptr, framebuffer.item.swap_interval);
+    framebuffer.last_acquire_frame = m_frame_number;
     framebuffer.is_acquired = true;
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.HWC.TryAcquireFramebuffer",
+        "consumer_id=" + std::to_string(layer.consumer_id) +
+            " status=ok slot=" + std::to_string(framebuffer.item.slot) +
+            " swap_interval=" + std::to_string(framebuffer.item.swap_interval) +
+            " release_frame=" + std::to_string(framebuffer.release_frame_number));
 
     return true;
 }

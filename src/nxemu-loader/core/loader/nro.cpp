@@ -1,6 +1,10 @@
-// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+﻿// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <array>
+#include <cstring>
+#include <sstream>
+#include <mutex>
 #include <utility>
 #include <vector>
 
@@ -26,6 +30,37 @@
 #include "core/memory.h"
 
 extern IModuleSettings * g_settings;
+
+namespace {
+std::mutex g_hbl_diagnostic_mutex;
+std::string g_hbl_diagnostic = "hblEnvConfigured=false";
+u64 g_hbl_next_load_path_addr = 0;
+u64 g_hbl_next_load_argv_addr = 0;
+
+void SetHblDiagnostic(std::string text)
+{
+    std::lock_guard lock{g_hbl_diagnostic_mutex};
+    g_hbl_diagnostic = std::move(text);
+}
+} // namespace
+
+extern "C" const char * NxemuGetLastHblEnvDiagnostics()
+{
+    std::lock_guard lock{g_hbl_diagnostic_mutex};
+    return g_hbl_diagnostic.c_str();
+}
+
+extern "C" uint64_t NxemuGetLastHblNextLoadPathAddress()
+{
+    std::lock_guard lock{g_hbl_diagnostic_mutex};
+    return g_hbl_next_load_path_addr;
+}
+
+extern "C" uint64_t NxemuGetLastHblNextLoadArgvAddress()
+{
+    std::lock_guard lock{g_hbl_diagnostic_mutex};
+    return g_hbl_next_load_argv_addr;
+}
 
 namespace Loader {
 
@@ -75,6 +110,105 @@ struct AssetHeader {
     AssetSection romfs;
 };
 static_assert(sizeof(AssetHeader) == 0x38, "AssetHeader has incorrect size.");
+
+struct HblConfigEntry {
+    u32_le key;
+    u32_le flags;
+    u64_le value[2];
+};
+static_assert(sizeof(HblConfigEntry) == 0x18, "HblConfigEntry has incorrect size.");
+
+static constexpr u32 HblEnvAllocationSize = 0x6000;
+static constexpr u32 HblEnvConfigOffset = 0x0000;
+static constexpr u32 HblEnvNextLoadPathOffset = 0x1000;
+static constexpr u32 HblEnvNextLoadArgvOffset = 0x2000;
+static constexpr u32 HblEnvArgvOffset = 0x3000;
+static constexpr u32 HblEnvLoaderInfoOffset = 0x4000;
+static constexpr u32 HblEnvUserIdOffset = 0x5000;
+
+static void WriteAscii(Kernel::PhysicalMemory & image, std::size_t offset, const char * text)
+{
+    const std::size_t max_len = image.size() > offset ? image.size() - offset : 0;
+    if (max_len == 0)
+    {
+        return;
+    }
+    const std::size_t len = std::min<std::size_t>(std::strlen(text), max_len - 1);
+    std::memcpy(image.data() + offset, text, len);
+    image[offset + len] = 0;
+}
+
+static u64 AppendHomebrewEnvironment(Kernel::PhysicalMemory & image, u64 load_base,
+                                      const char * argv0, u64 * main_thread_handle_write_address)
+{
+    const auto env_offset = static_cast<u32>(image.size());
+    image.resize(image.size() + HblEnvAllocationSize);
+    std::memset(image.data() + env_offset, 0, HblEnvAllocationSize);
+
+    const u64 env_base = load_base + env_offset;
+    const u64 config_addr = env_base + HblEnvConfigOffset;
+    const u64 next_load_path_addr = env_base + HblEnvNextLoadPathOffset;
+    const u64 next_load_argv_addr = env_base + HblEnvNextLoadArgvOffset;
+    const u64 argv_addr = env_base + HblEnvArgvOffset;
+    const u64 loader_info_addr = env_base + HblEnvLoaderInfoOffset;
+    const u64 user_id_addr = env_base + HblEnvUserIdOffset;
+
+    WriteAscii(image, env_offset + HblEnvArgvOffset, argv0);
+    WriteAscii(image, env_offset + HblEnvLoaderInfoOffset, "nxemu android hbl environment");
+
+    {
+        std::lock_guard lock{g_hbl_diagnostic_mutex};
+        g_hbl_next_load_path_addr = next_load_path_addr;
+        g_hbl_next_load_argv_addr = next_load_argv_addr;
+    }
+
+    auto * entries = reinterpret_cast<HblConfigEntry *>(image.data() + env_offset + HblEnvConfigOffset);
+    std::size_t i = 0;
+    const auto add = [&](u32 key, u64 value0, u64 value1 = 0) {
+        entries[i].key = key;
+        entries[i].flags = 0;
+        entries[i].value[0] = value0;
+        entries[i].value[1] = value1;
+        ++i;
+    };
+
+    // libnx homebrew ABI entry types. Keep this intentionally minimal; hbmenu only needs
+    // NextLoadPath for launchInit(), while libnx init needs a main-thread handle value.
+    add(1, 0);                                      // EntryType_MainThreadHandle, patched after handle creation.
+    *main_thread_handle_write_address = config_addr + offsetof(HblConfigEntry, value);
+    add(2, next_load_path_addr, next_load_argv_addr); // EntryType_NextLoadPath.
+    add(5, 0, argv_addr);                          // EntryType_Argv.
+    add(6, UINT64_MAX, UINT64_MAX);                 // EntryType_SyscallAvailableHint.
+    add(7, 0, 1);                                  // EntryType_AppletType=Application, ApplicationOverride.
+    add(14, 0x6e78656d752d616eULL, 0x64726f69642d706fULL); // EntryType_RandomSeed.
+    add(15, user_id_addr);                         // EntryType_UserIdStorage.
+    add(16, (12u << 16) | (1u << 8) | 0u);         // EntryType_HosVersion 12.1.0.
+    add(17, UINT64_MAX);                           // EntryType_SyscallAvailableHint2.
+    entries[i].key = 0;                            // EntryType_EndOfList.
+    entries[i].flags = 0;
+    entries[i].value[0] = loader_info_addr;
+    entries[i].value[1] = std::strlen("nxemu android hbl environment") + 1;
+
+    std::ostringstream diag;
+    diag << "hblEnvConfigured=true\n";
+    diag << "hblAbi=minimal-v2\n";
+    diag << "hblConfigAddr=0x" << std::hex << config_addr << "\n";
+    diag << "hblEnvBase=0x" << std::hex << env_base << "\n";
+    diag << "hblEnvOffset=0x" << std::hex << env_offset << "\n";
+    diag << "hblNextLoadPathAddr=0x" << std::hex << next_load_path_addr << "\n";
+    diag << "hblNextLoadArgvAddr=0x" << std::hex << next_load_argv_addr << "\n";
+    diag << "hblArgvAddr=0x" << std::hex << argv_addr << "\n";
+    diag << "hblMainThreadHandleWriteAddress=0x" << std::hex << *main_thread_handle_write_address << "\n";
+    diag << "hblMainThreadArg0=0x" << std::hex << config_addr << "\n";
+    diag << "hblMainThreadArg1=0xffffffffffffffff\n";
+    diag << "hblNextLoadPathProvided=true\n";
+    diag << "hblConfigEntryCount=" << std::dec << (i + 1) << "\n";
+    diag << "hblArgv0=" << argv0;
+    SetHblDiagnostic(diag.str());
+
+    return config_addr;
+}
+
 
 AppLoader_NRO::AppLoader_NRO(FileSys::VirtualFile file_) : AppLoader(std::move(file_))
 {
@@ -226,7 +360,7 @@ static bool LoadNroImpl(Systemloader & loader, ISystemModules & modules, const s
 
     if (g_settings->GetBool(NXCpuSetting::NceEnabled)) {
         // Patch SVCs and MRS calls in the guest code
-        patch.PatchText(program_image, code);
+        patch.PatchText(program_image.data(), program_image.size(), code.offset, code.size);
 
         // We only support PostData patching for NROs.
         ASSERT(patch.GetPatchMode() == Core::NCE::PatchMode::PostData);
@@ -244,7 +378,8 @@ static bool LoadNroImpl(Systemloader & loader, ISystemModules & modules, const s
     // Enable direct memory mapping in case of NCE.
     const uint64_t fastmem_base = [&]() -> size_t {
         if (g_settings->GetBool(NXCpuSetting::NceEnabled)) {
-            UNIMPLEMENTED();
+            LOG_WARNING(Loader, "NRO NCE patching is not fully ported yet; using Dynarmic for homebrew NRO");
+            g_settings->SetBool(NXCpuSetting::NceEnabled, false);
             return 0;
         }
         return 0;
@@ -253,17 +388,25 @@ static bool LoadNroImpl(Systemloader & loader, ISystemModules & modules, const s
     // Setup the process code layout
     IOperatingSystem & operatingSystem = modules.OperatingSystem();
     baseAddress = fastmem_base;
-    if (!operatingSystem.SetupCurrentProcess(image_size, FileSys::ProgramMetadata::GetDefault(), baseAddress, processID, false))
+    if (!operatingSystem.SetupCurrentProcess(image_size + HblEnvAllocationSize, FileSys::ProgramMetadata::GetDefault(), baseAddress, processID, true))
     {
         return false;
     }
+
+    uint64_t main_thread_handle_write_address = 0;
+    const uint64_t hbl_env_context = AppendHomebrewEnvironment(program_image, baseAddress, "sdmc:/hbmenu.nro", &main_thread_handle_write_address);
+    codeset.DataSegment().size += HblEnvAllocationSize;
+    image_size = program_image.size();
+    operatingSystem.SetMainThreadStartupArguments(hbl_env_context, UINT64_MAX, main_thread_handle_write_address);
 
     // Relocate code patch and copy to the program_image if running under NCE.
     // This needs to be after LoadFromMetadata so we can use the process entry point.
 #if defined(FIX_NCE) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
     if (g_settings->GetBool(NXCpuSetting::NceEnabled)) {
-        patch.RelocateAndCopy(process.GetEntryPoint(), code, program_image,
-                              &process.GetPostHandlers());
+        uint32_t relocated_size = static_cast<uint32_t>(image_size);
+        patch.RelocateAndCopy(baseAddress, code.offset, code.size, program_image.data(),
+                              &relocated_size, nullptr);
+        image_size = relocated_size;
     }
 #endif
 
@@ -388,3 +531,6 @@ bool AppLoader_NRO::IsRomFSUpdatable() const {
 }
 
 } // namespace Loader
+
+
+

@@ -45,6 +45,7 @@ endif()
 
 if(ANDROID)
     target_link_libraries(nxemu-video PRIVATE adrenotools)
+    target_compile_definitions(nxemu-video PRIVATE NXEMU_USE_ADRENOTOOLS=1)
 endif()
 
 if(ANDROID)

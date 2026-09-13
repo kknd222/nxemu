@@ -1,5 +1,6 @@
 #pragma once
 #include <memory>
+#include <string>
 #include <nxemu-module-spec/base.h>
 
 nxinterface ISystemModules;
@@ -15,6 +16,7 @@ public:
     void ShutDown();
     void FlushSettings();
     bool IsValid() const;
+    const std::string & LastSetupDiagnostic() const;
     ISystemModules & Modules();
 
 private:

@@ -1,0 +1,112 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:id="@+id/card_root"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="4dp"
+    android:background="@drawable/eden_game_card"
+    android:clickable="true"
+    android:focusable="true"
+    android:orientation="vertical"
+    android:padding="4dp">
+
+    <LinearLayout
+        android:id="@+id/content_row"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:gravity="center_vertical"
+        android:orientation="horizontal">
+
+        <FrameLayout
+            android:id="@+id/cover_frame"
+            android:layout_width="150dp"
+            android:layout_height="150dp">
+
+            <ImageView
+                android:id="@+id/game_cover"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/eden_badge"
+                android:contentDescription="Game cover"
+                android:scaleType="centerCrop"
+                android:visibility="gone" />
+
+            <TextView
+                android:id="@+id/image_badge"
+                android:layout_width="match_parent"
+                android:layout_height="match_parent"
+                android:background="@drawable/eden_badge"
+                android:gravity="center"
+                android:text="DNSP"
+                android:textColor="@color/eden_on_background"
+                android:textAlignment="center"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+        </FrameLayout>
+
+        <LinearLayout
+            android:id="@+id/game_text_container"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            android:layout_weight="1"
+            android:orientation="vertical">
+
+            <TextView
+                android:id="@+id/game_title"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:textColor="@color/eden_on_background"
+                android:gravity="center"
+                android:textAlignment="center"
+                android:textSize="14sp"
+                android:textStyle="bold" />
+
+            <TextView
+                android:id="@+id/game_details"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:paddingTop="3dp"
+                android:textColor="#7C757F"
+                android:textSize="12sp" />
+
+            <TextView
+                android:id="@+id/game_profile"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:ellipsize="end"
+                android:maxLines="2"
+                android:paddingTop="3dp"
+                android:textColor="#7C757F"
+                android:textSize="11sp" />
+        </LinearLayout>
+    </LinearLayout>
+
+    <LinearLayout
+        android:id="@+id/actions_row"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:gravity="end"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/button_start"
+            style="@style/NxEmuEdenButtonPrimary"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_weight="1"
+            android:text="启动" />
+
+        <Button
+            android:id="@+id/button_properties"
+            style="@style/NxEmuEdenButton"
+            android:layout_width="0dp"
+            android:layout_height="42dp"
+            android:layout_marginStart="8dp"
+            android:layout_weight="1"
+            android:text="属性/配置" />
+    </LinearLayout>
+</LinearLayout>

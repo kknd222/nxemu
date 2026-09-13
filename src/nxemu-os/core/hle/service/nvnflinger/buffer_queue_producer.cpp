@@ -13,9 +13,11 @@
 #include "core/hle/service/nvnflinger/buffer_queue_core.h"
 #include "core/hle/service/nvnflinger/buffer_queue_producer.h"
 #include "core/hle/service/nvnflinger/consumer_listener.h"
+#include "core/hle/service/nxemu_android_diagnostics.h"
 #include "core/hle/service/nvnflinger/parcel.h"
 #include "core/hle/service/nvnflinger/ui/graphic_buffer.h"
 #include "core/hle/service/nvnflinger/window.h"
+#include <fmt/format.h>
 
 namespace Service::android {
 
@@ -33,6 +35,8 @@ BufferQueueProducer::~BufferQueueProducer() {
 
 Status BufferQueueProducer::RequestBuffer(s32 slot, std::shared_ptr<GraphicBuffer>* buf) {
     LOG_DEBUG(Service_Nvnflinger, "slot {}", slot);
+    Service::NxemuAndroidDiagnostics::RecordEvent("Nvnflinger.BQP.RequestBuffer",
+                                                  "slot=" + std::to_string(slot));
 
     std::scoped_lock lock{core->mutex};
 
@@ -52,6 +56,23 @@ Status BufferQueueProducer::RequestBuffer(s32 slot, std::shared_ptr<GraphicBuffe
 
     slots[slot].request_buffer_called = true;
     *buf = slots[slot].graphic_buffer;
+    if (*buf) {
+        Service::NxemuAndroidDiagnostics::RecordEvent(
+            "Nvnflinger.BQP.RequestBufferResult",
+            "slot=" + std::to_string(slot) + " w=" + std::to_string((*buf)->Width()) +
+                " h=" + std::to_string((*buf)->Height()) +
+                " stride=" + std::to_string((*buf)->Stride()) +
+                " format=" + std::to_string(static_cast<u32>((*buf)->Format())) +
+                " ext_format=" + std::to_string(static_cast<u32>((*buf)->ExternalFormat())) +
+                " usage=" + std::to_string((*buf)->Usage()) +
+                " buffer_id=" + std::to_string((*buf)->BufferId()) +
+                " handle=" + std::to_string((*buf)->Handle()) +
+                " offset=" + std::to_string((*buf)->Offset()));
+    } else {
+        Service::NxemuAndroidDiagnostics::RecordEvent(
+            "Nvnflinger.BQP.RequestBufferResult",
+            "slot=" + std::to_string(slot) + " buffer=null");
+    }
 
     return Status::NoError;
 }
@@ -224,6 +245,11 @@ Status BufferQueueProducer::DequeueBuffer(s32* out_slot, Fence* out_fence, bool 
                                           u32 height, PixelFormat format, u32 usage) {
     LOG_DEBUG(Service_Nvnflinger, "async={} w={} h={} format={}, usage={}",
               async ? "true" : "false", width, height, format, usage);
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.DequeueBuffer",
+        "async=" + std::string(async ? "true" : "false") + " w=" + std::to_string(width) +
+            " h=" + std::to_string(height) + " format=" +
+            std::to_string(static_cast<u32>(format)) + " usage=" + std::to_string(usage));
 
     if ((width != 0 && height == 0) || (width == 0 && height != 0)) {
         LOG_ERROR(Service_Nvnflinger, "invalid size: w={} h={}", width, height);
@@ -310,6 +336,14 @@ Status BufferQueueProducer::DequeueBuffer(s32* out_slot, Fence* out_fence, bool 
 
     LOG_DEBUG(Service_Nvnflinger, "returning slot={} frame={}, flags={}", *out_slot,
               slots[*out_slot].frame_number, return_flags);
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.DequeueBufferResult",
+        "slot=" + std::to_string(*out_slot) +
+            " frame=" + std::to_string(slots[*out_slot].frame_number) +
+            " flags=" + std::to_string(static_cast<s32>(return_flags)) +
+            " preallocated=" + (slots[*out_slot].is_preallocated ? std::string{"true"}
+                                                                  : std::string{"false"}) +
+            " queue_size=" + std::to_string(core->queue.size()));
 
     return return_flags;
 }
@@ -416,6 +450,13 @@ Status BufferQueueProducer::AttachBuffer(s32* out_slot,
     *out_slot = found;
 
     LOG_DEBUG(Service_Nvnflinger, "Returning slot {} flags={}", *out_slot, return_flags);
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.DequeueBufferResult",
+        "slot=" + std::to_string(*out_slot) +
+            " flags=" + std::to_string(static_cast<s32>(return_flags)) +
+            " preallocated=" + (slots[*out_slot].is_preallocated ? std::string{"true"}
+                                                                  : std::string{"false"}) +
+            " queue_size=" + std::to_string(core->queue.size()));
 
     slots[*out_slot].graphic_buffer = buffer;
     slots[*out_slot].buffer_state = BufferState::Dequeued;
@@ -427,6 +468,8 @@ Status BufferQueueProducer::AttachBuffer(s32* out_slot,
 
 Status BufferQueueProducer::QueueBuffer(s32 slot, const QueueBufferInput& input,
                                         QueueBufferOutput* output) {
+    Service::NxemuAndroidDiagnostics::RecordEvent("Nvnflinger.BQP.QueueBuffer",
+                                                  "slot=" + std::to_string(slot));
     s64 timestamp{};
     bool is_auto_timestamp{};
     Common::Rectangle<s32> crop;
@@ -439,6 +482,20 @@ Status BufferQueueProducer::QueueBuffer(s32 slot, const QueueBufferInput& input,
 
     input.Deflate(&timestamp, &is_auto_timestamp, &crop, &scaling_mode, &transform,
                   &sticky_transform_, &async, &swap_interval, &fence);
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.QueueBuffer",
+        "slot=" + std::to_string(slot) + " ts=" + std::to_string(timestamp) +
+            " auto_ts=" + (is_auto_timestamp ? std::string{"true"} : std::string{"false"}) +
+            " crop=[" + std::to_string(crop.Left()) + "," + std::to_string(crop.Top()) + "," +
+            std::to_string(crop.Right()) + "," + std::to_string(crop.Bottom()) + "] scale=" +
+            std::to_string(static_cast<u32>(scaling_mode)) + " transform=" +
+            std::to_string(static_cast<u32>(transform)) + " async=" +
+            (async ? std::string{"true"} : std::string{"false"}) +
+            " swap_interval=" + std::to_string(swap_interval) + " num_fences=" +
+            std::to_string(fence.num_fences) +
+            (fence.num_fences > 0 ? (" fence0_id=" + std::to_string(fence.fences[0].id) +
+                                      " fence0_value=" + std::to_string(fence.fences[0].value))
+                                   : std::string{}));
 
     switch (scaling_mode) {
     case NativeWindowScalingMode::Freeze:
@@ -636,9 +693,11 @@ Status BufferQueueProducer::Query(NativeWindow what, s32* out_value) {
     u32 value{};
     switch (what) {
     case NativeWindow::Width:
+    case NativeWindow::DefaultWidth:
         value = core->default_width;
         break;
     case NativeWindow::Height:
+    case NativeWindow::DefaultHeight:
         value = core->default_height;
         break;
     case NativeWindow::Format:
@@ -650,20 +709,39 @@ Status BufferQueueProducer::Query(NativeWindow what, s32* out_value) {
     case NativeWindow::StickyTransform:
         value = sticky_transform;
         break;
+    case NativeWindow::TransformHint:
+        value = core->transform_hint;
+        break;
+    case NativeWindow::QueuesToWindowComposer:
+        value = 1;
+        break;
+    case NativeWindow::ConcreteType:
+        value = 0;
+        break;
     case NativeWindow::ConsumerRunningBehind:
         value = (core->queue.size() > 1);
         break;
     case NativeWindow::ConsumerUsageBits:
         value = core->consumer_usage_bit;
         break;
+    case NativeWindow::DefaultDataSpace:
+        value = 0;
+        break;
+    case NativeWindow::BufferAge:
+        value = 0;
+        break;
     default:
-        ASSERT(false);
+        LOG_ERROR(Service_Nvnflinger, "unknown native window query {}", static_cast<s32>(what));
         return Status::BadValue;
     }
 
     LOG_DEBUG(Service_Nvnflinger, "what = {}, value = {}", what, value);
 
     *out_value = static_cast<s32>(value);
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.Query",
+        "what=" + std::to_string(static_cast<u32>(what)) + " value=" +
+            std::to_string(*out_value));
 
     return Status::NoError;
 }
@@ -675,6 +753,10 @@ Status BufferQueueProducer::Connect(const std::shared_ptr<IProducerListener>& li
 
     LOG_DEBUG(Service_Nvnflinger, "api = {} producer_controlled_by_app = {}", api,
               producer_controlled_by_app);
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.Connect",
+        "api=" + std::to_string(static_cast<u32>(api)) + " producer_controlled=" +
+            (producer_controlled_by_app ? "true" : "false"));
 
     if (core->is_abandoned) {
         LOG_ERROR(Service_Nvnflinger, "BufferQueue has been abandoned");
@@ -774,6 +856,20 @@ Status BufferQueueProducer::Disconnect(NativeWindowApi api) {
 Status BufferQueueProducer::SetPreallocatedBuffer(s32 slot,
                                                   const std::shared_ptr<NvGraphicBuffer>& buffer) {
     LOG_DEBUG(Service_Nvnflinger, "slot {}", slot);
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.SetPreallocatedBuffer",
+        "slot=" + std::to_string(slot) + " has_buffer=" + (buffer ? "true" : "false") +
+            (buffer ? (" w=" + std::to_string(buffer->Width()) +
+                       " h=" + std::to_string(buffer->Height()) +
+                       " stride=" + std::to_string(buffer->Stride()) +
+                       " format=" + std::to_string(static_cast<u32>(buffer->Format())) +
+                       " ext_format=" +
+                           std::to_string(static_cast<u32>(buffer->ExternalFormat())) +
+                       " usage=" + std::to_string(buffer->Usage()) +
+                       " buffer_id=" + std::to_string(buffer->BufferId()) +
+                       " handle=" + std::to_string(buffer->Handle()) +
+                       " offset=" + std::to_string(buffer->Offset()))
+                    : std::string{}));
 
     if (slot < 0 || slot >= BufferQueueDefs::NUM_BUFFER_SLOTS) {
         return Status::BadValue;
@@ -805,6 +901,11 @@ Status BufferQueueProducer::SetPreallocatedBuffer(s32 slot,
 
 void BufferQueueProducer::Transact(u32 code, std::span<const u8> parcel_data,
                                    std::span<u8> parcel_reply, u32 flags) {
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.Transact",
+        "code=" + std::to_string(code) + " flags=" + std::to_string(flags) +
+            " in=" + std::to_string(parcel_data.size()) +
+            " out=" + std::to_string(parcel_reply.size()));
     // Values used by BnGraphicBufferProducer onTransact
     enum class TransactionId {
         RequestBuffer = 1,
@@ -945,10 +1046,20 @@ void BufferQueueProducer::Transact(u32 code, std::span<const u8> parcel_data,
     const auto serialized = parcel_out.Serialize();
     std::memcpy(parcel_reply.data(), serialized.data(),
                 std::min(parcel_reply.size(), serialized.size()));
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.TransactResult",
+        "code=" + std::to_string(code) + " status=" +
+            std::to_string(static_cast<s32>(status)) + " reply=" +
+            std::to_string(serialized.size()));
 }
 
 Kernel::KReadableEvent* BufferQueueProducer::GetNativeHandle(u32 type_id) {
-    return &buffer_wait_event->GetReadableEvent();
+    auto* const readable = &buffer_wait_event->GetReadableEvent();
+    Service::NxemuAndroidDiagnostics::RecordEvent(
+        "Nvnflinger.BQP.GetNativeHandle",
+        "type_id=" + std::to_string(type_id) + " event_ptr=0x" +
+            fmt::format("{:X}", reinterpret_cast<uintptr_t>(readable)));
+    return readable;
 }
 
 } // namespace Service::android

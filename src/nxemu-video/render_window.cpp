@@ -9,6 +9,7 @@
 #include <glad/glad_wgl.h>
 #endif
 #if defined(__ANDROID__)
+#include <android/log.h>
 #include <dlfcn.h>
 #include <nxemu-core/settings/identifiers.h>
 #include <yuzu_common/dynamic_library.h>
@@ -230,6 +231,8 @@ bool OpenGLSharedContext::m_openglLoaded = false;
 
 #if defined(__ANDROID__)
 
+constexpr const char* AndroidVideoLogTag = "NxEmuVideo";
+
 class GraphicsContext_Android final : public Core::Frontend::GraphicsContext
 {
 public:
@@ -285,8 +288,12 @@ std::shared_ptr<Common::DynamicLibrary> LoadAndroidVulkanDriverFromSettings()
     std::shared_ptr<Common::DynamicLibrary> fallback = std::make_shared<Common::DynamicLibrary>();
     if (fallback->Open("libvulkan.so"))
     {
+        __android_log_print(ANDROID_LOG_WARN, AndroidVideoLogTag,
+                            "Vulkan driver library opened via plain libvulkan.so fallback");
         return fallback;
     }
+    __android_log_print(ANDROID_LOG_ERROR, AndroidVideoLogTag,
+                        "Failed to open any Vulkan driver library");
     return {};
 }
 

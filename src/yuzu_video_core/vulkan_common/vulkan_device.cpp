@@ -20,8 +20,11 @@
 #include "yuzu_video_core/vulkan_common/vulkan_device.h"
 #include "yuzu_video_core/vulkan_common/vulkan_wrapper.h"
 
-#if defined(ANDROID) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
+#if defined(NXEMU_USE_ADRENOTOOLS) && defined(ANDROID) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
 #include <adrenotools/bcenabler.h>
+#endif
+#if defined(ANDROID) || defined(__ANDROID__)
+#include <sys/system_properties.h>
 #endif
 
 namespace Vulkan
@@ -29,6 +32,25 @@ namespace Vulkan
 using namespace Common::Literals;
 namespace
 {
+bool ReadAndroidBoolProperty(const char* name, bool default_value) {
+#if defined(ANDROID) || defined(__ANDROID__)
+    char value[PROP_VALUE_MAX]{};
+    const int len = __system_property_get(name, value);
+    if (len <= 0) {
+        return default_value;
+    }
+    if (value[0] == '1' || value[0] == 'y' || value[0] == 'Y' || value[0] == 't' ||
+        value[0] == 'T') {
+        return true;
+    }
+    if (value[0] == '0' || value[0] == 'n' || value[0] == 'N' || value[0] == 'f' ||
+        value[0] == 'F') {
+        return false;
+    }
+#endif
+    return default_value;
+}
+
 namespace Alternatives
 {
 constexpr std::array STENCIL8_UINT{
@@ -535,7 +557,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
                     "Qualcomm drivers have a slow VK_KHR_push_descriptor implementation");
         RemoveExtension(extensions.push_descriptor, VK_KHR_PUSH_DESCRIPTOR_EXTENSION_NAME);
 
-#if defined(ANDROID) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
+#if defined(NXEMU_USE_ADRENOTOOLS) && defined(ANDROID) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
         // Patch the driver to enable BCn textures.
         const auto major = (properties.properties.driverVersion >> 24) << 2;
         const auto minor = (properties.properties.driverVersion >> 12) & 0xFFFU;
@@ -1255,6 +1277,23 @@ void Device::RemoveUnsuitableExtensions()
     // VK_EXT_extended_dynamic_state3
     dynamic_state3_blending = features.extended_dynamic_state3.extendedDynamicState3ColorBlendEnable && features.extended_dynamic_state3.extendedDynamicState3ColorBlendEquation && features.extended_dynamic_state3.extendedDynamicState3ColorWriteMask;
     dynamic_state3_enables = features.extended_dynamic_state3.extendedDynamicState3DepthClampEnable && features.extended_dynamic_state3.extendedDynamicState3LogicOpEnable;
+
+#if defined(ANDROID) || defined(__ANDROID__)
+    // Several mobile Qualcomm/Turnip driver stacks expose EDS3 color blend dynamic state, but
+    // Kirby-style translucent water/particle passes can leave blue stale tiles on Android while
+    // the same title renders correctly on PC. Prefer the static pipeline blend state on Android
+    // unless explicitly re-enabled for A/B probes.
+    if (ReadAndroidBoolProperty("debug.nxemu.disable_dynamic_state3_blending", false)) {
+        if (dynamic_state3_blending) {
+            LOG_WARNING(Render_Vulkan,
+                        "Disabling VK_EXT_extended_dynamic_state3 color blending on Android");
+        }
+        features.extended_dynamic_state3.extendedDynamicState3ColorBlendEnable = false;
+        features.extended_dynamic_state3.extendedDynamicState3ColorBlendEquation = false;
+        features.extended_dynamic_state3.extendedDynamicState3ColorWriteMask = false;
+        dynamic_state3_blending = false;
+    }
+#endif
 
     extensions.extended_dynamic_state3 = dynamic_state3_blending || dynamic_state3_enables;
     dynamic_state3_blending = dynamic_state3_blending && extensions.extended_dynamic_state3;

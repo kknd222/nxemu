@@ -163,12 +163,44 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Systemloader & loader, ISystemMod
         {
             uint64_t patch_segment_addr = 0;
             uint32_t patch_segment_size = 0;
+
+            // RelocateAndCopy appends the generated NCE patch code into program_image at the
+            // old image_size. The original nxemu Android port passed program_image.data()
+            // without growing the vector first, so the patch bytes were written past the
+            // vector and were not included in codeset.memory. On device this produced a jump
+            // into a zero-filled patch page (inst=0x00000000) and immediate SIGILL. Reserve a
+            // real writable tail before relocation, then shrink to the exact relocated size.
+            const uint32_t image_size_before_relocate = image_size;
+            const uint32_t patch_scratch_size = patch_collection->GetTotalPatchSize();
+            if (patch_scratch_size != 0)
+            {
+                program_image.resize(static_cast<size_t>(image_size_before_relocate) + patch_scratch_size);
+            }
+
             patch_collection->Relocate(patch_index, load_base, program_image.data(), &image_size, (uint32_t)code.offset, code.size, &patch_segment_addr, &patch_segment_size);
+            program_image.resize(image_size);
+            LOG_INFO(Loader,
+                     "Android NCE relocated NSO patch: name={} index={} load_base={:#x} image_before={:#x} image_after={:#x} scratch={:#x} patch_addr={:#x} patch_size={:#x}",
+                     name, patch_index, load_base, image_size_before_relocate, image_size,
+                     patch_scratch_size, patch_segment_addr, patch_segment_size);
             if (patch_segment_size != 0)
             {
                 Kernel::CodeSet::Segment & patch_segment = codeset.PatchSegment();
                 patch_segment.addr = patch_segment_addr;
+                patch_segment.offset = patch_segment_addr;
                 patch_segment.size = patch_segment_size;
+            }
+            codeset.patch_post_handlers.clear();
+            const uint32_t post_count = patch_collection->GetPostHandlerCount();
+            codeset.patch_post_handlers.reserve(post_count);
+            for (uint32_t i = 0; i < post_count; ++i)
+            {
+                uint64_t module_pc = 0;
+                uint64_t patch_pc = 0;
+                if (patch_collection->GetPostHandler(i, &module_pc, &patch_pc))
+                {
+                    codeset.patch_post_handlers.emplace_back(module_pc, patch_pc);
+                }
             }
         }
     }

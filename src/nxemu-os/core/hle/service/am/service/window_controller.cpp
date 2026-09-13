@@ -5,6 +5,7 @@
 #include "core/hle/service/am/applet_manager.h"
 #include "core/hle/service/am/service/window_controller.h"
 #include "core/hle/service/cmif_serialization.h"
+#include "core/hle/service/nxemu_android_diagnostics.h"
 
 namespace Service::AM {
 
@@ -30,6 +31,8 @@ IWindowController::~IWindowController() = default;
 
 Result IWindowController::GetAppletResourceUserId(Out<AppletResourceUserId> out_aruid) {
     LOG_INFO(Service_AM, "called");
+    NxemuAndroidDiagnostics::RecordEvent("AM.Window.GetAppletResourceUserId",
+                                         "aruid=" + std::to_string(m_applet->aruid));
     *out_aruid = m_applet->aruid;
     R_SUCCEED();
 }
@@ -49,20 +52,26 @@ Result IWindowController::GetAppletResourceUserIdOfCallerApplet(
 
 Result IWindowController::AcquireForegroundRights() {
     LOG_INFO(Service_AM, "called");
+    NxemuAndroidDiagnostics::RecordEvent("AM.Window.AcquireForegroundRights", "called");
     R_SUCCEED();
 }
 
 Result IWindowController::ReleaseForegroundRights() {
     LOG_INFO(Service_AM, "called");
+    NxemuAndroidDiagnostics::RecordEvent("AM.Window.ReleaseForegroundRights", "called");
     R_SUCCEED();
 }
 
 Result IWindowController::RejectToChangeIntoBackground() {
     LOG_INFO(Service_AM, "called");
+    NxemuAndroidDiagnostics::RecordEvent("AM.Window.RejectToChangeIntoBackground", "called");
     R_SUCCEED();
 }
 
 Result IWindowController::SetAppletWindowVisibility(bool visible) {
+    NxemuAndroidDiagnostics::RecordEvent("AM.Window.SetAppletWindowVisibility",
+                                         std::string{"visible="} +
+                                             (visible ? "true" : "false"));
     m_applet->display_layer_manager.SetWindowVisibility(visible);
     m_applet->hid_registration.EnableAppletToGetInput(visible);
 
@@ -80,6 +89,8 @@ Result IWindowController::SetAppletWindowVisibility(bool visible) {
 
 Result IWindowController::SetAppletGpuTimeSlice(s64 time_slice) {
     LOG_WARNING(Service_AM, "(STUBBED) called, time_slice={}", time_slice);
+    NxemuAndroidDiagnostics::RecordEvent("AM.Window.SetAppletGpuTimeSlice",
+                                         "time_slice=" + std::to_string(time_slice));
     R_SUCCEED();
 }
 

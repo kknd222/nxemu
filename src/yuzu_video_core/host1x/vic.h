@@ -48,7 +48,11 @@ private:
 
     /// Avoid reallocation of the following buffers every frame, as their
     /// size does not change during a stream
+#if defined(NXEMU_DISABLE_FFMPEG)
+    using AVMallocPtr = std::unique_ptr<u8, void (*)(u8*)>;
+#else
     using AVMallocPtr = std::unique_ptr<u8, decltype(&av_free)>;
+#endif
     AVMallocPtr converted_frame_buffer;
     Common::ScratchBuffer<u8> luma_buffer;
     Common::ScratchBuffer<u8> chroma_buffer;

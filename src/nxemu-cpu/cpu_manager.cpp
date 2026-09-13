@@ -2,6 +2,10 @@
 #include "arm_dynarmic_64.h"
 #include "arm_dynarmic_32.h"
 #include "patch/patch_collection.h"
+#if defined(_M_ARM64) || defined(ARCHITECTURE_arm64) || defined(__aarch64__)
+#include "nce/arm_nce.h"
+#include "arm_dynarmic.h"
+#endif
 #if defined(_M_X64) || defined(ARCHITECTURE_x86_64) || defined(_M_ARM64) || defined(ARCHITECTURE_arm64)
 #include "exclusive_monitor_interface.h"
 #endif
@@ -40,7 +44,11 @@ ICpuCore * CpuInterface::CreateCpuCore(ICoreSystem & system, bool is64Bit, bool 
 {
     if (is64Bit)
     {
+        LOG_INFO(Core_ARM, "Android NCE CreateCpuCore using Dynarmic64: core={} is64Bit={}", coreIndex,
+                 is64Bit);
         return new ArmDynarmic64(system, usesWallClock, process, m_monitor, coreIndex);
     }
+    LOG_INFO(Core_ARM, "Android NCE CreateCpuCore using Dynarmic32: core={}", coreIndex);
     return new ArmDynarmic32(system, usesWallClock, process, m_monitor, coreIndex);
 }
+

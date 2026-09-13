@@ -15,6 +15,9 @@
 #include "yuzu_video_core/memory_manager.h"
 #include "yuzu_video_core/rasterizer_interface.h"
 #include "yuzu_video_core/textures/texture.h"
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+#include <android/log.h>
+#endif
 
 namespace Tegra::Engines {
 
@@ -607,6 +610,11 @@ void Maxwell3D::ProcessCounterReset() {
 void Maxwell3D::ProcessSyncPoint() {
     const u32 sync_point = regs.sync_info.sync_point.Value();
     [[maybe_unused]] const u32 cache_flush = regs.sync_info.clean_l2.Value();
+#if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
+    __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag",
+                        "Video.Maxwell3D.SyncPoint id=%u clean_l2=%u", sync_point,
+                        cache_flush);
+#endif
     rasterizer->SignalSyncPoint(sync_point);
 }
 
