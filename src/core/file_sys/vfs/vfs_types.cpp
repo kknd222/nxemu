@@ -261,7 +261,12 @@ uint64_t VirtualFileImpl::WriteBytes(const uint8_t * data, uint64_t datalen, uin
 {
     if (m_file)
     {
-        return m_file->Write(data, datalen, offset);
+        const auto written = m_file->Write(data, datalen, offset);
+        if (written != 0)
+        {
+            m_file->Flush();
+        }
+        return written;
     }
     return 0;
 }
