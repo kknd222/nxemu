@@ -127,6 +127,7 @@ nxinterface IKernelProcess
     virtual IKProcessPageTable & GetPageTable() = 0;
     virtual IMemory & GetMemory() = 0;
     virtual bool Is64Bit() const = 0;
+    virtual bool IsApplication() const = 0;
     virtual void LogBacktrace(ICpuCore & cpuCore) = 0;
 };
 

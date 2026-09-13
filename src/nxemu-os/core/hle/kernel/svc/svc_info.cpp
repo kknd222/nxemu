@@ -66,7 +66,7 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
             R_SUCCEED();
 
         case InfoType::AliasRegionAddress:
-            *result = GetInteger(process->GetKPageTable().GetAliasRegionStart());
+            *result = process->GetKPageTable().GetAliasRegionStart().GetValue();
             R_SUCCEED();
 
         case InfoType::AliasRegionSize:
@@ -74,7 +74,7 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
             R_SUCCEED();
 
         case InfoType::HeapRegionAddress:
-            *result = GetInteger(process->GetKPageTable().GetHeapRegionStart());
+            *result = process->GetKPageTable().GetHeapRegionStart().GetValue();
             R_SUCCEED();
 
         case InfoType::HeapRegionSize:
@@ -82,7 +82,7 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
             R_SUCCEED();
 
         case InfoType::AslrRegionAddress:
-            *result = GetInteger(process->GetKPageTable().GetAliasCodeRegionStart());
+            *result = process->GetKPageTable().GetAliasCodeRegionStart().GetValue();
             R_SUCCEED();
 
         case InfoType::AslrRegionSize:
@@ -90,7 +90,7 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
             R_SUCCEED();
 
         case InfoType::StackRegionAddress:
-            *result = GetInteger(process->GetKPageTable().GetStackRegionStart());
+            *result = process->GetKPageTable().GetStackRegionStart().GetValue();
             R_SUCCEED();
 
         case InfoType::StackRegionSize:
@@ -118,7 +118,7 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
             R_SUCCEED();
 
         case InfoType::UserExceptionContextAddress:
-            *result = GetInteger(process->GetProcessLocalRegionAddress());
+            *result = process->GetProcessLocalRegionAddress().GetValue();
             R_SUCCEED();
 
         case InfoType::TotalNonSystemMemorySize:

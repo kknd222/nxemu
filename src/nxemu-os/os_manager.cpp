@@ -634,7 +634,7 @@ bool OSManager::SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & 
         return false;
     }
     processID = current->GetProcessId();
-    baseAddress = GetInteger(current->GetEntryPoint());
+    baseAddress = current->GetEntryPoint().GetValue();
     return true;
 }
 
@@ -674,7 +674,7 @@ bool OSManager::CreateApplicationProcess(uint64_t codeSize, const IProgramMetada
     m_coreSystem.GetAppletManager().CreateAndInsertByFrontendAppletParameters(m_applicationProcess->GetProcessId(), params);
 
     processID = m_applicationProcess->GetProcessId();
-    baseAddress = GetInteger(m_applicationProcess->GetEntryPoint());
+    baseAddress = m_applicationProcess->GetEntryPoint().GetValue();
     Service::NxemuAndroidDiagnostics::RecordEvent(
         "OS.CreateApplicationProcess",
         fmt::format("program_id={:016X} codeSize={:#x} entry={:#x} processID={} is_hbl={}",

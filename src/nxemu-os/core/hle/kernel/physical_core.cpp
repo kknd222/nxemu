@@ -359,9 +359,9 @@ void PhysicalCore::LoadContext(const KThread * thread)
         interface->SetContext(thread->GetContext());
         NXEMU_ANDROID_CPU_TRACE(Core_ARM, "Android NCE PhysicalCore LoadContext after SetContext: core={}",
                  m_core_index);
-        interface->SetTpidrroEl0(GetInteger(thread->GetTlsAddress()));
+        interface->SetTpidrroEl0(thread->GetTlsAddress().GetValue());
         NXEMU_ANDROID_CPU_TRACE(Core_ARM, "Android NCE PhysicalCore LoadContext after SetTpidrro: core={} tls={:#x}",
-                 m_core_index, GetInteger(thread->GetTlsAddress()));
+                 m_core_index, thread->GetTlsAddress().GetValue());
         interface->SetWatchpointArray(process->GetWatchpoints().data(), (uint32_t)process->GetWatchpoints().size());
         NXEMU_ANDROID_CPU_TRACE(Core_ARM, "Android NCE PhysicalCore LoadContext end: core={}", m_core_index);
     }
