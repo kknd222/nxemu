@@ -105,10 +105,11 @@ Result IFileSystem::OpenFile(OutInterface<IFile> out_interface, const InLargeDat
 
 Result IFileSystem::OpenDirectory(OutInterface<IDirectory> out_interface, const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path, u32 mode)
 {
-    LOG_DEBUG(Service_FS, "called. directory={}, mode={}", path->str, mode);
-
     IVirtualDirectoryPtr vfs_dir;
-    R_TRY(backend->OpenDirectory(vfs_dir.GetAddressForSet(), FileSys::Path(path->str), static_cast<FileSys::OpenDirectoryMode>(mode)));
+    const Result result = backend->OpenDirectory(vfs_dir.GetAddressForSet(), FileSys::Path(path->str), static_cast<FileSys::OpenDirectoryMode>(mode));
+    LOG_INFO(Service_FS, "SaveTrace OpenDirectory path='{}' mode=0x{:X} result=0x{:08X}",
+             path->str, mode, result.raw);
+    R_TRY(result);
 
     *out_interface = std::make_shared<IDirectory>(system, std::move(vfs_dir), static_cast<FileSys::OpenDirectoryMode>(mode));
     R_SUCCEED();
@@ -116,10 +117,11 @@ Result IFileSystem::OpenDirectory(OutInterface<IDirectory> out_interface, const 
 
 Result IFileSystem::GetEntryType(Out<u32> out_type, const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path)
 {
-    LOG_DEBUG(Service_FS, "called. file={}", path->str);
-
     FileSys::DirectoryEntryType vfs_entry_type{};
-    R_TRY(backend->GetEntryType(&vfs_entry_type, FileSys::Path(path->str)));
+    const Result result = backend->GetEntryType(&vfs_entry_type, FileSys::Path(path->str));
+    LOG_INFO(Service_FS, "SaveTrace GetEntryType path='{}' result=0x{:08X} type={}", path->str,
+             result.raw, static_cast<u32>(vfs_entry_type));
+    R_TRY(result);
 
     *out_type = static_cast<u32>(vfs_entry_type);
     R_SUCCEED();
@@ -136,17 +138,15 @@ Result IFileSystem::Commit()
 
 Result IFileSystem::GetFreeSpaceSize(Out<s64> out_size, const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path)
 {
-    LOG_DEBUG(Service_FS, "called");
-
-    UNIMPLEMENTED();
+    *out_size = static_cast<s64>(size_getter.get_free_size());
+    LOG_INFO(Service_FS, "SaveTrace GetFreeSpaceSize path='{}' size={}", path->str, *out_size);
     R_SUCCEED();
 }
 
 Result IFileSystem::GetTotalSpaceSize(Out<s64> out_size, const InLargeData<FileSys::Sf::Path, BufferAttr_HipcPointer> path)
 {
-    LOG_DEBUG(Service_FS, "called");
-
-    UNIMPLEMENTED();
+    *out_size = static_cast<s64>(size_getter.get_total_size());
+    LOG_INFO(Service_FS, "SaveTrace GetTotalSpaceSize path='{}' size={}", path->str, *out_size);
     R_SUCCEED();
 }
 

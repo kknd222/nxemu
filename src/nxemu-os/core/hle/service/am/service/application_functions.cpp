@@ -238,7 +238,12 @@ Result IApplicationFunctions::ExtendSaveData(Out<u64> out_required_size, SaveDat
 {
     LOG_DEBUG(Service_AM, "called with type={} user_id={} normal={:#x} journal={:#x}", static_cast<u8>(type), user_id.FormattedString(), normal_size, journal_size);
 
-    UNIMPLEMENTED();
+    uint64_t raw_user_id[2]{};
+    static_assert(sizeof(raw_user_id) == sizeof(user_id.uuid));
+    std::memcpy(&raw_user_id, user_id.uuid.data(), sizeof(raw_user_id));
+    ISaveDataControllerPtr controller(system.GetSystemloader().FileSystemController().OpenSaveDataController());
+    controller->WriteSaveDataSize(type, m_applet->program_id, raw_user_id,
+                                  SaveDataSize{normal_size, journal_size});
     // The following value is used to indicate the amount of space remaining on failure
     // due to running out of space. Since we always succeed, this should be 0.
     *out_required_size = 0;
@@ -248,10 +253,16 @@ Result IApplicationFunctions::ExtendSaveData(Out<u64> out_required_size, SaveDat
 
 Result IApplicationFunctions::GetSaveDataSize(Out<u64> out_normal_size, Out<u64> out_journal_size, SaveDataType type, Common::UUID user_id)
 {
-    LOG_WARNING(Service_AM, "(STUBBED) called with type={} user_id={}", type,
-                user_id.FormattedString());
-    *out_normal_size = 0;
-    *out_journal_size = 0;
+    uint64_t raw_user_id[2]{};
+    static_assert(sizeof(raw_user_id) == sizeof(user_id.uuid));
+    std::memcpy(&raw_user_id, user_id.uuid.data(), sizeof(raw_user_id));
+    ISaveDataControllerPtr controller(system.GetSystemloader().FileSystemController().OpenSaveDataController());
+    const SaveDataSize size = controller->ReadSaveDataSize(type, m_applet->program_id, raw_user_id);
+    *out_normal_size = size.normal;
+    *out_journal_size = size.journal;
+    LOG_INFO(Service_AM,
+             "SaveTrace GetSaveDataSize type={} uid={} normal=0x{:X} journal=0x{:X}", type,
+             user_id.FormattedString(), size.normal, size.journal);
     R_SUCCEED();
 }
 

@@ -117,10 +117,13 @@ public:
             return;
         }
 
-        bytes_written += file->WriteString(FormatLogMessage(entry).append(1, '\n'));
+        auto formatted = FormatLogMessage(entry);
+        const bool is_diagnostic_event = formatted.find("SaveTrace") != std::string::npos ||
+                                         formatted.find("SwkbdTrace") != std::string::npos;
+        bytes_written += file->WriteString(formatted.append(1, '\n'));
 
         const auto now = std::chrono::steady_clock::now();
-        if (now - last_flush >= std::chrono::seconds(1))
+        if (is_diagnostic_event || now - last_flush >= std::chrono::seconds(1))
         {
             file->Flush();
             last_flush = now;

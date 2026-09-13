@@ -277,6 +277,8 @@ nxinterface IFileSysRegisteredCache
 nxinterface ISaveDataController
 {
     virtual bool CreateSaveData(IVirtualDirectory** out_save_data, SaveDataSpaceId space, const SaveDataAttribute & attribute) = 0;
+    virtual SaveDataSize ReadSaveDataSize(SaveDataType type, uint64_t title_id, const uint64_t* user_id) = 0;
+    virtual void WriteSaveDataSize(SaveDataType type, uint64_t title_id, const uint64_t* user_id, SaveDataSize size) = 0;
     virtual void Release() = 0;
 };
 
