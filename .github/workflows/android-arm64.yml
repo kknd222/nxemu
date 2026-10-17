@@ -24,6 +24,10 @@ jobs:
       CCACHE_MAXSIZE: 3G
       CMAKE_C_COMPILER_LAUNCHER: ccache
       CMAKE_CXX_COMPILER_LAUNCHER: ccache
+      NXEMU_KEYSTORE_FILE: ${{ github.workspace }}/.signing/nxemu-work.p12
+      NXEMU_KEYSTORE_PASSWORD: ${{ secrets.NXEMU_KEYSTORE_PASSWORD || 'android' }}
+      NXEMU_KEY_ALIAS: ${{ secrets.NXEMU_KEY_ALIAS || 'nxemu-work' }}
+      NXEMU_KEY_PASSWORD: ${{ secrets.NXEMU_KEY_PASSWORD || 'android' }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -56,6 +60,26 @@ jobs:
             ~/.android/debug.keystore
           key: nxemu-android-arm64-v1-${{ github.sha }}
           restore-keys: nxemu-android-arm64-v1-
+      - uses: actions/cache/restore@v4
+        with:
+          path: .signing/nxemu-work.p12
+          key: nxemu-work-signing-v1
+      - name: Require the existing Work update signing identity
+        env:
+          KEYSTORE_BASE64: ${{ secrets.NXEMU_KEYSTORE_BASE64 }}
+        shell: python
+        run: |
+          import base64, hashlib, os, pathlib, subprocess
+          path = pathlib.Path(os.environ['NXEMU_KEYSTORE_FILE'])
+          if os.environ.get('KEYSTORE_BASE64'):
+              path.parent.mkdir(parents=True, exist_ok=True)
+              path.write_bytes(base64.b64decode(os.environ['KEYSTORE_BASE64'], validate=True))
+              path.chmod(0o600)
+          if not path.is_file():
+              raise SystemExit('Work signing key is unavailable. Restore the owner signing backup via repository secrets; do not generate a replacement key.')
+          cert = subprocess.check_output(['keytool', '-exportcert', '-keystore', str(path), '-alias', os.environ['NXEMU_KEY_ALIAS'], '-storepass:env', 'NXEMU_KEYSTORE_PASSWORD'])
+          expected = pathlib.Path('.github/android-work-signing.sha256').read_text().strip()
+          assert hashlib.sha256(cert).hexdigest() == expected, 'Refusing a changed update signing identity'
       - name: Build optimized APK
         working-directory: src/android
         run: |

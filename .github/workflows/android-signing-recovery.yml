@@ -1,8 +1,5 @@
 name: Recover Android update signing
 on:
-  push:
-    branches: [android/upstream-20261017]
-    paths: [.github/workflows/android-signing-recovery.yml]
   workflow_dispatch:
 permissions:
   contents: read

@@ -9,7 +9,7 @@ android {
     ndkVersion = "26.1.10909125"
 
     defaultConfig {
-        applicationId = "org.nxemu"
+        applicationId = "org.nxemu.work"
         minSdk = 28
         targetSdk = 36
         versionCode = (project.findProperty("nxemuVersionCode") as String?)?.toInt() ?: 1

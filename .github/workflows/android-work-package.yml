@@ -1,0 +1,63 @@
+name: Android Work package and signing backup
+on:
+  push:
+    branches: [android/upstream-20261017]
+    paths: [.github/workflows/android-work-package.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  package:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/cache@v4
+        with:
+          path: .signing/nxemu-work.p12
+          key: nxemu-work-signing-v1
+      - name: Initialize the Work signing identity once
+        run: |
+          mkdir -p .signing
+          if [ ! -f .signing/nxemu-work.p12 ]; then
+            keytool -genkeypair -storetype PKCS12 -keystore .signing/nxemu-work.p12 -storepass android -keypass android -alias nxemu-work -keyalg RSA -keysize 3072 -validity 10000 -dname 'CN=NxEmu Work, OU=Personal Android Builds'
+          fi
+      - uses: actions/download-artifact@v4
+        with:
+          name: NxEmu-upstream-arm64
+          run-id: 39032521727
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: verified-input
+      - name: Package the verified fixes for side-by-side installation
+        run: |
+          mkdir -p deliverables
+          python3 .github/scripts/repackage_android_work.py verified-input/NxEmu-upstream-arm64.apk work-unsigned.apk
+          "$ANDROID_HOME/build-tools/36.0.0/zipalign" -P 16 -f 4 work-unsigned.apk work-aligned.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign --ks .signing/nxemu-work.p12 --ks-pass pass:android --key-pass pass:android --ks-key-alias nxemu-work --out deliverables/NxEmu-Work-settings-saves-arm64.apk work-aligned.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs deliverables/NxEmu-Work-settings-saves-arm64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/aapt2" dump badging deliverables/NxEmu-Work-settings-saves-arm64.apk > deliverables/package-info.txt
+          python3 - <<'PY'
+          import hashlib, pathlib, subprocess
+          text = pathlib.Path('deliverables/package-info.txt').read_text()
+          assert "package: name='org.nxemu.work'" in text
+          assert "application-label:'NxEmu Work'" in text
+          cert = subprocess.check_output(['keytool', '-exportcert', '-alias', 'nxemu-work', '-keystore', '.signing/nxemu-work.p12', '-storepass', 'android'])
+          pathlib.Path('deliverables/signer-sha256.txt').write_text(hashlib.sha256(cert).hexdigest()+'\n')
+          PY
+          sha256sum deliverables/NxEmu-Work-settings-saves-arm64.apk > deliverables/SHA256SUMS
+          cp verified-input/source-commit.txt deliverables/feature-source-commit.txt
+          git rev-parse HEAD > deliverables/package-source-commit.txt
+      - name: Encrypt the private signing backup for its owner
+        run: |
+          openssl rand -base64 48 > /tmp/nxemu-signing-password
+          openssl enc -aes-256-cbc -pbkdf2 -iter 200000 -salt -in .signing/nxemu-work.p12 -out deliverables/signing-backup.enc -pass file:/tmp/nxemu-signing-password
+          openssl pkeyutl -encrypt -pubin -inkey .github/android-work-signing-public.pem -in /tmp/nxemu-signing-password -out deliverables/signing-password.rsa -pkeyopt rsa_padding_mode:oaep -pkeyopt rsa_oaep_md:sha256
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NxEmu-Work-settings-saves-arm64
+          path: deliverables/
