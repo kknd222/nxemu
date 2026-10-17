@@ -14,6 +14,21 @@ import org.nxemu.utils.ThemeHelper
 
 class NxEmuBridge(private val activity: MainActivity) {
     @JavascriptInterface
+    fun importSaveData() {
+        activity.runOnUiThread { activity.saveData.importSave() }
+    }
+
+    @JavascriptInterface
+    fun restoreSaveBackup() {
+        activity.runOnUiThread { activity.saveData.restoreBackup() }
+    }
+
+    @JavascriptInterface
+    fun exportSaveData() {
+        activity.runOnUiThread { activity.saveData.exportSave() }
+    }
+
+    @JavascriptInterface
     fun addGameDirectory() {
         activity.runOnUiThread { activity.AddGameDirectory() }
     }
@@ -41,6 +56,7 @@ class NxEmuBridge(private val activity: MainActivity) {
     @JavascriptInterface
     fun setSettingBool(setting: String, value: Boolean) {
         NativeLibrary.setSettingBool(setting, value)
+        if (setting == "nxos:VibrationEnabled" && !value) InputHandler.stopVibration()
     }
 
     @JavascriptInterface

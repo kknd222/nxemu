@@ -187,6 +187,7 @@ class EmulationActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     override fun onPause() {
+        InputHandler.stopVibration()
         releaseDrawerStick()
         val leftApp = leavingApp
         if (!NativeLibrary.isPaused()) {
@@ -282,6 +283,7 @@ class EmulationActivity : ComponentActivity(), SurfaceHolder.Callback {
             clearPausedFrame()
         } else {
             NativeLibrary.pauseEmulation()
+            InputHandler.stopVibration()
             capturePausedFrame()
         }
         updatePauseLabel()
@@ -649,6 +651,7 @@ class EmulationActivity : ComponentActivity(), SurfaceHolder.Callback {
     }
 
     override fun onDestroy() {
+        InputHandler.stopVibration()
         if (frameListener === pausedFrameListener) {
             frameListener = null
         }

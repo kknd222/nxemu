@@ -33,6 +33,14 @@ jobs:
         with:
           distribution: temurin
           java-version: '17'
+      - name: Verify save archive behavior and settings UI
+        run: |
+          mkdir -p /tmp/nxemu-save-tests
+          javac -d /tmp/nxemu-save-tests src/android/app/src/main/java/org/nxemu/features/saves/SaveArchive.java src/android/tests/SaveArchiveTest.java
+          java -cp /tmp/nxemu-save-tests SaveArchiveTest
+          node --check src/android/app/src/main/assets/ui.js
+          g++ -std=c++20 -DFMT_HEADER_ONLY -Isrc -Isrc/nxemu-os -Isrc/nxemu-video -Iexternal/fmt/include src/android/tests/SettingsRoundTripTest.cpp src/nxemu-video/video_settings.cpp src/nxemu-video/video_enum_strings.cpp src/nxemu-os/os_settings.cpp src/nxemu-os/os_enum_strings.cpp src/common/json.cpp src/common/json_util.cpp src/common/std_string.cpp src/common/platform.cpp -o /tmp/nxemu-settings-test
+          /tmp/nxemu-settings-test
       - name: Install build tools
         run: |
           sudo apt-get update -qq

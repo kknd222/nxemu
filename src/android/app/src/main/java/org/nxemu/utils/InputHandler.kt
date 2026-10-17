@@ -9,6 +9,7 @@ import android.view.MotionEvent
 import org.nxemu.features.input.NativeInput
 import org.nxemu.features.input.NxEmuInputOverlayDevice
 import org.nxemu.features.input.NxEmuPhysicalDevice
+import org.nxemu.features.input.NxEmuVibrator
 
 object InputHandler {
     var androidControllers = mapOf<Int, NxEmuPhysicalDevice>()
@@ -64,7 +65,7 @@ object InputHandler {
                         gameControllerDeviceIds[controllerNumber] = NxEmuPhysicalDevice(
                             this,
                             port,
-                            useSystemVibrator = port == 0,
+                            useSystemVibrator = false,
                         )
                     }
                     port++
@@ -74,7 +75,16 @@ object InputHandler {
         return gameControllerDeviceIds
     }
 
+    fun stopVibration() {
+        androidControllers.values.forEach { it.vibrate(0f) }
+        InputDevice.getDeviceIds().forEach { id ->
+            InputDevice.getDevice(id)?.let { NxEmuVibrator.getControllerVibrator(it).vibrate(0f) }
+        }
+        NxEmuVibrator.getSystemVibrator().vibrate(0f)
+    }
+
     fun updateControllerData() {
+        stopVibration()
         androidControllers = getDevices()
         androidControllers.forEach {
             NativeInput.registerController(it.value)

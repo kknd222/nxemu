@@ -567,6 +567,24 @@ function optionLabel(options, value) {
   return String(value);
 }
 
+var languageOptions = [
+  { label: '简体中文', value: 15 }, { label: '繁體中文', value: 16 },
+  { label: 'English (US)', value: 1 }, { label: 'English (UK)', value: 12 },
+  { label: '日本語', value: 0 }, { label: '한국어', value: 7 },
+  { label: 'Français', value: 2 }, { label: 'Deutsch', value: 3 },
+  { label: 'Italiano', value: 4 }, { label: 'Español', value: 5 },
+  { label: 'Nederlands', value: 8 }, { label: 'Português', value: 9 },
+  { label: 'Русский', value: 10 }, { label: 'Français (Canada)', value: 13 },
+  { label: 'Español (Latinoamérica)', value: 14 }, { label: 'Português (Brasil)', value: 17 },
+  { label: '中文（旧版）', value: 6 }, { label: '繁體中文（舊版）', value: 11 },
+];
+var regionOptions = [
+  { label: '中国 / China', value: 4 }, { label: '台湾 / Taiwan', value: 6 },
+  { label: '美国 / USA', value: 1 }, { label: '日本 / Japan', value: 0 },
+  { label: '欧洲 / Europe', value: 2 }, { label: '澳大利亚 / Australia', value: 3 },
+  { label: '韩国 / Korea', value: 5 },
+];
+
 var resolutionOptions = [
   { label: '0.5x', value: 0, scale: 0.5 },
   { label: '0.75x', value: 1, scale: 0.75 },
@@ -637,9 +655,9 @@ function dockedLabel() {
 }
 
 function consoleSummary() {
-  if (!readSettingBool('nxos:UseSpeedLimit')) return dockedLabel() + ' � Unlimited speed';
+  if (!readSettingBool('nxos:UseSpeedLimit')) return dockedLabel() + ' · Unlimited speed';
   const limit = readSettingInt('nxos:SpeedLimit');
-  return limit === 100 ? dockedLabel() : dockedLabel() + ' � Speed limit ' + limit + '%';
+  return limit === 100 ? dockedLabel() : dockedLabel() + ' · Speed limit ' + limit + '%';
 }
 
 // The Switch renders at 720p handheld and 1080p docked; the scale multiplies that.
@@ -659,11 +677,11 @@ function resolutionLabel() {
   const option = resolutionOption();
   if (!option) return '';
   const docked = readSettingInt('nxos:DockedMode') === 1;
-  return option.label + ' � ' + resolutionHeight(option, docked) + (docked ? ' docked' : ' handheld');
+  return option.label + ' · ' + resolutionHeight(option, docked) + (docked ? ' docked' : ' handheld');
 }
 
 function resolutionOptionDetail(option) {
-  return resolutionHeight(option, false) + ' handheld � ' + resolutionHeight(option, true) + ' docked';
+  return resolutionHeight(option, false) + ' handheld · ' + resolutionHeight(option, true) + ' docked';
 }
 
 function graphicsSummary() {
@@ -768,10 +786,10 @@ function appendGpuAssetRow(list, title, repo, tag, asset, size, file, stored, pu
   const downloading = isGpuDownloading(repo, tag, asset);
   const installed = stored[file];
   const released = published ? formatReleaseDate(published) : '';
-  var status = [formatBytes(size), released ? 'Released ' + released : ''].filter(Boolean).join(' � ');
+  var status = [formatBytes(size), released ? 'Released ' + released : ''].filter(Boolean).join(' · ');
   if (downloading) status = 'Downloading ' + gpuFetch.download.percent + '%';
-  else if (installed && installed.selected) status = 'Installed � in use';
-  else if (installed) status = 'Installed � tap to use';
+  else if (installed && installed.selected) status = 'Installed · in use';
+  else if (installed) status = 'Installed · tap to use';
   const item = document.createElement('div');
   item.className = 'settings-item';
   item.innerHTML =
@@ -797,7 +815,7 @@ function renderGpuCatalogState(host) {
   const catalog = gpuFetch.catalog;
   if (!catalog && !gpuFetch.loading) loadGpuCatalog(false);
   if (!catalog) {
-    host.innerHTML = '<div class="empty-hint">Loading drivers from GitHub�</div>';
+    host.innerHTML = '<div class="empty-hint">Loading drivers from GitHub…</div>';
     refreshSettingsSelection();
     return null;
   }
@@ -849,8 +867,8 @@ function renderGpuDriverDownload() {
   (catalog.groups || []).forEach(function (group) {
     const releases = group.releases || [];
     const latest = releases.filter(function (r) { return r.latest; })[0] || releases[0];
-    var detail = group.error || (latest ? 'Latest: ' + latest.title + ' � ' + releases.length + ' releases' : 'No downloads');
-    if (group.stale) detail += ' � offline copy';
+    var detail = group.error || (latest ? 'Latest: ' + latest.title + ' · ' + releases.length + ' releases' : 'No downloads');
+    if (group.stale) detail += ' · offline copy';
     appendLinkRow(list, {
       label: group.name,
       detail: detail,
@@ -862,7 +880,7 @@ function renderGpuDriverDownload() {
     });
   });
   appendLinkRow(list, {
-    label: gpuFetch.loading ? 'Refreshing�' : 'Refresh list',
+    label: gpuFetch.loading ? 'Refreshing…' : 'Refresh list',
     detail: 'Check GitHub for new releases',
     run: function () {
       loadGpuCatalog(true);
@@ -886,7 +904,7 @@ function renderGpuDriverGroup() {
     if (release.assets.some(function (a) { return stored[a.file]; })) tags.push('Installed');
     appendLinkRow(list, {
       label: release.title,
-      detail: tags.join(' � '),
+      detail: tags.join(' · '),
       run: function () {
         gpuFetch.release = release;
         navigate('gpuDriverRelease');
@@ -904,7 +922,7 @@ function renderGpuDriverRelease() {
   const stored = storedGpuDriverFiles();
   const header = document.createElement('div');
   header.className = 'settings-header';
-  header.textContent = release.assets.length > 1 ? 'Downloads � pick one' : 'Download';
+  header.textContent = release.assets.length > 1 ? 'Downloads · pick one' : 'Download';
   list.appendChild(header);
   release.assets.forEach(function (asset) {
     appendGpuAssetRow(list, asset.name, group.repo, release.tag, asset.name, asset.size, asset.file, stored);
@@ -930,7 +948,8 @@ const settingPages = [
       { label: 'Game folders', type: 'page', page: 'gameFolders', detail: folderCountLabel },
       { label: 'Controllers', type: 'page', page: 'controllerSettings', detail: connectedCountLabel },
       { label: 'On screen controller', type: 'page', page: 'overlaySettings', detail: overlayShowLabel },
-      { label: 'Console', type: 'page', page: 'systemSettings', detail: consoleSummary },
+      { label: '存档导入 / 导出', type: 'page', page: 'saveDataSettings', detail: '游戏存档 ZIP，支持 Eden 格式' },
+      { label: 'Console / 系统', type: 'page', page: 'systemSettings', detail: consoleSummary },
       { label: 'Graphics', type: 'page', page: 'graphicsSettings', detail: graphicsSummary },
       { label: 'Theme', type: 'page', page: 'themeSettings', detail: function () { return themeModeLabel(getThemeMode()); } },
     ],
@@ -947,8 +966,11 @@ const settingPages = [
   },
   {
     id: 'systemSettings',
-    title: 'Console',
+    title: 'Console / 系统',
     rows: [
+      { label: '系统语言 / Language', type: 'select', key: 'nxos:LanguageIndex', options: languageOptions, restart: true },
+      { label: '地区 / Region', type: 'select', key: 'nxos:RegionIndex', options: regionOptions, restart: true },
+      { label: '手柄震动 / Vibration', type: 'bool', key: 'nxos:VibrationEnabled', detail: '关闭后立即停止手机和手柄震动' },
       { label: 'Limit speed', type: 'bool', key: 'nxos:UseSpeedLimit', detail: 'Off runs as fast as possible. This session only', save: false, visible: gameIsRunning },
       { label: 'Speed limit', type: 'select', key: 'nxos:SpeedLimit', options: speedLimitOptions, format: function () { return readSettingInt('nxos:SpeedLimit') + '%'; } },
       { label: 'Docked mode', type: 'bool', key: 'nxos:DockedMode', intBool: true, detail: 'Higher resolution, lower performance' },
@@ -960,7 +982,7 @@ const settingPages = [
     rows: [
       { label: 'GPU driver', type: 'page', page: 'gpuDrivers', detail: gpuDriverLabel, visible: gpuDriverSupported, restart: true },
       { label: 'Accuracy', type: 'select', key: 'nxvideo:AccuracyLevel', options: accuracyOptions },
-      { label: 'Resolution', type: 'select', key: 'nxvideo:ResolutionSetup', options: resolutionOptions, format: resolutionLabel, optionDetail: resolutionOptionDetail, restart: true },
+      { label: 'Resolution', type: 'select', key: 'nxvideo:ResolutionSetup', options: resolutionOptions, format: resolutionLabel, optionDetail: resolutionOptionDetail, restart: true, detail: '内部渲染倍率；游戏自身报告的 720p/1080p 不会因此改变' },
       { label: 'VSync', type: 'select', key: 'nxvideo:VSyncMode', options: vsyncOptions },
       { label: 'Window adapting filter', type: 'select', key: 'nxvideo:ScalingFilter', options: scalingOptions },
       { label: 'FSR sharpness', type: 'int', key: 'nxvideo:FSPSharpness', min: 0, max: 200, suffix: '%', visible: function () { return readSettingInt('nxvideo:ScalingFilter') === 5; } },
@@ -980,6 +1002,13 @@ const settingPages = [
       { label: 'Follow system', type: 'choice', key: 'nxui:ThemeMode', value: 0, picked: function () { return getThemeMode() === 0; }, run: applyTheme },
       { label: 'Light', type: 'choice', key: 'nxui:ThemeMode', value: 1, picked: function () { return getThemeMode() === 1; }, run: applyTheme },
       { label: 'Dark', type: 'choice', key: 'nxui:ThemeMode', value: 2, picked: function () { return getThemeMode() === 2; }, run: applyTheme },
+    ],
+  },
+  {
+    id: 'saveDataSettings', title: '存档导入 / 导出', rows: [
+      { label: '导入游戏存档 ZIP', detail: 'Eden / NxEmu 单游戏 ZIP；替换前自动备份原存档', restart: true, run: function () { NxEmu.importSaveData(); } },
+      { label: '导出游戏存档 ZIP', detail: '选择游戏后保存到你指定的位置', restart: true, run: function () { NxEmu.exportSaveData(); } },
+      { label: '恢复自动备份', detail: '从导入前保留的旧存档中选择恢复', restart: true, run: function () { NxEmu.restoreSaveBackup(); } },
     ],
   },
   { id: 'setup', title: setupTitle, render: renderSetup },
@@ -1303,7 +1332,7 @@ function renderSetup() {
     if (!catalog) {
       const loading = document.createElement('div');
       loading.className = 'empty-hint';
-      loading.textContent = 'Finding the best driver for your phone�';
+      loading.textContent = 'Finding the best driver for your phone…';
       list.appendChild(loading);
     } else if (rec && rec.asset) {
       appendGpuAssetRow(list, 'Install ' + rec.label, rec.repo, rec.tag, rec.asset, rec.size, rec.file, storedGpuDriverFiles(), rec.published);

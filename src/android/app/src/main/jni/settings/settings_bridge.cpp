@@ -1,4 +1,5 @@
 #include "settings_bridge.h"
+#include "../emulation_session.h"
 #include "ui_identifiers.h"
 #include "ui_settings.h"
 #include <nxemu-core/settings/identifiers.h>
@@ -102,6 +103,7 @@ extern "C" JNIEXPORT void JNICALL Java_org_nxemu_NativeLibrary_setSettingInt(JNI
 
 extern "C" JNIEXPORT void JNICALL Java_org_nxemu_NativeLibrary_saveSettings(JNIEnv * /*env*/, jclass /*clazz*/)
 {
+    EmulationSession::GetInstance().FlushSettings();
     SaveUISetting();
     SettingsStore::GetInstance().Save();
 }

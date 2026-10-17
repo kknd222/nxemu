@@ -20,6 +20,8 @@ public:
 
     void InitializeSystem();
     void ShutdownSystem();
+    void FlushSettings();
+    std::string SaveDataPaths(const std::string & title_id);
 
     std::string QueryRomMetadata(const std::string & path);
     std::string QueryRomInfo(const std::string & path);

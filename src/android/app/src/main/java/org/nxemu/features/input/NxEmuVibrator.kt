@@ -13,6 +13,7 @@ import android.view.InputDevice
 import androidx.annotation.Keep
 import androidx.annotation.RequiresApi
 import org.nxemu.NxEmuApplication
+import org.nxemu.NativeLibrary
 
 @Keep
 @Suppress("DEPRECATION")
@@ -59,6 +60,11 @@ class NxEmuVibratorManager(private val vibratorManager: VibratorManager) : NxEmu
     }
 
     override fun vibrate(intensity: Float) {
+        if (intensity <= 0f || !intensity.isFinite() ||
+            !NativeLibrary.getSettingBool("nxos:VibrationEnabled")) {
+            vibratorManager.cancel()
+            return
+        }
         val vibration = NxEmuVibrator.getVibrationEffect(intensity) ?: return
         vibratorManager.vibrate(CombinedVibration.createParallel(vibration))
     }
@@ -70,6 +76,11 @@ class NxEmuVibratorManagerCompat(private val vibrator: Vibrator) : NxEmuVibrator
     }
 
     override fun vibrate(intensity: Float) {
+        if (intensity <= 0f || !intensity.isFinite() ||
+            !NativeLibrary.getSettingBool("nxos:VibrationEnabled")) {
+            vibrator.cancel()
+            return
+        }
         val vibration = NxEmuVibrator.getVibrationEffect(intensity) ?: return
         vibrator.vibrate(vibration)
     }

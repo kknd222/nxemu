@@ -25,6 +25,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import org.nxemu.NXUISetting
 import org.nxemu.NativeLibrary
+import org.nxemu.features.saves.SaveDataManager
 import org.nxemu.features.input.NativeInput
 import org.nxemu.features.input.model.NativeButton
 import org.nxemu.ui.emulation.EmulationActivity
@@ -36,6 +37,7 @@ import org.nxemu.utils.InputHandler
 import org.nxemu.utils.ThemeHelper
 
 open class MainActivity : ComponentActivity() {
+    val saveData = SaveDataManager(this)
     private lateinit var webView: WebView
     private val inputMapping = InputMappingSession(this) { refreshControllerPages() }
     private var emulationLaunchPending = false
@@ -451,6 +453,10 @@ open class MainActivity : ComponentActivity() {
     }
 
     fun launchGame(path: String) {
+        if (SaveDataManager.isBusy()) {
+            Toast.makeText(this, "存档操作进行中，请稍候", Toast.LENGTH_LONG).show()
+            return
+        }
         if (path.isEmpty() || emulationLaunchPending) {
             return
         }

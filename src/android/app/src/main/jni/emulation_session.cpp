@@ -3,6 +3,10 @@
 #include <android/log.h>
 #include <android/native_window.h>
 #include <cstdio>
+#include <cstring>
+#include <cstdlib>
+#include <filesystem>
+#include <yuzu_common/fs/path_util.h>
 #include <vector>
 
 #include <common/base64.h>
@@ -90,10 +94,67 @@ void EmulationSession::InitializeSystem()
     }
 }
 
+void EmulationSession::FlushSettings()
+{
+    std::lock_guard lock(m_mutex);
+    if (m_system_modules && m_system_modules->IsValid())
+    {
+        m_system_modules->FlushSettings();
+    }
+}
+
+std::string EmulationSession::SaveDataPaths(const std::string & title_id)
+{
+    std::lock_guard lock(m_mutex);
+    if (title_id.size() != 16 || title_id.find_first_not_of("0123456789abcdefABCDEF") != std::string::npos ||
+        !m_system_modules || !m_system_modules->IsValid() || m_native_window != nullptr)
+    {
+        return {};
+    }
+    auto & os = m_system_modules->Modules().OperatingSystem();
+    HostProfileInfo profile{};
+    const auto index = SettingsStore::GetInstance().GetInt("nxos:CurrentUser");
+    if (!os.GetProfile(static_cast<uint32_t>(index), &profile))
+    {
+        return {};
+    }
+    uint64_t user[2]{};
+    std::memcpy(user, profile.uuid, sizeof(user));
+    char legacy_user[33]{};
+    std::snprintf(legacy_user, sizeof(legacy_user), "%016llX%016llX",
+                  static_cast<unsigned long long>(user[1]), static_cast<unsigned long long>(user[0]));
+    std::string raw_user;
+    for (const uint8_t byte : profile.uuid)
+    {
+        char hex[3];
+        std::snprintf(hex, sizeof(hex), "%02x", byte);
+        raw_user += hex;
+    }
+    std::string title = title_id;
+    for (char & ch : title) if (ch >= 'a' && ch <= 'f') ch -= 'a' - 'A';
+    char base_title[17]{};
+    std::snprintf(base_title, sizeof(base_title), "%016llX", std::strtoull(title.c_str(), nullptr, 16) & ~0xFFULL);
+    const auto root = Common::FS::GetYuzuPath(Common::FS::YuzuPath::NANDDir) / "user/save";
+    const auto account_future = root / "account" / raw_user / base_title / "0";
+    const auto device_future = root / "device" / base_title / "0";
+    const auto account = std::filesystem::is_directory(account_future) ? account_future :
+        root / "0000000000000000" / legacy_user / title;
+    const auto device = std::filesystem::is_directory(device_future) ? device_future :
+        root / "0000000000000000" / "00000000000000000000000000000000" / title;
+    JsonValue result(JsonValueType::Object);
+    result["account"] = account.string();
+    result["device"] = device.string();
+    return JsonStyledWriter().write(result);
+}
+
 void EmulationSession::ShutdownSystem()
 {
     std::lock_guard lock(m_mutex);
     SettingsStore::GetInstance().SetBool(NXCoreSetting::EmulationRunning, false);
+    if (m_system_modules && m_system_modules->IsValid())
+    {
+        m_system_modules->FlushSettings();
+    }
     m_system_modules.reset();
     m_render_window.ClearSurface();
     m_native_window = nullptr;
@@ -102,6 +163,10 @@ void EmulationSession::ShutdownSystem()
 
 void EmulationSession::RestoreStubModulesLocked()
 {
+    if (m_system_modules && m_system_modules->IsValid())
+    {
+        m_system_modules->FlushSettings();
+    }
     m_system_modules.reset();
     m_render_window.ClearSurface();
     m_native_window = nullptr;
@@ -119,6 +184,10 @@ bool EmulationSession::Run(ANativeWindow * native_window, float pixel_ratio, con
 {
     std::lock_guard lock(m_mutex);
     SettingsStore::GetInstance().SetBool(NXCoreSetting::EmulationRunning, false);
+    if (m_system_modules && m_system_modules->IsValid())
+    {
+        m_system_modules->FlushSettings();
+    }
     m_system_modules.reset();
 
     if (native_window == nullptr)
@@ -144,6 +213,12 @@ bool EmulationSession::Run(ANativeWindow * native_window, float pixel_ratio, con
         return false;
     }
 
+    const auto & settings = SettingsStore::GetInstance();
+    __android_log_print(ANDROID_LOG_INFO, kLogTag,
+                        "Boot settings: resolution=%d scale=%.2f language=%d region=%d vibration=%d",
+                        settings.GetInt("nxvideo:ResolutionSetup"), settings.GetFloat("nxvideo:ResolutionUpFactor"),
+                        settings.GetInt("nxos:LanguageIndex"), settings.GetInt("nxos:RegionIndex"),
+                        settings.GetBool("nxos:VibrationEnabled"));
     const int native_w = ANativeWindow_getWidth(m_native_window);
     const int native_h = ANativeWindow_getHeight(m_native_window);
     if (native_w > 0 && native_h > 0)

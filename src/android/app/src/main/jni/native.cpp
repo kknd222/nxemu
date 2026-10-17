@@ -273,3 +273,10 @@ Java_org_nxemu_NativeLibrary_getAppletCaptureHeight(JNIEnv * /*env*/, jclass /*c
     EmulationSession::GetInstance().AppletCaptureSize(width, height);
     return static_cast<jint>(height);
 }
+
+extern "C" JNIEXPORT jstring JNICALL
+Java_org_nxemu_NativeLibrary_getSaveDataPaths(JNIEnv * env, jobject, jstring titleId)
+{
+    const auto result = EmulationSession::GetInstance().SaveDataPaths(JStringToUtf8(env, titleId));
+    return env->NewStringUTF(result.c_str());
+}

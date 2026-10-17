@@ -28,6 +28,7 @@ enum class SettingType
     AudioEngine,
     AudioMode,
     Language,
+    Region,
     DockedMode,
     MemoryLayout,
 };
@@ -49,6 +50,7 @@ public:
     OsSetting(const char * id, const char * path, AudioCore::Sink::AudioEngine * val, AudioCore::Sink::AudioEngine defaultValue);
     OsSetting(const char * id, const char * path, AudioMode * val, AudioMode defaultValue);
     OsSetting(const char * id, const char * path, Language * val, Language defaultValue);
+    OsSetting(const char * id, const char * path, Region * val, Region defaultValue);
     OsSetting(const char * id, const char * path, DockedMode * val, DockedMode defaultValue);
     OsSetting(const char * id, const char * path, MemoryLayout * val, MemoryLayout defaultValue);
     OsSetting(const char * id, const char * path, u8 * val, int32_t defaultValue, int32_t minValue, int32_t maxValue);
@@ -78,6 +80,7 @@ public:
         AudioCore::Sink::AudioEngine audioEngine;
         AudioMode audioMode;
         Language language;
+        Region region;
         DockedMode dockedMode;
         MemoryLayout memoryLayout;
     } defaults;
@@ -96,6 +99,7 @@ public:
         AudioCore::Sink::AudioEngine * audioEngine;
         AudioMode * audioMode;
         Language * language;
+        Region * region;
         DockedMode * dockedMode;
         MemoryLayout * memoryLayout;
     } value;
@@ -485,6 +489,7 @@ static OsSetting settings[] = {
         {NXOsSetting::CpuHleSynchronization, "system\\cpu_hle_synchronization", &osSettings.cpu_hle_synchronization, true},
         {NXOsSetting::UseSpeedLimit, nullptr, &osSettings.use_speed_limit, true},
         {NXOsSetting::MemoryLayout, "system\\memory_layout_mode", &osSettings.memory_layout_mode, MemoryLayout::Memory_4Gb},
+        {NXOsSetting::RegionIndex, "system\\region_index", &osSettings.region_index, Region::Usa},
         {NXOsSetting::LanguageIndex, "system\\language_index", &osSettings.language_index, Language::EnglishAmerican},
         {NXOsSetting::CurrentUser, "system\\current_user", &osSettings.current_user, 0},
         {NXOsSetting::RngSeedEnabled, "system\\rng_seed_enabled", &osSettings.rng_seed_enabled, false},
@@ -566,6 +571,9 @@ void OsSettingChanged(const char * setting, void * /*userData*/)
         case SettingType::AudioMode:
             *osSetting.value.audioMode = static_cast<AudioMode>(g_settings->GetInt(setting));
             break;
+        case SettingType::Region:
+            *osSetting.value.region = static_cast<Region>(std::clamp(g_settings->GetInt(setting), 0, 6));
+            break;
         case SettingType::Language:
             *osSetting.value.language = static_cast<Language>(g_settings->GetInt(setting));
             break;
@@ -603,7 +611,6 @@ void InitializeOsSettingDefaults()
     osSettings.my_page_applet_mode = AppletMode::LLE;
 
     osSettings.dump_audio_commands = false;
-    osSettings.region_index = Region::Usa;
     osSettings.time_zone_index = TimeZone::Auto;
     osSettings.custom_rtc = 0;
     osSettings.device_name = "NxEmu";
@@ -681,6 +688,9 @@ void SetupOsSetting(void)
             break;
         case SettingType::AudioMode:
             *osSetting.value.audioMode = osSetting.defaults.audioMode;
+            break;
+        case SettingType::Region:
+            *osSetting.value.region = osSetting.defaults.region;
             break;
         case SettingType::Language:
             *osSetting.value.language = osSetting.defaults.language;
@@ -781,6 +791,12 @@ void SetupOsSetting(void)
                     *osSetting.value.audioMode = AudioModeFromString(value.asString());
                 }
                 break;
+            case SettingType::Region:
+                if (value.isInt())
+                {
+                    *osSetting.value.region = static_cast<Region>(std::clamp<int64_t>(value.asInt64(), 0, 6));
+                }
+                break;
             case SettingType::Language:
                 if (value.isString())
                 {
@@ -863,6 +879,10 @@ void SetupOsSetting(void)
         case SettingType::AudioMode:
             g_settings->SetDefaultInt(osSetting.identifier, static_cast<int32_t>(osSetting.defaults.audioMode));
             g_settings->SetInt(osSetting.identifier, static_cast<int32_t>(*osSetting.value.audioMode));
+            break;
+        case SettingType::Region:
+            g_settings->SetDefaultInt(osSetting.identifier, static_cast<int32_t>(osSetting.defaults.region));
+            g_settings->SetInt(osSetting.identifier, static_cast<int32_t>(*osSetting.value.region));
             break;
         case SettingType::Language:
             g_settings->SetDefaultInt(osSetting.identifier, static_cast<int32_t>(osSetting.defaults.language));
@@ -974,6 +994,12 @@ void SaveOsSettings(void)
             if (*osSetting.value.audioMode != osSetting.defaults.audioMode)
             {
                 JsonSetNestedValue(root, osSetting.json_path, AudioModeToString(*osSetting.value.audioMode));
+            }
+            break;
+        case SettingType::Region:
+            if (*osSetting.value.region != osSetting.defaults.region)
+            {
+                JsonSetNestedValue(root, osSetting.json_path, static_cast<u32>(*osSetting.value.region));
             }
             break;
         case SettingType::Language:
@@ -1137,3 +1163,9 @@ OsSetting::OsSetting(const char * id, const char * path, s64 * val, s64 defaultV
     value.s64Value = val;
 }
 } // namespace
+OsSetting::OsSetting(const char * id, const char * path, Region * val, Region defaultValue) :
+    identifier(id), json_path(path), settingType(SettingType::Region)
+{
+    defaults.region = defaultValue;
+    value.region = val;
+}
