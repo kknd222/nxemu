@@ -11,6 +11,19 @@
 使用 CI 缓存的 debug key；这不是官方签名。若签名不匹配，不自动卸载已有应用，
 先备份存档再决定处理方式。绝不能在未备份时执行 `adb uninstall` 或 `pm clear`。
 
+## 已交付构建（2026-10-17）
+
+- 源码提交：`a20f1d37a596c4d56d249a15c9ea21c007651c4c`。
+- Actions： https://github.com/kknd222/nxemu/actions/runs/39015174487 ，成功。
+- APK：`NxEmu-upstream-arm64.apk`，18,784,397 字节。
+- SHA-256：`bd915a220694ea0ff0619e19037127a4af5258ac4f046491bdaee4dff28485e4`。
+- 签名验证：APK v2 通过；当前为 CI debug key 签署的 Release 构建。
+- 签名证书 SHA-256：`c1a30c4ca88ec42b42c31a43217ae3b64800da0b3893e2814bab93da79bff72a`。
+- 所有 11 个原生库均为 ARM64；四个模拟模块和四个驱动 hook 已包含。
+- 本地核对全部 25 个 `NativeLibrary` JNI 方法均有导出，四模块通用导出完整，
+  原生动态依赖均能在 APK 内或 Android 系统库中找到对应名称。
+- 模块诊断主机故障注入与语法检查通过；未连接手机，尚未验证真机运行和性能。
+
 ## PC Codex 开始步骤
 
 1. 获取工作分支最新代码，读取迁移文档与本文件，并记录实际 commit。
