@@ -1,0 +1,81 @@
+name: Android ARM64 baseline
+
+on:
+  push:
+    branches: [android/upstream-20261017]
+    paths-ignore: ['docs/**']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: android-arm64-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  apk:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 90
+    env:
+      CMAKE_BUILD_PARALLEL_LEVEL: '2'
+      CCACHE_DIR: ${{ github.workspace }}/.ccache
+      CCACHE_MAXSIZE: 3G
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          fetch-depth: 0
+          lfs: true
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: android-actions/setup-android@v3
+      - name: Install build tools
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y ninja-build ccache glslang-tools
+          sdkmanager 'platforms;android-36' 'build-tools;36.0.0' 'ndk;26.1.10909125' 'cmake;3.22.1'
+      - uses: actions/cache@v4
+        with:
+          path: |
+            .ccache
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.android/debug.keystore
+          key: nxemu-android-arm64-v1-${{ github.sha }}
+          restore-keys: nxemu-android-arm64-v1-
+      - name: Build optimized APK
+        working-directory: src/android
+        run: |
+          chmod +x gradlew
+          ./gradlew --no-daemon --max-workers=2 :app:assembleRelease --stacktrace \
+            -PnxemuVersionCode=${{ github.run_number }} \
+            -PnxemuVersionName=upstream-20261017-${GITHUB_SHA:0:8}
+      - name: Verify APK and native payload
+        run: |
+          mkdir -p deliverables
+          cp src/android/app/build/outputs/apk/release/app-release.apk deliverables/NxEmu-upstream-arm64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs deliverables/NxEmu-upstream-arm64.apk
+          python3 - <<'PY'
+          import zipfile
+          path = 'deliverables/NxEmu-upstream-arm64.apk'
+          required = ['libnxemu-android.so', 'libnxemu-loader.so', 'libnxemu-cpu.so', 'libnxemu-video.so', 'libnxemu-os.so', 'libmain_hook.so', 'libhook_impl.so', 'libfile_redirect_hook.so', 'libgsl_alloc_hook.so']
+          with zipfile.ZipFile(path) as z:
+              for name in required:
+                  data = z.read('lib/arm64-v8a/' + name)
+                  assert data[:4] == b'\x7fELF' and data[4] == 2 and int.from_bytes(data[18:20], 'little') == 183, name
+              assert not any(n.startswith('lib/') and not n.startswith('lib/arm64-v8a/') for n in z.namelist()), 'Unexpected ABI'
+          print('All required ARM64 native libraries verified')
+          PY
+          git rev-parse HEAD > deliverables/source-commit.txt
+          sha256sum deliverables/NxEmu-upstream-arm64.apk > deliverables/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NxEmu-upstream-arm64
+          path: deliverables/
+          retention-days: 30
+      - name: Compiler cache statistics
+        if: always()
+        run: ccache --show-stats
