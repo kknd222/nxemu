@@ -74,3 +74,18 @@ adb pull /sdcard/Android/data/org.nxemu/files ./nxemu-original-backup
 将单个 `<TitleID>` 文件夹打包为 ZIP，然后在 Work 版“存档导入 / 导出”中导入。
 这会映射到 Work 当前用户，不需要猜测或强行覆盖用户 ID。先在 Work 游戏里验证存档能读，再决定旧版去留。
 Work 与旧版数据隔离，首次使用需重新授权游戏目录、选择驱动；不会自动拿到旧版存档。
+
+
+## 最终交付验证
+
+- 功能源码：`053d324a7ef086a224bbfb3904b122eb2277c54b`；功能构建：
+  https://github.com/kknd222/nxemu/actions/runs/39032521727 ，成功。
+- Work 打包源码：`ba59c13aa0a6d3099194c1558b307dc4837b0c97`；打包：
+  https://github.com/kknd222/nxemu/actions/runs/39033952318 ，成功。
+- APK：`NxEmu-Work-settings-saves-arm64.apk`，18,838,092 字节。
+- APK SHA-256：`6e35e02c2de036026686c0bcb743cd4b5fa7465b91ed8f493e7707899fee312b`。
+- Work 证书 SHA-256：`11e752c0e0c72d535657fc6a2e3f4b917f2e2f58fe5ccf1138d6effde8990d00`。
+- aapt2 确认包名 org.nxemu.work、标签 NxEmu Work；apksigner 验证通过。
+- 新增 UI、存档 DEX 类已包含；26 个 NativeLibrary JNI 方法对应导出齐全，11 个原生库全部为 ARM64，动态依赖无缺失。
+- 签名备份解密后用 keytool 导出证书，指纹与最终 APK 一致。私钥备份仅交付所有者，未提交 Git。
+- 未连接手机，需验证真实 GPU 倍率、游戏中文资源、手柄停止震动和游戏内读档。

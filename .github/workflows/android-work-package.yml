@@ -1,8 +1,5 @@
 name: Android Work package and signing backup
 on:
-  push:
-    branches: [android/upstream-20261017]
-    paths: [.github/workflows/android-work-package.yml]
   workflow_dispatch:
 permissions:
   contents: read
@@ -25,6 +22,10 @@ jobs:
         run: |
           mkdir -p .signing
           if [ ! -f .signing/nxemu-work.p12 ]; then
+            if [ -f .github/android-work-signing.sha256 ]; then
+              echo 'Restore the existing owner signing backup; refusing a replacement key.' >&2
+              exit 1
+            fi
             keytool -genkeypair -storetype PKCS12 -keystore .signing/nxemu-work.p12 -storepass android -keypass android -alias nxemu-work -keyalg RSA -keysize 3072 -validity 10000 -dname 'CN=NxEmu Work, OU=Personal Android Builds'
           fi
       - uses: actions/download-artifact@v4
@@ -47,7 +48,10 @@ jobs:
           assert "package: name='org.nxemu.work'" in text
           assert "application-label:'NxEmu Work'" in text
           cert = subprocess.check_output(['keytool', '-exportcert', '-alias', 'nxemu-work', '-keystore', '.signing/nxemu-work.p12', '-storepass', 'android'])
-          pathlib.Path('deliverables/signer-sha256.txt').write_text(hashlib.sha256(cert).hexdigest()+'\n')
+          digest = hashlib.sha256(cert).hexdigest()
+          pin = pathlib.Path('.github/android-work-signing.sha256')
+          if pin.exists(): assert pin.read_text().strip() == digest, 'Signing identity changed'
+          pathlib.Path('deliverables/signer-sha256.txt').write_text(digest+'\n')
           PY
           sha256sum deliverables/NxEmu-Work-settings-saves-arm64.apk > deliverables/SHA256SUMS
           cp verified-input/source-commit.txt deliverables/feature-source-commit.txt

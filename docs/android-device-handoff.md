@@ -1,5 +1,9 @@
 # Android 真机调试交接
 
+当前交付为独立包 **org.nxemu.work / NxEmu Work**。首版 org.nxemu 保留，不能覆盖更新。
+最新设置、存档和签名说明见 [android-settings-and-saves-20261017.md](android-settings-and-saves-20261017.md)。
+下文首版构建记录用于历史追溯；测试新版时将启动命令的包名改为 org.nxemu.work。
+
 ## 代码基线
 
 仓库： https://github.com/kknd222/nxemu
@@ -11,7 +15,7 @@
 使用 CI 缓存的 debug key；这不是官方签名。若签名不匹配，不自动卸载已有应用，
 先备份存档再决定处理方式。绝不能在未备份时执行 `adb uninstall` 或 `pm clear`。
 
-## 已交付构建（2026-10-17）
+## 首版历史构建（2026-10-17）
 
 - 源码提交：`a20f1d37a596c4d56d249a15c9ea21c007651c4c`。
 - Actions： https://github.com/kknd222/nxemu/actions/runs/39015174487 ，成功。
