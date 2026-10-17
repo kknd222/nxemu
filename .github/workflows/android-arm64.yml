@@ -21,6 +21,8 @@ jobs:
       CMAKE_BUILD_PARALLEL_LEVEL: '2'
       CCACHE_DIR: ${{ github.workspace }}/.ccache
       CCACHE_MAXSIZE: 3G
+      CMAKE_C_COMPILER_LAUNCHER: ccache
+      CMAKE_CXX_COMPILER_LAUNCHER: ccache
     steps:
       - uses: actions/checkout@v4
         with:

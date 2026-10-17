@@ -108,6 +108,11 @@ void EmulationSession::RestoreStubModulesLocked()
     m_pixel_ratio = 1.0f;
     m_system_modules = std::make_unique<SystemModules>();
     m_system_modules->Setup(m_render_window);
+    if (!m_system_modules->IsValid())
+    {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "SystemModules setup failed:\n%s",
+                            m_system_modules->LastSetupDiagnostic().c_str());
+    }
 }
 
 bool EmulationSession::Run(ANativeWindow * native_window, float pixel_ratio, const std::string & rom_path)
@@ -127,6 +132,11 @@ bool EmulationSession::Run(ANativeWindow * native_window, float pixel_ratio, con
     m_render_window.AttachSurface(native_window, m_pixel_ratio);
     m_system_modules = std::make_unique<SystemModules>();
     m_system_modules->Setup(m_render_window);
+    if (!m_system_modules->IsValid())
+    {
+        __android_log_print(ANDROID_LOG_ERROR, kLogTag, "SystemModules setup failed:\n%s",
+                            m_system_modules->LastSetupDiagnostic().c_str());
+    }
 
     if (!m_system_modules->IsValid())
     {

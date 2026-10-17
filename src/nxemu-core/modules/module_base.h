@@ -24,6 +24,7 @@ public:
     ~ModuleBase();
 
     bool Load(const char * fileName, IModuleNotification * notification, IModuleSettings * settings);
+    const std::string & LastLoadDiagnostic() const;
     ModuleBase::tyEmulationStarting EmulationStarting;
     ModuleBase::tyEmulationStopping EmulationStopping;
     ModuleBase::tyModuleCleanup ModuleCleanup;
@@ -38,6 +39,7 @@ protected:
 
     DynLibHandle m_lib;
     MODULE_INFO m_moduleInfo;
+    std::string m_lastLoadDiagnostic;
 
 private:
     ModuleBase(const ModuleBase &) = delete;
