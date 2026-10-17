@@ -1,0 +1,62 @@
+name: Recover Android update signing
+on:
+  push:
+    branches: [android/upstream-20261017]
+    paths: [.github/workflows/android-signing-recovery.yml]
+  workflow_dispatch:
+permissions:
+  contents: read
+  actions: read
+jobs:
+  recover:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: actions/cache/restore@v4
+        with:
+          path: |
+            .ccache
+            ~/.gradle/caches
+            ~/.gradle/wrapper
+            ~/.android/debug.keystore
+          key: nxemu-android-arm64-v1-a20f1d37a596c4d56d249a15c9ea21c007651c4c
+      - name: Locate original signing certificate
+        id: key
+        shell: python
+        run: |
+          import hashlib, os, pathlib, subprocess
+          expected = 'c1a30c4ca88ec42b42c31a43217ae3b64800da0b3893e2814bab93da79bff72a'
+          roots = [pathlib.Path.home()/'.android', pathlib.Path.home()/'.config/.android', pathlib.Path.home()/'.gradle']
+          for root in roots:
+              if not root.exists(): continue
+              for path in root.rglob('debug.keystore'):
+                  result = subprocess.run(['keytool', '-exportcert', '-alias', 'androiddebugkey', '-keystore', str(path), '-storepass', 'android'], capture_output=True)
+                  digest = hashlib.sha256(result.stdout).hexdigest()
+                  print(str(path), 'certificate SHA256:', digest)
+                  if result.returncode == 0 and digest == expected:
+                      with open(os.environ['GITHUB_OUTPUT'], 'a') as out: out.write('path='+str(path)+'\n')
+                      raise SystemExit(0)
+          raise SystemExit('Original certificate key was not retained in the original build cache. No user data has been modified.')
+      - uses: actions/download-artifact@v4
+        with:
+          name: NxEmu-upstream-arm64
+          run-id: 39032521727
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          path: unsigned-input
+      - name: Sign verified APK for in-place update
+        env:
+          ORIGINAL_KEY: ${{ steps.key.outputs.path }}
+        run: |
+          mkdir -p deliverables
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" sign --ks "$ORIGINAL_KEY" --ks-pass pass:android --key-pass pass:android --ks-key-alias androiddebugkey --out deliverables/NxEmu-settings-saves-arm64.apk unsigned-input/NxEmu-upstream-arm64.apk
+          "$ANDROID_HOME/build-tools/36.0.0/apksigner" verify --verbose --print-certs deliverables/NxEmu-settings-saves-arm64.apk
+          sha256sum deliverables/NxEmu-settings-saves-arm64.apk > deliverables/SHA256SUMS
+      - uses: actions/upload-artifact@v4
+        with:
+          name: NxEmu-settings-saves-original-signature
+          path: deliverables/

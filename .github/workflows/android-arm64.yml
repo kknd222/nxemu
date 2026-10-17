@@ -15,6 +15,7 @@ concurrency:
 
 jobs:
   apk:
+    if: "${{ !contains(github.event.head_commit.message, '[signing recovery]') }}"
     runs-on: ubuntu-24.04
     timeout-minutes: 90
     env:
