@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <chrono>
 #include <unordered_set>
 #include <boost/container/small_vector.hpp>
 
@@ -73,10 +74,21 @@ TextureCache<P>::TextureCache(Runtime& runtime_, Tegra::MaxwellDeviceMemoryManag
 
 template <class P>
 void TextureCache<P>::RunGarbageCollector() {
+    using Clock = std::chrono::steady_clock;
+    using namespace std::chrono_literals;
+
     bool high_priority_mode = false;
     bool aggressive_mode = false;
     u64 ticks_to_destroy = 0;
     size_t num_iterations = 0;
+    size_t num_deleted = 0;
+    const u64 memory_before = total_used_memory;
+    const auto gc_start = Clock::now();
+    // Normal/high-priority collection runs on the GPU thread while holding renderer state. Keep
+    // it within a small per-frame budget so a large cache cannot monopolize presentation. Critical
+    // memory pressure remains unbounded to avoid trading a hitch for device-memory exhaustion.
+    const auto gc_deadline = gc_start + 2ms;
+    const auto critical_gc_deadline = gc_start + 8ms;
 
     const auto Configure = [&](bool allow_aggressive) {
         high_priority_mode = total_used_memory >= expected_memory;
@@ -85,8 +97,10 @@ void TextureCache<P>::RunGarbageCollector() {
         num_iterations = aggressive_mode ? 40 : (high_priority_mode ? 20 : 10);
     };
     const auto Cleanup = [this, &num_iterations, &high_priority_mode,
-                          &aggressive_mode](ImageId image_id) {
-        if (num_iterations == 0) {
+                          &aggressive_mode, &num_deleted, gc_deadline,
+                          critical_gc_deadline](ImageId image_id) {
+        const auto deadline = aggressive_mode ? critical_gc_deadline : gc_deadline;
+        if (num_iterations == 0 || (num_deleted != 0 && Clock::now() >= deadline)) {
             return true;
         }
         --num_iterations;
@@ -117,6 +131,7 @@ void TextureCache<P>::RunGarbageCollector() {
         }
         UnregisterImage(image_id);
         DeleteImage(image_id, image.scale_tick > frame_tick + 5);
+        ++num_deleted;
         if (total_used_memory < critical_memory) {
             if (aggressive_mode) {
                 // Sink the aggresiveness.
@@ -140,6 +155,19 @@ void TextureCache<P>::RunGarbageCollector() {
     if (total_used_memory >= critical_memory) {
         Configure(true);
         lru_cache.ForEachItemBelow(frame_tick - ticks_to_destroy, Cleanup);
+    }
+
+    const auto elapsed = std::chrono::duration_cast<std::chrono::microseconds>(Clock::now() - gc_start);
+    if (elapsed >= 4ms && frame_tick >= last_gc_warning_frame + 300) {
+        last_gc_warning_frame = frame_tick;
+        LOG_WARNING(HW_GPU,
+                    "Texture GC slow: elapsed_us={} deleted={} memory_before_MiB={} "
+                    "memory_after_MiB={} expected_MiB={} critical_MiB={} images={} views={} "
+                    "framebuffers={}",
+                    elapsed.count(), num_deleted, memory_before / 1_MiB,
+                    total_used_memory / 1_MiB, expected_memory / 1_MiB,
+                    critical_memory / 1_MiB, slot_images.size(), slot_image_views.size(),
+                    framebuffers.size());
     }
 }
 
@@ -2322,12 +2350,13 @@ void TextureCache<P>::DeleteImage(ImageId image_id, bool immediate_delete) {
 
 template <class P>
 void TextureCache<P>::RemoveImageViewReferences(std::span<const ImageViewId> removed_views) {
+    const std::unordered_set<ImageViewId> removed_view_set{removed_views.begin(),
+                                                          removed_views.end()};
     for (size_t c : active_channel_ids) {
         auto& channel_info = channel_storage[c];
         auto it = channel_info.image_views.begin();
         while (it != channel_info.image_views.end()) {
-            const auto found = std::ranges::find(removed_views, it->second);
-            if (found != removed_views.end()) {
+            if (removed_view_set.contains(it->second)) {
                 it = channel_info.image_views.erase(it);
             } else {
                 ++it;
@@ -2338,9 +2367,17 @@ void TextureCache<P>::RemoveImageViewReferences(std::span<const ImageViewId> rem
 
 template <class P>
 void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_views) {
+    const std::unordered_set<ImageViewId> removed_view_set{removed_views.begin(),
+                                                          removed_views.end()};
+    const auto contains_removed_view = [&removed_view_set](const RenderTargets& targets) {
+        return removed_view_set.contains(targets.depth_buffer_id) ||
+               std::ranges::any_of(targets.color_buffer_ids, [&](ImageViewId view_id) {
+                   return removed_view_set.contains(view_id);
+               });
+    };
     auto it = framebuffers.begin();
     while (it != framebuffers.end()) {
-        if (it->first.Contains(removed_views)) {
+        if (contains_removed_view(it->first)) {
             auto framebuffer_id = it->second;
             ASSERT(framebuffer_id);
             if (framebuffer_id == last_framebuffer_id) {
