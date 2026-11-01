@@ -160,6 +160,7 @@ u32 SyncpointManager::ReadSyncpointMinValue(u32 id) {
 u32 SyncpointManager::UpdateMin(u32 id) {
     auto& syncpoint = syncpoints.at(id);
 
+    const u32 old_min = syncpoint.counter_min.load();
     syncpoint.counter_min = video.HostSyncpointValue(id);
     NxemuAndroidDiagnostics::RecordEvent(
         "NVDRV.Syncpoint.UpdateMin",

@@ -73,8 +73,6 @@ Result IWindowController::SetAppletWindowVisibility(bool visible) {
     NxemuAndroidDiagnostics::RecordEvent("AM.Window.SetAppletWindowVisibility",
                                          std::string{"visible="} +
                                              (visible ? "true" : "false"));
-    m_applet->display_layer_manager.SetWindowVisibility(visible);
-    m_applet->hid_registration.EnableAppletToGetInput(visible);
     LOG_DEBUG(Service_AM, "called, visible={}", visible);
 
     system.GetAppletManager().GetWindowSystem().RequestAppletVisibilityState(*m_applet, visible);

@@ -264,38 +264,14 @@ NvResult nvhost_gpu::AllocGPFIFOEx(IoctlAllocGpfifoEx& params, DeviceFD fd) {
 
     // Init() now safely defers if the address space has not been bound yet.
     channel_state->Init(program_id);
-    return NvResult::Success;
-}
-
-NvResult nvhost_gpu::AllocGPFIFOEx2(IoctlAllocGpfifoEx2& params, DeviceFD fd) {
-    LOG_INFO(Service_NVDRV,
-             "called, num_entries={:X}, flags={:X}, unk0={:X}, "
-             "unk1={:X}, unk2={:X}, unk3={:X}",
-             params.num_entries, params.flags, params.unk0, params.unk1, params.unk2,
-             params.unk3);
-    NxemuAndroidDiagnostics::RecordEvent(
-        "NVDRV.nvhost_gpu.AllocGPFIFOEx2",
-        "fd=" + std::to_string(fd) + " entries=" + std::to_string(params.num_entries) +
-            " flags=" + std::to_string(params.flags));
-
-    if (channel_state->Initialized()) {
-        LOG_INFO(Service_NVDRV, "Channel already initialized; AllocGPFIFOEx2 returning AlreadyAllocated");
-        return NvResult::AlreadyAllocated;
-    }
-
-    u64 program_id{};
-    if (auto* const session = core.GetSession(sessions[fd]); session != nullptr) {
-        program_id = session->process->GetProgramId();
-    }
-
-    // Init() now safely defers if the address space has not been bound yet.
-    channel_state->Init(program_id);
     params.fence_out = syncpoint_manager.GetSyncpointFence(channel_syncpoint);
-
     return NvResult::Success;
 }
 
 NvResult nvhost_gpu::AllocGPFIFOEx2(IoctlAllocGpfifoEx& params, DeviceFD fd) {
+    NxemuAndroidDiagnostics::RecordEvent("NVDRV.nvhost_gpu.AllocGPFIFOEx2",
+        "fd=" + std::to_string(fd) + " entries=" + std::to_string(params.num_entries) +
+        " flags=" + std::to_string(params.flags));
     return AllocGPFIFOEx(params, fd);
 }
 

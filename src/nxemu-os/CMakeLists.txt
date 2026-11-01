@@ -13,6 +13,10 @@ include(generate_version_header)
 file(GLOB_RECURSE NXEMU_OS_SOURCES CONFIGURE_DEPENDS
     "${CMAKE_CURRENT_SOURCE_DIR}/*.cpp"
 )
+# Upstream replaced AppletMessageQueue with LifecycleManager. Keep old diagnostics
+# source for reference, but do not compile the orphan implementation without its header.
+list(FILTER NXEMU_OS_SOURCES EXCLUDE REGEX ".*/am/applet_message_queue\\.cpp$")
+
 # Each ssl_backend_*.cpp defines Service::SSL::CreateSSLConnectionBackend — compile exactly one.
 if(ANDROID)
     list(FILTER NXEMU_OS_SOURCES EXCLUDE REGEX ".*/ssl_backend_securetransport\\.cpp$")

@@ -1,7 +1,5 @@
-﻿#pragma once
+#pragma once
 #include <nxemu-module-spec/cpu.h>
-#include <utility>
-#include <vector>
 
 #if defined(NXEMU_HAS_NCE)
 #include "nce/patcher.h"
@@ -16,8 +14,6 @@ public:
 
     void PatchText(int32_t patch_index, const uint8_t * program_image, uint32_t image_size, uint32_t code_offset, uint32_t code_size) override;
     void Relocate(int32_t patch_index, uint64_t load_base, uint8_t * program_image, uint32_t * image_size, uint32_t code_offset, uint32_t code_size, uint64_t * segment_addr, uint32_t * segment_size) override;
-    uint32_t GetPostHandlerCount() const override;
-    bool GetPostHandler(uint32_t index, uint64_t * module_pc, uint64_t * patch_pc) const override;
     uint32_t GetTotalPatchSize() const override;
     uint32_t GetPreTextSize(int32_t patch_index) const override;
     int32_t GetLastIndex() const override;
@@ -31,9 +27,5 @@ private:
     int32_t m_module_patcher_indices[13];
 #if defined(NXEMU_HAS_NCE)
     std::vector<Core::NCE::Patcher> m_patchers;
-    Core::NCE::EntryTrampolines m_entry_trampolines;
-    std::vector<std::pair<uint64_t, uint64_t>> m_last_post_handlers;
 #endif
 };
-
-

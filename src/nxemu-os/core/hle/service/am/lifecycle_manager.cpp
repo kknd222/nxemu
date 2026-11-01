@@ -6,6 +6,7 @@
 
 #include "yuzu_common/yuzu_assert.h"
 #include "core/hle/service/am/lifecycle_manager.h"
+#include "core/hle/service/nxemu_android_diagnostics.h"
 
 namespace Service::AM {
 
@@ -53,17 +54,20 @@ void LifecycleManager::SetPerformanceModeChangedNotificationEnabled(bool enabled
 }
 
 void LifecycleManager::RequestExit() {
+    NxemuAndroidDiagnostics::RecordEvent("AM.Message.RequestExit", "lifecycle_manager");
     m_has_requested_exit = true;
     SignalSystemEventIfNeeded();
 }
 
 void LifecycleManager::RequestResumeNotification() {
+    NxemuAndroidDiagnostics::RecordEvent("AM.Message.RequestResume", "lifecycle_manager");
     if (m_resume_notification_enabled) {
         m_has_resume = true;
     }
 }
 
 void LifecycleManager::OnOperationAndPerformanceModeChanged() {
+    NxemuAndroidDiagnostics::RecordEvent("AM.Message.OperationModeChanged", "lifecycle_manager");
     if (m_operation_mode_changed_notification_enabled) {
         m_has_operation_mode_changed = true;
     }
@@ -75,6 +79,7 @@ void LifecycleManager::OnOperationAndPerformanceModeChanged() {
 }
 
 void LifecycleManager::PushUnorderedMessage(AppletMessage message) {
+    NxemuAndroidDiagnostics::RecordEvent("AM.Message.Push", "lifecycle_manager");
     m_unordered_messages.push_back(message);
     SignalSystemEventIfNeeded();
 }
@@ -148,6 +153,8 @@ void LifecycleManager::SignalSystemEventIfNeeded() {
 
 bool LifecycleManager::PopMessage(AppletMessage* out_message) {
     *out_message = PopMessageInOrderOfPriority();
+    NxemuAndroidDiagnostics::RecordEvent("AM.Message.Pop",
+                                         "msg=" + std::to_string(static_cast<u32>(*out_message)));
     SignalSystemEventIfNeeded();
     return *out_message != AppletMessage::None;
 }

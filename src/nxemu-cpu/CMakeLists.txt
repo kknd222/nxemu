@@ -1,4 +1,4 @@
-﻿cmake_minimum_required(VERSION 3.18)
+cmake_minimum_required(VERSION 3.18)
 project(nxemu-cpu LANGUAGES C CXX ASM)
  
 set(CMAKE_CXX_STANDARD 20)
@@ -345,7 +345,6 @@ if(ARCHITECTURE_x86_64)
     endif()
  
     target_sources(nxemu-cpu PRIVATE
-        dynarmic/backend/exception_handler_generic.cpp
         dynarmic/common/spin_lock_x64.cpp
         dynarmic/common/x64_disassemble.cpp
         dynarmic/backend/x64/a32_emit_x64.cpp

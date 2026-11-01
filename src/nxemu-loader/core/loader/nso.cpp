@@ -255,21 +255,9 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Systemloader & loader, ISystemMod
             {
                 Kernel::CodeSet::Segment & patch_segment = codeset.PatchSegment();
                 patch_segment.addr = patch_segment_addr;
-                patch_segment.offset = patch_segment_addr;
                 patch_segment.size = patch_segment_size;
             }
-            codeset.patch_post_handlers.clear();
-            const uint32_t post_count = patch_collection->GetPostHandlerCount();
-            codeset.patch_post_handlers.reserve(post_count);
-            for (uint32_t i = 0; i < post_count; ++i)
-            {
-                uint64_t module_pc = 0;
-                uint64_t patch_pc = 0;
-                if (patch_collection->GetPostHandler(i, &module_pc, &patch_pc))
-                {
-                    codeset.patch_post_handlers.emplace_back(module_pc, patch_pc);
-                }
-            }
+
         }
     }
 

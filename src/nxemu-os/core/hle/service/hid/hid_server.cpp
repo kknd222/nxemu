@@ -1449,10 +1449,6 @@ Result IHidServer::SetTouchScreenResolution(u32 width, u32 height,
     R_SUCCEED();
 }
 
-Result IHidServer::SetMouseLibraryVersion(ClientAppletResourceUserId aruid) {
-    LOG_INFO(Service_HID, "(STUBBED) called, applet_resource_user_id={}", aruid.pid);
-    R_SUCCEED();
-}
 
 std::shared_ptr<ResourceManager> IHidServer::GetResourceManager() {
     resource_manager->Initialize();

@@ -4,8 +4,6 @@
 #pragma once
 
 #include <cstddef>
-#include <utility>
-#include <vector>
 
 #include "core/hle/kernel/k_typed_address.h"
 #include "core/hle/kernel/physical_memory.h"
@@ -100,11 +98,11 @@ struct CodeSet :
     {
         return segments[2].size;
     }
-    uint64_t PatchSegmentAddr(void) const override
+    uint64_t PatchSegmentAddr(void) const
     {
         return patch_segment.addr.GetValue();
     }
-    uint64_t PatchSegmentSize(void) const override
+    uint64_t PatchSegmentSize(void) const
     {
         return patch_segment.size;
     }
@@ -141,22 +139,6 @@ struct CodeSet :
         return patch_segment;
     }
 
-    uint64_t PatchSegmentOffset(void) const override {
-        return patch_segment.offset;
-    }
-
-    uint32_t PatchPostHandlerCount(void) const override {
-        return static_cast<uint32_t>(patch_post_handlers.size());
-    }
-    bool PatchPostHandler(uint32_t index, uint64_t * module_pc, uint64_t * patch_pc) const override {
-        if (index >= patch_post_handlers.size() || module_pc == nullptr || patch_pc == nullptr) {
-            return false;
-        }
-        *module_pc = patch_post_handlers[index].first;
-        *patch_pc = patch_post_handlers[index].second;
-        return true;
-    }
-
     /// The overall data that backs this code set.
     Kernel::PhysicalMemory memory;
 
@@ -164,7 +146,6 @@ struct CodeSet :
     std::array<Segment, 3> segments;
 
     Segment patch_segment;
-    std::vector<std::pair<u64, u64>> patch_post_handlers;
 
     /// The entry point address for this code set.
     KProcessAddress entrypoint = 0;

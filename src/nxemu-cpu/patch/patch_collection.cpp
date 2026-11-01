@@ -132,33 +132,6 @@ void PatchCollection::Relocate(int32_t patch_index, uint64_t load_base, uint8_t 
 #endif
 }
 
-uint32_t PatchCollection::GetPostHandlerCount() const
-{
-#if defined(_M_ARM64) || defined(ARCHITECTURE_arm64) || defined(__aarch64__)
-    return static_cast<uint32_t>(m_last_post_handlers.size());
-#else
-    return 0;
-#endif
-}
-
-bool PatchCollection::GetPostHandler(uint32_t index, uint64_t * module_pc, uint64_t * patch_pc) const
-{
-#if defined(_M_ARM64) || defined(ARCHITECTURE_arm64) || defined(__aarch64__)
-    if (index >= m_last_post_handlers.size() || module_pc == nullptr || patch_pc == nullptr)
-    {
-        return false;
-    }
-    *module_pc = m_last_post_handlers[index].first;
-    *patch_pc = m_last_post_handlers[index].second;
-    return true;
-#else
-    (void)index;
-    (void)module_pc;
-    (void)patch_pc;
-    return false;
-#endif
-}
-
 uint32_t PatchCollection::GetTotalPatchSize() const
 {
 #if defined(NXEMU_HAS_NCE)
@@ -232,7 +205,3 @@ void PatchCollection::Release()
 {
     delete this;
 }
-
-
-
-

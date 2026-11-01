@@ -53,7 +53,6 @@ u32 HardwareComposer::ComposeLocked(f32* out_speed_scale, Display& display,
     // Set default speed limit to 100%.
     *out_speed_scale = 1.0f;
 
-    this->ReleaseFramebuffersLocked(display);
 
     // Determine the number of vsync periods to wait before composing again.
     std::optional<s32> swap_interval{};

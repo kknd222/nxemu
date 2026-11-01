@@ -56,6 +56,8 @@ bool IsAddOnContentExtension(const char * fileName)
     return false;
 }
 
+} // namespace
+
 void CollectUpdateVersions(const FileSys::NSP & nsp, UpdateVersionMap & versions)
 {
     using TitleNcaMap =
@@ -92,32 +94,6 @@ void CollectUpdateVersions(const FileSys::NSP & nsp, UpdateVersionMap & versions
 
 namespace
 {
-
-std::string ToLowerAscii(std::string value)
-{
-    std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-    return value;
-}
-
-bool IsAddOnContentExtension(const char * fileName)
-{
-    static const char * supported_extensions[] = {
-        "nca",
-        "dxci",
-        "dnsp",
-    };
-
-    std::string ext = Path(fileName).GetExtension();
-    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-    for (const char * supported : supported_extensions)
-    {
-        if (ext == supported)
-        {
-            return true;
-        }
-    }
-    return false;
-}
 
 void RegisterMatchingAddOnEntriesFromNsp(const FileSys::NSP & nsp, uint64_t base_program_id, IManualContentProvider & provider)
 {
