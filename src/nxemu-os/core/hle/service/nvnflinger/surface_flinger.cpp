@@ -9,6 +9,7 @@
 #include "core/hle/service/nvnflinger/hos_binder_driver_server.h"
 #include "core/hle/service/nvnflinger/surface_flinger.h"
 #include "core/hle/service/sm/sm.h"
+#include "yuzu_common/yuzu_assert.h"
 
 #include "core/hle/service/nvnflinger/buffer_queue_consumer.h"
 #include "core/hle/service/nvnflinger/buffer_queue_core.h"
@@ -20,9 +21,15 @@ SurfaceFlinger::SurfaceFlinger(Core::System& system, HosBinderDriverServer& serv
     : m_system(system), m_server(server), m_context(m_system, "SurfaceFlinger") {
     nvdrv = m_system.ServiceManager().GetService<Nvidia::NVDRV>("nvdrv:s", true)->GetModule();
     disp_fd = nvdrv->Open("/dev/nvdisp_disp0", {});
+    m_nvdisp = nvdrv->GetDevice<Nvidia::Devices::nvdisp_disp0>(disp_fd);
+    ASSERT(m_nvdisp);
 }
 
 SurfaceFlinger::~SurfaceFlinger() {
+    // Release remaining acquired buffers before closing nvdisp.
+    while (!m_displays.empty()) {
+        RemoveDisplay(m_displays.back().id);
+    }
     nvdrv->Close(disp_fd);
 }
 
@@ -33,11 +40,31 @@ void SurfaceFlinger::AddDisplay(u64 display_id) {
 }
 
 void SurfaceFlinger::RemoveDisplay(u64 display_id) {
+    if (const auto display = this->FindDisplay(display_id)) {
+        auto& nvdisp = *m_nvdisp;
+        for (const auto& layer : display->stack.layers) {
+            m_composer.RemoveLayerLocked(*display, layer->consumer_id, nvdisp);
+        }
+    }
     std::erase_if(m_displays, [&](auto& display) { return display.id == display_id; });
 }
 
+void SurfaceFlinger::WaitForComposite() {
+    m_nvdisp->WaitForComposite();
+}
+
+bool SurfaceFlinger::NeedsFramebufferUpdate(u64 display_id) {
+    const auto display = this->FindDisplay(display_id);
+    return display && m_composer.NeedsFramebufferUpdate(*display);
+}
+
+bool SurfaceFlinger::DisplayHasLayers(u64 display_id) {
+    const auto display = this->FindDisplay(display_id);
+    return display && display->stack.HasLayers();
+}
+
 bool SurfaceFlinger::ComposeDisplay(s32* out_swap_interval, f32* out_compose_speed_scale,
-                                    u64 display_id) {
+                                    u64 display_id, bool allow_framebuffer_update) {
     auto* const display = this->FindDisplay(display_id);
     if (!display) {
         Service::NxemuAndroidDiagnostics::RecordEvent(
@@ -58,18 +85,8 @@ bool SurfaceFlinger::ComposeDisplay(s32* out_swap_interval, f32* out_compose_spe
         return false;
     }
 
-    *out_swap_interval =
-        m_composer.ComposeLocked(out_compose_speed_scale, *display,
-                                 *nvdrv->GetDevice<Nvidia::Devices::nvdisp_disp0>(disp_fd));
-    static u64 compose_counter{};
-    ++compose_counter;
-    if (compose_counter <= 20 || (compose_counter % 300) == 0) {
-        Service::NxemuAndroidDiagnostics::RecordEvent(
-            "Nvnflinger.SurfaceFlinger.ComposeDisplay",
-            "display_id=" + std::to_string(display_id) + " result=composed layers=" +
-                std::to_string(display->stack.layers.size()) +
-                " swap_interval=" + std::to_string(*out_swap_interval));
-    }
+    *out_swap_interval = m_composer.ComposeLocked(out_compose_speed_scale, *display, *m_nvdisp,
+                                                 allow_framebuffer_update);
     return true;
 }
 
@@ -91,6 +108,9 @@ void SurfaceFlinger::CreateLayer(s32 consumer_binder_id) {
 }
 
 void SurfaceFlinger::DestroyLayer(s32 consumer_binder_id) {
+    for (const auto& display : m_displays) {
+        this->RemoveLayerFromDisplayStack(display.id, consumer_binder_id);
+    }
     std::erase_if(m_layers.layers,
                   [&](auto& layer) { return layer->consumer_id == consumer_binder_id; });
 }
@@ -117,7 +137,8 @@ void SurfaceFlinger::RemoveLayerFromDisplayStack(u64 display_id, s32 consumer_bi
         return;
     }
 
-    m_composer.RemoveLayerLocked(*display, consumer_binder_id);
+    m_composer.RemoveLayerLocked(*display, consumer_binder_id,
+                                 *m_nvdisp);
     std::erase_if(display->stack.layers,
                   [&](auto& layer) { return layer->consumer_id == consumer_binder_id; });
 }

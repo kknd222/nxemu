@@ -22,8 +22,10 @@ public:
     ~HardwareComposer();
 
     u32 ComposeLocked(f32* out_speed_scale, Display& display,
-                      Nvidia::Devices::nvdisp_disp0& nvdisp);
-    void RemoveLayerLocked(Display& display, ConsumerId consumer_id);
+                      Nvidia::Devices::nvdisp_disp0& nvdisp, bool allow_framebuffer_update);
+    bool NeedsFramebufferUpdate(Display& display) const;
+    void RemoveLayerLocked(Display& display, ConsumerId consumer_id,
+                           Nvidia::Devices::nvdisp_disp0& nvdisp);
 
 private:
     u64 m_frame_number{0};
@@ -36,6 +38,8 @@ private:
         ReleaseFrameNumber release_frame_number{};
         u64 last_acquire_frame{0};
         bool is_acquired{false};
+        bool waiting_for_replacement{false};
+        bool needs_present{false};
     };
 
     enum class CacheStatus : u32 {
@@ -48,8 +52,8 @@ private:
 
 private:
     bool TryAcquireFramebufferLocked(Layer& layer, Framebuffer& framebuffer);
-    CacheStatus CacheFramebufferLocked(Layer& layer, ConsumerId consumer_id);
-    void ReleaseFramebuffersLocked(Display& display);
+    CacheStatus CacheFramebufferLocked(Layer& layer, ConsumerId consumer_id,
+                                       bool allow_framebuffer_update);
 };
 
 } // namespace Service::Nvnflinger

@@ -15,12 +15,10 @@ struct FramebufferLayout;
 namespace Vulkan {
 
 class Device;
-class Scheduler;
 
 class Swapchain {
 public:
-    explicit Swapchain(VkSurfaceKHR surface, const Device& device, Scheduler& scheduler, u32 width,
-                       u32 height);
+    explicit Swapchain(VkSurfaceKHR surface, const Device& device, u32 width, u32 height);
     ~Swapchain();
 
     /// Creates (or recreates) the swapchain with a given size.
@@ -34,7 +32,7 @@ public:
 
     /// Returns true when the swapchain needs to be recreated.
     bool NeedsRecreation() const {
-        return IsSubOptimal() || NeedsPresentModeUpdate();
+        return IsOutDated() || IsSubOptimal() || NeedsPresentModeUpdate();
     }
 
     /// Returns true when the swapchain is outdated.
@@ -84,7 +82,9 @@ public:
     }
 
     VkSemaphore CurrentRenderSemaphore() const {
-        return *render_semaphores[frame_index];
+        // The next submit waits on this image's acquire semaphore before
+        // signaling this semaphore again. A frame fence does not cover present.
+        return *render_semaphores[image_index];
     }
 
     u32 GetWidth() const {
@@ -110,13 +110,11 @@ private:
 
     VkSurfaceKHR surface;
     const Device& device;
-    Scheduler& scheduler;
 
     vk::SwapchainKHR swapchain;
 
     std::size_t image_count{};
     std::vector<VkImage> images;
-    std::vector<u64> resource_ticks;
     std::vector<vk::Semaphore> present_semaphores;
     std::vector<vk::Semaphore> render_semaphores;
 

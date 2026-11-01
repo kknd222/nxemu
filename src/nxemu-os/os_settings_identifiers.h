@@ -9,11 +9,12 @@ namespace NXOsSetting
     constexpr const char * AudioVolume = "nxos:AudioVolume";
     constexpr const char * AudioMuted = "nxos:AudioMuted";
     constexpr const char * SpeedLimit = "nxos:SpeedLimit";
+    constexpr const char * CpuHleSynchronization = "nxos:CpuHleSynchronization";
     constexpr const char * UseMultiCore = "nxos:UseMultiCore";
     constexpr const char * UseSpeedLimit = "nxos:UseSpeedLimit";
     constexpr const char * DockedMode = "nxos:DockedMode";
     constexpr const char * MemoryLayout = "nxos:MemoryLayout";
-    constexpr const char * LanguageIndex = "nxos:LanguageIndex";
+    constexpr const char * Region = "nxos:Region";
     constexpr const char * CurrentUser = "nxos:CurrentUser";
     constexpr const char * RngSeedEnabled = "nxos:RngSeedEnabled";
     constexpr const char * RngSeed = "nxos:RngSeed";
@@ -37,5 +38,20 @@ namespace NXOsSetting
     constexpr const char * Player6VibrationStrength = "nxos:Player6VibrationStrength";
     constexpr const char * Player7VibrationEnabled = "nxos:Player7VibrationEnabled";
     constexpr const char * Player7VibrationStrength = "nxos:Player7VibrationStrength";
+    constexpr const char * CabinetAppletMode = "nxos:CabinetAppletMode";
+    constexpr const char * ControllerAppletMode = "nxos:ControllerAppletMode";
+    constexpr const char * DataEraseAppletMode = "nxos:DataEraseAppletMode";
+    constexpr const char * ErrorAppletMode = "nxos:ErrorAppletMode";
+    constexpr const char * NetConnectAppletMode = "nxos:NetConnectAppletMode";
+    constexpr const char * PlayerSelectAppletMode = "nxos:PlayerSelectAppletMode";
+    constexpr const char * SwkbdAppletMode = "nxos:SwkbdAppletMode";
+    constexpr const char * MiiEditAppletMode = "nxos:MiiEditAppletMode";
+    constexpr const char * WebAppletMode = "nxos:WebAppletMode";
+    constexpr const char * ShopAppletMode = "nxos:ShopAppletMode";
+    constexpr const char * PhotoViewerAppletMode = "nxos:PhotoViewerAppletMode";
+    constexpr const char * OfflineWebAppletMode = "nxos:OfflineWebAppletMode";
+    constexpr const char * LoginShareAppletMode = "nxos:LoginShareAppletMode";
+    constexpr const char * WifiWebAuthAppletMode = "nxos:WifiWebAuthAppletMode";
+    constexpr const char * MyPageAppletMode = "nxos:MyPageAppletMode";
 
 } // namespace NXOsSetting

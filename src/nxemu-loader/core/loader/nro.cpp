@@ -1,10 +1,11 @@
-﻿// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
+// SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
 #include <cstring>
 #include <sstream>
 #include <mutex>
+#include <cstring>
 #include <utility>
 #include <vector>
 
@@ -15,6 +16,10 @@
 #include "yuzu_common/common_types.h"
 #include "yuzu_common/logging/log.h"
 #include <nxemu-cpu/cpu_settings_identifiers.h>
+#include <nxemu-core/settings/identifiers.h>
+#include <nxemu-module-spec/cpu.h>
+#include "yuzu_common/interface_pointer.h"
+#include "yuzu_common/interface_pointer_def.h"
 #include "yuzu_common/settings.h"
 #include "yuzu_common/swap.h"
 #include "core/core.h"
@@ -61,6 +66,7 @@ extern "C" uint64_t NxemuGetLastHblNextLoadArgvAddress()
     std::lock_guard lock{g_hbl_diagnostic_mutex};
     return g_hbl_next_load_argv_addr;
 }
+using IPatchCollectionPtr = InterfacePtr<IPatchCollection>;
 
 namespace Loader {
 
@@ -350,48 +356,51 @@ static bool LoadNroImpl(Systemloader & loader, ISystemModules & modules, const s
 
     codeset.DataSegment().size += bss_size;
     program_image.resize(static_cast<u32>(program_image.size()) + bss_size);
-    size_t image_size = program_image.size();
+    uint32_t image_size = (uint32_t)program_image.size();
 
-#if defined(FIX_NCE) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
-    const auto& code = codeset.CodeSegment();
+    g_settings->SetBool(NXCoreSetting::Is64BitProgram, false);
+    g_settings->SetBool(NXCoreSetting::Has36BitAddressSpace, false);
+    g_settings->SetBool(NXCoreSetting::Has39BitAddressSpace, true);
+    g_settings->SetBool(NXCoreSetting::Is64BitProgram, true);
 
-    // Create NCE patcher
-    Core::NCE::Patcher patch{};
+    IOperatingSystem & operatingSystem = modules.OperatingSystem();
 
-    if (g_settings->GetBool(NXCpuSetting::NceEnabled)) {
-        // Patch SVCs and MRS calls in the guest code
-        patch.PatchText(program_image.data(), program_image.size(), code.offset, code.size);
+    // Enable direct memory mapping in case of NCE.
+    uint64_t fastmem_base = 0;
+    if (g_settings->GetBool(NXCpuSetting::NceEnabled))
+    {
+        IDeviceMemory & buffer = operatingSystem.DeviceMemory();
+        buffer.EnableDirectMappedAddress();
+        fastmem_base = reinterpret_cast<uint64_t>(buffer.VirtualBasePointer());
+#if defined(__APPLE__)
+        if (fastmem_base == 0)
+        {
+            LOG_WARNING(Loader, "NCE address windows unavailable, falling back to Dynarmic before patching");
+            g_settings->SetBool(NXCpuSetting::NceEnabled, false);
+        }
+#endif
+    }
 
-        // We only support PostData patching for NROs.
-        ASSERT(patch.GetPatchMode() == Core::NCE::PatchMode::PostData);
+#if defined(_M_ARM64) || defined(ARCHITECTURE_arm64)
+    const auto & code = codeset.CodeSegment();
 
-        // Update patch section.
-        auto& patch_segment = codeset.PatchSegment();
-        patch_segment.addr = image_size;
-        patch_segment.size = static_cast<u32>(patch.GetSectionSize());
-
-        // Add patch section size to the module size.
-        image_size += patch_segment.size;
+    IPatchCollectionPtr patch_ctx(modules.Cpu().CreatePatchCollection(true));
+    int32_t patch_index = -1;
+    if (patch_ctx)
+    {
+        patch_index = patch_ctx->GetLastIndex();
+        patch_ctx->PatchText(patch_index, program_image.data(), image_size, (uint32_t)code.offset, code.size);
+        patch_index = patch_ctx->GetLastIndex();
+        image_size += patch_ctx->GetTotalPatchSize();
     }
 #endif
 
-    // Enable direct memory mapping in case of NCE.
-    const uint64_t fastmem_base = [&]() -> size_t {
-        if (g_settings->GetBool(NXCpuSetting::NceEnabled)) {
-            LOG_WARNING(Loader, "NRO NCE patching is not fully ported yet; using Dynarmic for homebrew NRO");
-            g_settings->SetBool(NXCpuSetting::NceEnabled, false);
-            return 0;
-        }
-        return 0;
-    }();
-
-    // Setup the process code layout
-    IOperatingSystem & operatingSystem = modules.OperatingSystem();
-    baseAddress = fastmem_base;
-    if (!operatingSystem.SetupCurrentProcess(image_size + HblEnvAllocationSize, FileSys::ProgramMetadata::GetDefault(), baseAddress, processID, true))
+    uint64_t process_base = 0;
+    if (!operatingSystem.SetupCurrentProcess(image_size + HblEnvAllocationSize, FileSys::ProgramMetadata::GetDefault(), fastmem_base, process_base, processID, true))
     {
         return false;
     }
+    baseAddress = process_base;
 
     uint64_t main_thread_handle_write_address = 0;
     const uint64_t hbl_env_context = AppendHomebrewEnvironment(program_image, baseAddress, "sdmc:/hbmenu.nro", &main_thread_handle_write_address);
@@ -401,12 +410,21 @@ static bool LoadNroImpl(Systemloader & loader, ISystemModules & modules, const s
 
     // Relocate code patch and copy to the program_image if running under NCE.
     // This needs to be after LoadFromMetadata so we can use the process entry point.
-#if defined(FIX_NCE) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
-    if (g_settings->GetBool(NXCpuSetting::NceEnabled)) {
-        uint32_t relocated_size = static_cast<uint32_t>(image_size);
-        patch.RelocateAndCopy(baseAddress, code.offset, code.size, program_image.data(),
-                              &relocated_size, nullptr);
-        image_size = relocated_size;
+#if defined(_M_ARM64) || defined(ARCHITECTURE_arm64)
+    if (patch_ctx && patch_index >= 0 && g_settings->GetBool(NXCpuSetting::NceEnabled))
+    {
+        uint32_t reloc_size = static_cast<uint32_t>(program_image.size());
+        program_image.resize(reloc_size + patch_ctx->GetTotalPatchSize());
+        uint64_t patch_segment_addr = 0;
+        uint32_t patch_segment_size = 0;
+        patch_ctx->Relocate(patch_index, baseAddress, program_image.data(), &reloc_size, (uint32_t)code.offset, code.size, &patch_segment_addr, &patch_segment_size);
+        program_image.resize(reloc_size);
+        if (patch_segment_size != 0)
+        {
+            Kernel::CodeSet::Segment & patch_segment = codeset.PatchSegment();
+            patch_segment.addr = patch_segment_addr;
+            patch_segment.size = patch_segment_size;
+        }
     }
 #endif
 

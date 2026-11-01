@@ -1,19 +1,29 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <array>
 #include <atomic>
-#include <chrono>
 #include <condition_variable>
+#include <chrono>
+#include <cstdio>
+#include <cstdlib>
+#include <deque>
+#include <thread>
 #include <list>
 #include <memory>
 
 #include "frontend/emu_window.h"
 #include "frontend/graphics_context.h"
+#include "yuzu_common/logging/log.h"
 #include "yuzu_common/nvdata.h"
+#include "yuzu_common/polyfill_thread.h"
 #include "yuzu_common/settings.h"
 #include "yuzu_common/yuzu_assert.h"
 #include "yuzu_video_core/cdma_pusher.h"
+#include "yuzu_video_core/composite_request.h"
 #include "yuzu_video_core/control/channel_state.h"
 #include "yuzu_video_core/control/scheduler.h"
 #include "yuzu_video_core/dma_pusher.h"
@@ -33,7 +43,70 @@
 
 namespace Tegra
 {
+class AsyncCdma
+{
+public:
+    AsyncCdma(Host1x::Host1x & host, std::function<void()> register_thread) :
+        thread{[this, &host, register_thread = std::move(register_thread)] {
+            const auto stop = cancellation.get_token();
+            register_thread();
+            CDmaPusher pusher{host, stop};
+            for (;;)
+            {
+                Work entries;
+                {
+                    std::unique_lock lock{mutex};
+                    Common::CondvarWait(cv, lock, stop, [&] { return !queue.empty(); });
+                    if (stop.stop_requested()) return;
+                    entries = std::move(queue.front());
+                    queue.pop_front();
+                }
+                pusher.ProcessEntries(std::move(entries.commands));
+            }
+        }}
+    {
+    }
+    ~AsyncCdma()
+    {
+        Join();
+    }
+    void Join()
+    {
+        Stop();
+        std::scoped_lock join_lock{join_mutex};
+        if (thread.joinable()) thread.join();
+        std::deque<Work> discarded;
+        {
+            std::scoped_lock lock{mutex};
+            discarded.swap(queue);
+        }
+    }
+    void Stop()
+    {
+        cancellation.request_stop();
+        cv.notify_all();
+    }
+    void ProcessEntries(ChCommandHeaderList && entries, std::shared_ptr<void> resources)
+    {
+        std::scoped_lock lock{mutex};
+        if (cancellation.stop_requested()) return;
+        queue.push_back({std::move(entries), std::move(resources)});
+        cv.notify_one();
+    }
 
+private:
+    std::mutex join_mutex;
+    std::stop_source cancellation;
+    std::mutex mutex;
+    std::condition_variable_any cv;
+    struct Work
+    {
+        ChCommandHeaderList commands;
+        std::shared_ptr<void> resources;
+    };
+    std::deque<Work> queue;
+    std::jthread thread;
+};
 struct GPU::Impl :
     public ICacheInvalidator
 {
@@ -43,11 +116,16 @@ struct GPU::Impl :
         host1x{host1x_}, use_nvdec{use_nvdec_},
         shader_notify{std::make_unique<VideoCore::ShaderNotify>()},
         is_async{is_async_},
-        gpu_thread{gpu_, is_async_}, scheduler{std::make_unique<Control::Scheduler>(gpu)}
+        scheduler{std::make_unique<Control::Scheduler>(gpu)}, gpu_thread{gpu_, is_async_}
     {
     }
 
-    ~Impl() = default;
+    ~Impl()
+    {
+        NotifyShutdown();
+        cdma_pushers.clear();
+        composite_requests.Cancel();
+    }
 
     std::shared_ptr<Control::ChannelState> CreateChannel(s32 channel_id)
     {
@@ -76,7 +154,7 @@ struct GPU::Impl :
         return CreateChannel(new_channel_id++);
     }
 
-    void InitChannel(Control::ChannelState & to_init, u64 program_id)
+    void InitChannel(Control::ChannelState & to_init, uint64_t program_id)
     {
         to_init.Init(gpu, program_id);
         to_init.BindRasterizer(rasterizer);
@@ -124,21 +202,21 @@ struct GPU::Impl :
 
     /// Request a host GPU memory flush from the CPU.
     template <typename Func>
-    [[nodiscard]] u64 RequestSyncOperation(Func && action)
+    [[nodiscard]] uint64_t RequestSyncOperation(Func && action)
     {
         std::unique_lock lck{sync_request_mutex};
-        const u64 fence = ++last_sync_fence;
-        sync_requests.emplace_back(action);
+        const uint64_t fence = last_sync_fence.fetch_add(1, std::memory_order_relaxed) + 1;
+        sync_requests.emplace_back(std::forward<Func>(action));
         return fence;
     }
 
     /// Obtains current flush request fence id.
-    [[nodiscard]] u64 CurrentSyncRequestFence() const
+    [[nodiscard]] uint64_t CurrentSyncRequestFence() const
     {
         return current_sync_fence.load(std::memory_order_relaxed);
     }
 
-    void WaitForSyncOperation(const u64 fence)
+    void WaitForSyncOperation(const uint64_t fence)
     {
         std::unique_lock lck{sync_request_mutex};
         sync_request_cv.wait(lck, [this, fence] { return CurrentSyncRequestFence() >= fence; });
@@ -147,15 +225,23 @@ struct GPU::Impl :
     /// Tick pending requests within the GPU.
     void TickWork()
     {
+        if (last_sync_fence.load(std::memory_order_acquire) ==
+            current_sync_fence.load(std::memory_order_relaxed))
+        {
+            return;
+        }
+
         std::unique_lock lck{sync_request_mutex};
         while (!sync_requests.empty())
         {
             auto request = std::move(sync_requests.front());
             sync_requests.pop_front();
-            sync_request_mutex.unlock();
+            lck.unlock();
             request();
+            // Consume ready frames before later sync operations, including applet capture.
+            ProcessPendingComposite();
             current_sync_fence.fetch_add(1, std::memory_order_release);
-            sync_request_mutex.lock();
+            lck.lock();
             sync_request_cv.notify_all();
         }
     }
@@ -226,9 +312,9 @@ struct GPU::Impl :
         return *shader_notify;
     }
 
-    [[nodiscard]] u64 GetTicks() const
+    [[nodiscard]] uint64_t GetTicks() const
     {
-        u64 gpu_tick = m_modules.OperatingSystem().GetGPUTicks();
+        uint64_t gpu_tick = m_modules.OperatingSystem().GetGPUTicks();
 
         if (videoSettings.use_fast_gpu_time)
         {
@@ -264,9 +350,20 @@ struct GPU::Impl :
 
     void NotifyShutdown()
     {
-        std::unique_lock lk{sync_mutex};
-        shutting_down.store(true, std::memory_order::relaxed);
-        sync_cv.notify_all();
+        {
+            std::unique_lock lk{sync_mutex};
+            shutting_down.store(true, std::memory_order::relaxed);
+            sync_cv.notify_all();
+        }
+        std::vector<std::shared_ptr<AsyncCdma>> workers;
+        {
+            std::scoped_lock lock{cdma_mutex};
+            for (auto & [id, worker] : cdma_pushers)
+                workers.push_back(worker);
+        }
+        for (auto & worker : workers)
+            worker->Stop();
+        composite_requests.RequestCancel();
     }
 
     [[nodiscard]] bool IsPoweredOn() const
@@ -297,41 +394,44 @@ struct GPU::Impl :
     }
 
     /// Push GPU command buffer entries to be processed
-    void PushCommandBuffer(u32 id, Tegra::ChCommandHeaderList & entries)
+    void PushCommandBuffer(u32 id, Tegra::ChCommandHeaderList & entries, std::shared_ptr<void> resources)
     {
         if (!use_nvdec)
         {
             return;
         }
 
+        std::scoped_lock cdma_lock{cdma_mutex};
+        if (shutting_down.load(std::memory_order_acquire)) return;
         if (!cdma_pushers.contains(id))
         {
-            cdma_pushers.insert_or_assign(id, std::make_unique<Tegra::CDmaPusher>(host1x));
+            cdma_pushers.insert_or_assign(id, std::make_shared<AsyncCdma>(host1x, [this] { RegisterHostThread(); }));
         }
 
-        // SubmitCommandBuffer would make the nvdec operations async, this is not currently working
-        // TODO(ameerj): RE proper async nvdec operation
-        // gpu_thread.SubmitCommandBuffer(std::move(entries));
-        cdma_pushers[id]->ProcessEntries(std::move(entries));
+        // Keep submission asynchronous; the queue owns resources until execution retires.
+        cdma_pushers[id]->ProcessEntries(std::move(entries), std::move(resources));
     }
 
     /// Frees the CDMAPusher instance to free up resources
     void ClearCdmaInstance(u32 id)
     {
-        const auto iter = cdma_pushers.find(id);
-        if (iter != cdma_pushers.end())
+        std::shared_ptr<AsyncCdma> worker;
         {
-            cdma_pushers.erase(iter);
+            std::scoped_lock lock{cdma_mutex};
+            auto found = cdma_pushers.find(id);
+            if (found == cdma_pushers.end()) return;
+            worker = std::move(found->second);
+            cdma_pushers.erase(found);
         }
+        worker->Join();
     }
-
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
-    void FlushRegion(DAddr addr, u64 size)
+    void FlushRegion(DAddr addr, uint64_t size)
     {
         gpu_thread.FlushRegion(addr, size);
     }
 
-    RasterizerDownloadArea OnCPURead(DAddr addr, u64 size)
+    RasterizerDownloadArea OnCPURead(DAddr addr, uint64_t size)
     {
         auto raster_area = rasterizer->GetFlushArea(addr, size);
         if (raster_area.preemtive)
@@ -339,7 +439,7 @@ struct GPU::Impl :
             return raster_area;
         }
         raster_area.preemtive = true;
-        const u64 fence = RequestSyncOperation([this, &raster_area]() {
+        const uint64_t fence = RequestSyncOperation([this, &raster_area]() {
             rasterizer->FlushRegion(raster_area.startAddress, raster_area.endAddress - raster_area.startAddress);
         });
         gpu_thread.TickGPU();
@@ -347,66 +447,142 @@ struct GPU::Impl :
         return raster_area;
     }
 
+    // The CPU accessed a host page that holds GPU data. Images the guest reads back must be
+    // current before the host page opens, but this download must not make other images
+    // readback targets. The cache state is only current in GPU thread order: probe
+    // it there, or here once the GPU thread has executed every submitted command.
+    void SynchronizeSharedPage(DAddr addr, u64 size)
+    {
+        if (gpu_thread.IsIdle() && !rasterizer->MustFlushSharedPage(addr, size))
+        {
+            return;
+        }
+        const uint64_t fence = RequestSyncOperation([this, addr, size]() {
+            if (!rasterizer->MustFlushSharedPage(addr, size))
+            {
+                return;
+            }
+            m_modules.OperatingSystem().GatherGPUDirtyMemoryForReadback(this);
+            rasterizer->FlushNativeRegion(addr, size);
+        });
+        gpu_thread.TickGPU();
+        WaitForSyncOperation(fence);
+    }
+
+    void OnNativeCPURead(DAddr addr, u64 size)
+    {
+        static const bool profile = std::getenv("NXEMU_NCE_READBACK_PROFILE") != nullptr;
+        using Clock = std::chrono::steady_clock;
+        const auto started = profile ? Clock::now() : Clock::time_point{};
+        // Native access requires current data, without enabling permanent preemptive copies.
+        const uint64_t fence = RequestSyncOperation([this, addr, size]() {
+            // Publish CPU stores before reading back, without pretending that the GPU
+            // wrote again: rearming here makes reads of two host pages evict each other.
+            m_modules.OperatingSystem().GatherGPUDirtyMemoryForReadback(this);
+            rasterizer->FlushNativeRegion(addr, size);
+            // Register and grant access before this serialized GPU producer can
+            // execute another image write. The CPU fault handler must not reopen it later.
+            host1x.MemoryManager().RegisterNativeRead(addr, size);
+        });
+        gpu_thread.TickGPU();
+        WaitForSyncOperation(fence);
+        if (profile) {
+            static thread_local u64 calls{}, bytes{};
+            static thread_local double wait_ms{};
+            static thread_local auto reported = Clock::now();
+            const auto now = Clock::now();
+            ++calls;
+            bytes += size;
+            wait_ms += std::chrono::duration<double, std::milli>(now - started).count();
+            if (now - reported >= std::chrono::seconds(5)) {
+                std::fprintf(stderr, "[NCE-DEMAND] interval=%.3f calls=%llu requested_KiB=%.3f wait_ms=%.3f\n",
+                    std::chrono::duration<double>(now - reported).count(),
+                    (unsigned long long)calls, static_cast<double>(bytes) / 1024.0, wait_ms);
+                calls = bytes = 0;
+                wait_ms = 0;
+                reported = now;
+            }
+        }
+    }
+
     /// Notify rasterizer that any caches of the specified region should be invalidated
-    void InvalidateRegion(DAddr addr, u64 size)
+    void InvalidateRegion(DAddr addr, uint64_t size)
     {
         gpu_thread.InvalidateRegion(addr, size);
     }
 
-    bool OnCPUWrite(DAddr addr, u64 size)
+    bool OnCPUWrite(DAddr addr, uint64_t size)
     {
         return rasterizer->OnCPUWrite(addr, size);
     }
 
     /// Notify rasterizer that any caches of the specified region should be flushed and invalidated
-    void FlushAndInvalidateRegion(DAddr addr, u64 size)
+    void FlushAndInvalidateRegion(DAddr addr, uint64_t size)
     {
         gpu_thread.FlushAndInvalidateRegion(addr, size);
     }
 
     void RequestComposite(std::vector<Tegra::FramebufferConfig> && layers, std::vector<Service::Nvidia::NvFence> && fences)
     {
-        size_t num_fences{fences.size()};
-        size_t current_request_counter{};
-        {
-            std::unique_lock<std::mutex> lk(request_swap_mutex);
-            if (free_swap_counters.empty())
-            {
-                current_request_counter = request_swap_counters.size();
-                request_swap_counters.emplace_back(num_fences);
-            }
-            else
-            {
-                current_request_counter = free_swap_counters.front();
-                request_swap_counters[current_request_counter] = num_fences;
-                free_swap_counters.pop_front();
-            }
-        }
-        const auto wait_fence =
-            RequestSyncOperation([this, current_request_counter, &layers, &fences, num_fences] {
-                auto & syncpoint_manager = host1x.GetSyncpointManager();
-                if (num_fences == 0)
-                {
-                    renderer->Composite(layers);
-                }
-                const auto executer = [this, current_request_counter, layers_copy = layers]() {
+        composite_requests.Submit(std::move(layers), fences.size(), [&](const auto& request) {
+            (void)RequestSyncOperation(
+                [this, request, composite_fences = std::move(fences)] {
+                    if (composite_fences.empty())
                     {
-                        std::unique_lock<std::mutex> lk(request_swap_mutex);
-                        if (--request_swap_counters[current_request_counter] != 0)
+                        if (request->Signal())
                         {
-                            return;
+                            if (const auto event = gpu_thread.Wakeup().lock())
+                            {
+                                event->NotifyComposite();
+                            }
                         }
-                        free_swap_counters.push_back(current_request_counter);
+                        return;
                     }
-                    renderer->Composite(layers_copy);
-                };
-                for (size_t i = 0; i < num_fences; i++)
-                {
-                    syncpoint_manager.RegisterGuestAction(fences[i].id, fences[i].value, executer);
-                }
-            });
-        gpu_thread.TickGPU();
-        WaitForSyncOperation(wait_fence);
+                    if (request->IsCancelled())
+                    {
+                        return;
+                    }
+                    // Fence callbacks run under the syncpoint guard; only mark readiness and wake.
+                    const auto executer = [weak_request = std::weak_ptr{request}, wakeup = gpu_thread.Wakeup()] {
+                        if (const auto pending = weak_request.lock())
+                        {
+                            if (pending->Signal())
+                            {
+                                if (const auto event = wakeup.lock())
+                                {
+                                    event->NotifyComposite();
+                                }
+                            }
+                        }
+                    };
+                    auto & syncpoint_manager = host1x.GetSyncpointManager();
+                    for (const auto & fence : composite_fences)
+                    {
+                        syncpoint_manager.RegisterGuestAction(fence.id, fence.value, executer);
+                    }
+                });
+            gpu_thread.TickGPU();
+        });
+    }
+
+    void WaitForComposite()
+    {
+        composite_requests.Wait();
+    }
+
+    void CancelPendingComposite()
+    {
+        composite_requests.CancelPending();
+    }
+
+    void ProcessPendingComposite()
+    {
+        if (!gpu_thread.TakeCompositeReady()) {
+            return;
+        }
+        composite_requests.Composite([this](const auto& layers) {
+            renderer->Composite(layers);
+        });
     }
 
     std::vector<u8> GetAppletCaptureBuffer()
@@ -434,7 +610,8 @@ struct GPU::Impl :
     GPU & gpu;
     Host1x::Host1x & host1x;
 
-    std::map<u32, std::unique_ptr<Tegra::CDmaPusher>> cdma_pushers;
+    std::mutex cdma_mutex;
+    std::map<u32, std::shared_ptr<AsyncCdma>> cdma_pushers;
     std::unique_ptr<VideoCore::RendererBase> renderer;
     VideoCore::RasterizerInterface * rasterizer = nullptr;
     const bool use_nvdec;
@@ -455,14 +632,13 @@ struct GPU::Impl :
     std::condition_variable sync_cv;
 
     std::list<std::function<void()>> sync_requests;
-    std::atomic<u64> current_sync_fence{};
-    u64 last_sync_fence{};
+    std::atomic<uint64_t> current_sync_fence{};
+    std::atomic<uint64_t> last_sync_fence{};
     std::mutex sync_request_mutex;
     std::condition_variable sync_request_cv;
 
     const bool is_async;
 
-    VideoCommon::GPUThread::ThreadManager gpu_thread;
     std::unique_ptr<Core::Frontend::GraphicsContext> cpu_context;
 
     std::unique_ptr<Tegra::Control::Scheduler> scheduler;
@@ -470,9 +646,10 @@ struct GPU::Impl :
     Tegra::Control::ChannelState * current_channel;
     s32 bound_channel{-1};
 
-    std::deque<size_t> free_swap_counters;
-    std::deque<size_t> request_swap_counters;
-    std::mutex request_swap_mutex;
+    VideoCommon::CompositeRequestQueue composite_requests;
+
+    // Join the worker before destroying its scheduler, context, or pending requests.
+    VideoCommon::GPUThread::ThreadManager gpu_thread;
 };
 
 GPU::GPU(ISystemModules & modules, Tegra::Host1x::Host1x & host1x, bool is_async, bool use_nvdec) :
@@ -487,7 +664,7 @@ std::shared_ptr<Control::ChannelState> GPU::AllocateChannel()
     return impl->AllocateChannel();
 }
 
-void GPU::InitChannel(Control::ChannelState & to_init, u64 program_id)
+void GPU::InitChannel(Control::ChannelState & to_init, uint64_t program_id)
 {
     impl->InitChannel(to_init, program_id);
 }
@@ -527,17 +704,17 @@ void GPU::OnCommandListEnd()
     impl->OnCommandListEnd();
 }
 
-u64 GPU::RequestFlush(DAddr addr, std::size_t size)
+uint64_t GPU::RequestFlush(DAddr addr, std::size_t size)
 {
     return impl->RequestSyncOperation([this, addr, size]() { impl->rasterizer->FlushRegion(addr, size); });
 }
 
-u64 GPU::CurrentSyncRequestFence() const
+uint64_t GPU::CurrentSyncRequestFence() const
 {
     return impl->CurrentSyncRequestFence();
 }
 
-void GPU::WaitForSyncOperation(u64 fence)
+void GPU::WaitForSyncOperation(uint64_t fence)
 {
     return impl->WaitForSyncOperation(fence);
 }
@@ -614,12 +791,27 @@ void GPU::RequestComposite(std::vector<Tegra::FramebufferConfig> && layers, std:
     impl->RequestComposite(std::move(layers), std::move(fences));
 }
 
+void GPU::WaitForComposite()
+{
+    impl->WaitForComposite();
+}
+
+void GPU::CancelPendingComposite()
+{
+    impl->CancelPendingComposite();
+}
+
+void GPU::ProcessPendingComposite()
+{
+    impl->ProcessPendingComposite();
+}
+
 std::vector<u8> GPU::GetAppletCaptureBuffer()
 {
     return impl->GetAppletCaptureBuffer();
 }
 
-u64 GPU::GetTicks() const
+uint64_t GPU::GetTicks() const
 {
     return impl->GetTicks();
 }
@@ -664,14 +856,18 @@ void GPU::ReleaseContext()
     impl->ReleaseContext();
 }
 
+std::unique_lock<std::recursive_mutex> GPU::LockExecution() {
+    return impl->gpu_thread.LockExecution();
+}
+
 void GPU::PushGPUEntries(s32 channel, Tegra::CommandList && entries)
 {
     impl->PushGPUEntries(channel, std::move(entries));
 }
 
-void GPU::PushCommandBuffer(u32 id, Tegra::ChCommandHeaderList & entries)
+void GPU::PushCommandBuffer(u32 id, Tegra::ChCommandHeaderList & entries, std::shared_ptr<void> resources)
 {
-    impl->PushCommandBuffer(id, entries);
+    impl->PushCommandBuffer(id, entries, std::move(resources));
 }
 
 void GPU::ClearCdmaInstance(u32 id)
@@ -679,27 +875,37 @@ void GPU::ClearCdmaInstance(u32 id)
     impl->ClearCdmaInstance(id);
 }
 
-RasterizerDownloadArea GPU::OnCPURead(PAddr addr, u64 size)
+RasterizerDownloadArea GPU::OnCPURead(PAddr addr, uint64_t size)
 {
     return impl->OnCPURead(addr, size);
 }
 
-void GPU::FlushRegion(DAddr addr, u64 size)
+void GPU::OnNativeCPURead(DAddr addr, u64 size, bool shared_page)
+{
+    if (shared_page)
+    {
+        impl->SynchronizeSharedPage(addr, size);
+        return;
+    }
+    impl->OnNativeCPURead(addr, size);
+}
+
+void GPU::FlushRegion(DAddr addr, uint64_t size)
 {
     impl->FlushRegion(addr, size);
 }
 
-void GPU::InvalidateRegion(DAddr addr, u64 size)
+void GPU::InvalidateRegion(DAddr addr, uint64_t size)
 {
     impl->InvalidateRegion(addr, size);
 }
 
-bool GPU::OnCPUWrite(DAddr addr, u64 size)
+bool GPU::OnCPUWrite(DAddr addr, uint64_t size)
 {
     return impl->OnCPUWrite(addr, size);
 }
 
-void GPU::FlushAndInvalidateRegion(DAddr addr, u64 size)
+void GPU::FlushAndInvalidateRegion(DAddr addr, uint64_t size)
 {
     impl->FlushAndInvalidateRegion(addr, size);
 }
@@ -708,5 +914,4 @@ void GPU::RegisterHostThread()
 {
     impl->RegisterHostThread();
 }
-
 } // namespace Tegra

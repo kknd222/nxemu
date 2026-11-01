@@ -140,8 +140,7 @@ void TranslatorVisitor::ISBERD(u64 insn) {
         X(isberd.dest_reg.Value(), ir.IAdd(X(isberd.src_reg.Value()), ir.LaneId()));
         return;
     }
-
-    X(isberd.dest_reg.Value(), X(isberd.src_reg.Value()));
+    X(isberd.dest_reg, X(isberd.src_reg));
 }
 
 } // namespace Shader::Maxwell

@@ -2,6 +2,7 @@
 #include "video_enum_strings.h"
 #include "video_settings_identifiers.h"
 #include <algorithm>
+#include <atomic>
 #include <common/json.h>
 #include <cstring>
 #include <nxemu-module-spec/base.h>
@@ -10,6 +11,14 @@
 extern IModuleSettings * g_settings;
 
 VideoSettings videoSettings{};
+
+namespace
+{
+// Configuration storage stays on the settings thread; the GPU reads these snapshots.
+std::atomic<int32_t> runtime_dma_accuracy{0};
+std::atomic<bool> runtime_gpu_command_synchronization{false};
+std::atomic<bool> runtime_fast_gpu_readback{true};
+}
 
 namespace Settings
 {
@@ -28,6 +37,35 @@ bool IsGPULevelHigh()
 {
     return videoSettings.current_gpu_accuracy == GpuAccuracy::Extreme ||
            videoSettings.current_gpu_accuracy == GpuAccuracy::High;
+}
+
+bool IsDMALevelDefault()
+{
+    return runtime_dma_accuracy.load(std::memory_order_relaxed) == 0;
+}
+
+bool IsDMALevelSafe()
+{
+    return runtime_dma_accuracy.load(std::memory_order_relaxed) == 2;
+}
+
+bool UseSafeDMAReads()
+{
+    const int32_t accuracy = runtime_dma_accuracy.load(std::memory_order_relaxed);
+    return accuracy == 0 ? IsGPULevelHigh() : accuracy == 2;
+}
+
+bool IsGpuCommandSynchronizationEnabled()
+{
+    return runtime_gpu_command_synchronization.load(std::memory_order_relaxed);
+}
+
+// High accuracy waits for host GPU completion before publishing guest fences.
+// Fast readback permits immediate ordinary fences only without pending readbacks.
+// GPU-backed query results always retire safely.
+bool IsGpuReadbackExact()
+{
+    return IsGPULevelHigh() && !runtime_fast_gpu_readback.load(std::memory_order_relaxed);
 }
 
 void TranslateResolutionInfo(ResolutionSetup setup, ResolutionScalingInfo & info)
@@ -199,6 +237,7 @@ static VideoSetting settings[] = {
     {NXVideoSetting::ShaderBackend, "video", "shader_backend", &videoSettings.shader_backend, ShaderBackend::Glsl},
     {NXVideoSetting::VulkanDevice, "video", "vulkan_device", &videoSettings.vulkan_device, 0},
     {NXVideoSetting::UseDiskPipelineCache, "video", "use_disk_shader_cache", &videoSettings.use_disk_shader_cache, true},
+    {NXVideoSetting::RecordShaderRecipes, "video", "record_shader_recipes", &videoSettings.record_shader_recipes, true},
     {NXVideoSetting::UseAsynchronousGPUEmulation, "video", "use_asynchronous_gpu_emulation", &videoSettings.use_asynchronous_gpu_emulation, true},
 #ifdef ANDROID
     {NXVideoSetting::AstcDecodeMode, "video", "astc_decode_mode", &videoSettings.accelerate_astc, AstcDecodeMode::Cpu},
@@ -213,6 +252,9 @@ static VideoSetting settings[] = {
     {NXVideoSetting::AccuracyLevel, "video", "accuracy_level", &videoSettings.gpu_accuracy, GpuAccuracy::High},
     {NXVideoSetting::AnisotropicFiltering, "video", "anisotropic_filtering", &videoSettings.max_anisotropy, AnisotropyMode::Automatic},
 #endif
+    {NXVideoSetting::DMAAccuracy, "video", "dma_accuracy", &videoSettings.dma_accuracy, 0, 0, 2},
+    {NXVideoSetting::GpuCommandSynchronization, "video", "gpu_command_synchronization", &videoSettings.gpu_command_synchronization, false},
+    {NXVideoSetting::FastGpuReadback, "video", "fast_gpu_readback", &videoSettings.fast_gpu_readback, true},
     {NXVideoSetting::VSyncMode, "video", "vsync_mode", &videoSettings.vsync_mode, VSyncMode::Fifo},
     {NXVideoSetting::NvdecEmulation, "video", "nvdec_emulation", &videoSettings.nvdec_emulation, NvdecEmulation::Gpu},
 #ifdef _WIN32
@@ -239,6 +281,9 @@ static VideoSetting settings[] = {
 #else
     {NXVideoSetting::UseAsynchronousShaderBuilding, "video", "use_asynchronous_shaders", &videoSettings.use_asynchronous_shaders, false},
 #endif
+    {NXVideoSetting::NXShaderWarmupMode, "video", "nxshader_warmup_mode", &videoSettings.nxshader_warmup_mode, 0, 0, 1},
+    {NXVideoSetting::NXShaderInitialMinimum, "video", "nxshader_initial_minimum", &videoSettings.nxshader_initial_minimum, 512, 0, 8192},
+    {NXVideoSetting::NXShaderInitialSeconds, "video", "nxshader_initial_seconds", &videoSettings.nxshader_initial_seconds, 60, 0, 600},
     {NXVideoSetting::FastGPUTime, "video", "use_fast_gpu_time", &videoSettings.use_fast_gpu_time, true},
     {NXVideoSetting::UseVulkanPipelineCache, "video", "use_vulkan_driver_pipeline_cache", &videoSettings.use_vulkan_driver_pipeline_cache, true},
     {NXVideoSetting::SyncToFramerateOfVideoPlayback, "video", "use_video_framerate", &videoSettings.use_video_framerate, false},
@@ -320,6 +365,21 @@ void VideoSettingChanged(const char * setting, void * /*userData*/)
             break;
         default:
             UNIMPLEMENTED();
+        }
+        if (strcmp(setting, NXVideoSetting::DMAAccuracy) == 0)
+        {
+            runtime_dma_accuracy.store(videoSettings.dma_accuracy, std::memory_order_relaxed);
+            return;
+        }
+        if (strcmp(setting, NXVideoSetting::GpuCommandSynchronization) == 0)
+        {
+            runtime_gpu_command_synchronization.store(videoSettings.gpu_command_synchronization, std::memory_order_relaxed);
+            return;
+        }
+        if (strcmp(setting, NXVideoSetting::FastGpuReadback) == 0)
+        {
+            runtime_fast_gpu_readback.store(videoSettings.fast_gpu_readback, std::memory_order_relaxed);
+            return;
         }
     }
     Settings::UpdateRescalingInfo();
@@ -588,6 +648,9 @@ void SetupVideoSetting(void)
         }
         g_settings->RegisterCallback(videoSetting.identifier, VideoSettingChanged, nullptr);
     }
+    runtime_dma_accuracy.store(videoSettings.dma_accuracy, std::memory_order_relaxed);
+    runtime_gpu_command_synchronization.store(videoSettings.gpu_command_synchronization, std::memory_order_relaxed);
+    runtime_fast_gpu_readback.store(videoSettings.fast_gpu_readback, std::memory_order_relaxed);
     Settings::UpdateRescalingInfo();
     Settings::UpdateGPUAccuracy();
 }
@@ -719,7 +782,7 @@ void SaveVideoSettings(void)
             json[it->first] = it->second;
         }
     }
-    g_settings->SetSectionSettings("nxemu-video", json.isNull() ? "" : JsonStyledWriter().write(json));
+    g_settings->SetSectionSettings("nxemu-video", json.isNull() ? "" : JsonStyledWriter().write(json).c_str());
 }
 
 namespace

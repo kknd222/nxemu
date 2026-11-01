@@ -102,6 +102,10 @@ public:
     bool AccelerateHostConditionalRendering();
 
     // Async downloads
+    void PrepareAsyncFlushes() {
+        NotifyWFI();
+    }
+
     void CommitAsyncFlushes();
 
     bool HasUncommittedFlushes() const;
@@ -111,6 +115,8 @@ public:
     void PopAsyncFlushes();
 
     void NotifySegment(bool resume);
+
+    void NotifyRenderPass(bool begin);
 
     void BindToChannel(s32 id) override;
 

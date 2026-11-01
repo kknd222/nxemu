@@ -51,6 +51,12 @@ LoaderFileType IdentifyFile(FileSys::VirtualFile file)
     }
     else
     {
+        // A DNSP may legitimately contain only update or add-on content.
+        if (GuessFromFilename(file->GetName()) == LoaderFileType::NSP)
+        {
+            return LoaderFileType::Unknown;
+        }
+        UNIMPLEMENTED();
         return LoaderFileType::Unknown;
     }
 }
@@ -101,8 +107,10 @@ std::string GetFileTypeString(LoaderFileType type)
         return "error";
     case LoaderFileType::Unknown:
         return "unknown";
+    default:
+        UNIMPLEMENTED();
+        return "unknown";
     }
-    return "unknown";
 }
 
 AppLoader::AppLoader(FileSys::VirtualFile file_) : file(std::move(file_)) {}
@@ -133,13 +141,11 @@ static std::shared_ptr<AppLoader> GetFileLoader(Systemloader & loader, FileSys::
         return std::make_shared<AppLoader_NSP>(std::move(file), loader.GetFileSystemController(), loader.GetContentProvider(), program_id, program_index);
     case LoaderFileType::Error:
     case LoaderFileType::Unknown:
-    case LoaderFileType::NSO:
-    case LoaderFileType::NAX:
-    case LoaderFileType::KIP:
-    case LoaderFileType::DeconstructedRomDirectory:
-        break;
+        return nullptr;
+    default:
+        UNIMPLEMENTED();
+        return nullptr;
     }
-    return nullptr;
 }
 
 std::shared_ptr<AppLoader> GetLoader(Systemloader & loader, FileSys::VirtualFile file, uint64_t program_id, std::size_t program_index)
@@ -149,12 +155,7 @@ std::shared_ptr<AppLoader> GetLoader(Systemloader & loader, FileSys::VirtualFile
         return nullptr;
     }
 
-    LoaderFileType type = IdentifyFile(file);
-    const LoaderFileType filename_type = GuessFromFilename(file->GetName());
-    if (type == LoaderFileType::Unknown && filename_type != LoaderFileType::Unknown)
-    {
-        type = filename_type;
-    }
+    const LoaderFileType type = IdentifyFile(file);
 
     LOG_DEBUG(Loader, "Loading file {} as {}...", file->GetName(), GetFileTypeString(type));
 

@@ -38,15 +38,8 @@ Result QueryProcessMemory(Core::System& system, uint64_t out_memory_info, PageIn
     R_TRY(process->GetKPageTable().QueryInfo(std::addressof(mem_info), out_page_info, address));
 
     const auto svc_mem_info = mem_info.GetSvcMemoryInfo();
-    Service::NxemuAndroidDiagnostics::RecordEvent(
-        "SVC.QueryMemoryResult",
-        fmt::format("query={:#x} base={:#x} size={:#x} state={} attr={} perm={} ipc={} device={}",
-                    address, svc_mem_info.base_address, svc_mem_info.size,
-                    static_cast<u32>(svc_mem_info.state),
-                    static_cast<u32>(svc_mem_info.attribute),
-                    static_cast<u32>(svc_mem_info.permission), svc_mem_info.ipc_count,
-                    svc_mem_info.device_count));
-    current_memory.WriteBlock(out_memory_info, std::addressof(svc_mem_info), sizeof(svc_mem_info));
+    current_memory.WriteBlock(Common::ProcessAddress{out_memory_info}, std::addressof(svc_mem_info),
+                              sizeof(svc_mem_info));
 
     R_SUCCEED();
 }

@@ -3,99 +3,130 @@
 
 #pragma once
 
+#include <atomic>
 #include <mutex>
+#if defined(__APPLE__)
+#include <mach/mach_types.h>
+#include <pthread.h>
+#include <signal.h>
+#include <vector>
+#endif
 
-#include <nxemu-module-spec/cpu.h>
-#include "core/arm/nce/guest_context.h"
-
-namespace Core::Memory {
-class Memory;
-}
+#include "dynarmic/interface/halt_reason.h"
+#include "nce/guest_context.h"
+#include "yuzu_common/common_types.h"
 
 namespace Core {
 
-class System;
-
 class ArmNce final : public ICpuCore {
 public:
-    ArmNce(ICoreSystem& system, bool uses_wall_clock, IKernelProcess& process,
-           std::size_t core_index);
+    ArmNce(ICoreSystem & system, bool uses_wall_clock, IKernelProcess & process, std::size_t core_index);
     ~ArmNce();
 
     void Initialize() override;
 
-    ProcessorArchitecture GetArchitecture() const override {
+    ProcessorArchitecture GetArchitecture() const override
+    {
         return ProcessorArchitecture::AArch64;
     }
 
-    CpuHaltReason RunThread(IKernelThread* thread) override;
-    CpuHaltReason StepThread(IKernelThread* thread) override;
+    CpuHaltReason RunThread(IKernelThread * thread) override;
+    CpuHaltReason StepThread(IKernelThread * thread) override;
 
-    void GetContext(CpuThreadContext& ctx) const override;
-    void SetContext(const CpuThreadContext& ctx) override;
-    void SetTpidrroEl0(u64 value) override;
+    void GetContext(CpuThreadContext & ctx) const override;
+    void SetContext(const CpuThreadContext & ctx) override;
+    void SetTpidrroEl0(uint64_t value) override;
 
     void GetSvcArguments(uint64_t (&args)[8]) const override;
     void SetSvcArguments(const uint64_t (&args)[8]) override;
-    u32 GetSvcNumber() const override;
+    uint32_t GetSvcNumber() const override;
 
-    void SignalInterrupt(IKernelThread* thread) override;
+    void SignalInterrupt(IKernelThread * thread) override;
     void ClearInstructionCache() override;
-    void InvalidateCacheRange(u64 addr, std::size_t size) override;
+    void InvalidateCacheRange(uint64_t addr, uint64_t size) override;
 
-    void LockThread(IKernelThread* thread) override;
-    void UnlockThread(IKernelThread* thread) override;
-    void SetWatchpointArray(const CpuDebugWatchpoint* watchpoints, uint32_t count) override;
-    void Release() override;
+    void LockThread(IKernelThread * thread) override;
+    void UnlockThread(IKernelThread * thread) override;
 
-    const CpuDebugWatchpoint* HaltedWatchpoint() const override {
+    const CpuDebugWatchpoint * HaltedWatchpoint() const override
+    {
         return nullptr;
     }
 
-    void RewindBreakpointInstruction() override {}
+    void RewindBreakpointInstruction() override
+    {
+    }
+    void SetWatchpointArray(const CpuDebugWatchpoint * /*watchpoints*/, uint32_t /*count*/) override
+    {
+    }
 
-public:
-    // Assembly definitions.
-    static CpuHaltReason ReturnToRunCodeByTrampoline(void* tpidr, GuestContext* ctx,
-                                                     u64 trampoline_addr);
-    static CpuHaltReason ReturnToRunCodeByExceptionLevelChange(int tid, void* tpidr);
-
-    static void ReturnToRunCodeByExceptionLevelChangeSignalHandler(int sig, void* info,
-                                                                   void* raw_context);
-    static void BreakFromRunCodeSignalHandler(int sig, void* info, void* raw_context);
-    static void GuestAlignmentFaultSignalHandler(int sig, void* info, void* raw_context);
-    static void GuestAccessFaultSignalHandler(int sig, void* info, void* raw_context);
-
-    static void LockThreadParameters(void* tpidr);
-    static void UnlockThreadParameters(void* tpidr);
+    void Release() override;
 
 private:
-    // C++ implementation functions for assembly definitions.
-    static void* RestoreGuestContext(void* raw_context);
-    static void SaveGuestContext(GuestContext* ctx, void* raw_context);
-    static bool HandleFailedGuestFault(GuestContext* ctx, void* info, void* raw_context);
-    static GuestContext* ResolveGuestSignalContextAndRestoreHostTls(void* candidate_tpidr, int sig,
-                                                                    void* info,
-                                                                    void* raw_context);
-    static bool HandleGuestAlignmentFault(GuestContext* ctx, void* info, void* raw_context);
-    static bool HandleGuestAccessFault(GuestContext* ctx, void* info, void* raw_context);
-    static void HandleHostAlignmentFault(int sig, void* info, void* raw_context);
-    static void HandleHostAccessFault(int sig, void* info, void* raw_context);
+    // Assembly definitions.
+    static Dynarmic::HaltReason ReturnToRunCodeByTrampoline(void * tpidr, GuestContext * ctx, uint64_t trampoline_addr);
+#if defined(__APPLE__)
+    static Dynarmic::HaltReason ReturnToRunCodeByExceptionLevelChange(mach_port_t thread, GuestContext * ctx);
+
+    static void LockThreadParameters(void * tpidr);
+    static void UnlockThreadParameters(void * tpidr);
+
+    static void EnterGuestSignalHandler(int sig, siginfo_t * info, void * raw_context);
+    static void ExitGuestSignalHandler(int sig, siginfo_t * info, void * raw_context);
+    static bool HandleGuestFault(ArmNce & nce, int sig, siginfo_t * info, void * raw_context);
+    static void SaveGuestContext(GuestContext * ctx, void * raw_context);
+    bool IsGuestAddress(uint64_t addr) const;
 
 public:
-    ICoreSystem& m_system;
-    IKernelProcess& m_process;
+    ICoreSystem & m_system;
 
-    // Members set on initialization.
+    std::size_t m_core_index{};
+    pthread_t m_thread{};
+    mach_port_t m_thread_port{};
+
+    GuestContext m_guest_ctx{};
+    IKernelThread * m_running_thread{};
+
+    // A break signal was sent and not yet received. It stays blocked while the core handles
+    // a guest fault, which may wait on the GPU, so later interrupts must not wait for it.
+    std::atomic<bool> m_break_pending{};
+
+    // Ranges of the host address space that hold guest memory; guest code only runs there.
+    std::vector<std::pair<uint64_t, uint64_t>> m_guest_windows;
+
+    std::unique_ptr<u8[]> m_stack{};
+};
+#else
+    static Dynarmic::HaltReason ReturnToRunCodeByExceptionLevelChange(int tid, void * tpidr);
+
+    static void ReturnToRunCodeByExceptionLevelChangeSignalHandler(int sig, void * info, void * raw_context);
+    static void BreakFromRunCodeSignalHandler(int sig, void * info, void * raw_context);
+    static void GuestAlignmentFaultSignalHandler(int sig, void * info, void * raw_context);
+    static void GuestAccessFaultSignalHandler(int sig, void * info, void * raw_context);
+
+    static void LockThreadParameters(void * tpidr);
+    static void UnlockThreadParameters(void * tpidr);
+
+private:
+    static void * RestoreGuestContext(void * raw_context);
+    static void SaveGuestContext(GuestContext * ctx, void * raw_context);
+    static bool HandleFailedGuestFault(GuestContext * ctx, void * info, void * raw_context);
+    static bool HandleGuestAlignmentFault(GuestContext * ctx, void * info, void * raw_context);
+    static bool HandleGuestAccessFault(GuestContext * ctx, void * info, void * raw_context);
+    static void HandleHostAlignmentFault(int sig, void * info, void * raw_context);
+    static void HandleHostAccessFault(int sig, void * info, void * raw_context);
+
+public:
+    ICoreSystem & m_system;
+
     std::size_t m_core_index{};
     pid_t m_thread_id{-1};
 
-    // Core context.
     GuestContext m_guest_ctx{};
-    IKernelThread* m_running_thread{};
+    IKernelThread * m_running_thread{};
 
-    // Stack for signal processing.
     std::unique_ptr<u8[]> m_stack{};
 };
+#endif
 
 } // namespace Core

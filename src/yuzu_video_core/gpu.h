@@ -4,6 +4,7 @@
 #pragma once
 
 #include <memory>
+#include <mutex>
 
 #include "yuzu_common/bit_field.h"
 #include "yuzu_common/common_types.h"
@@ -216,6 +217,12 @@ public:
     void RequestComposite(std::vector<Tegra::FramebufferConfig>&& layers,
                           std::vector<Service::Nvidia::NvFence>&& fences);
 
+    void WaitForComposite();
+    void CancelPendingComposite();
+
+    // Called only by the GPU worker, with its graphics context current.
+    void ProcessPendingComposite();
+
     std::vector<u8> GetAppletCaptureBuffer();
 
     /// Performs any additional setup necessary in order to begin GPU emulation.
@@ -239,7 +246,7 @@ public:
     void PushGPUEntries(s32 channel, Tegra::CommandList&& entries);
 
     /// Push GPU command buffer entries to be processed
-    void PushCommandBuffer(u32 id, Tegra::ChCommandHeaderList& entries);
+    void PushCommandBuffer(u32 id, Tegra::ChCommandHeaderList& entries, std::shared_ptr<void> resources = {});
 
     /// Frees the CDMAPusher instance to free up resources
     void ClearCdmaInstance(u32 id);
@@ -249,6 +256,7 @@ public:
 
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
     [[nodiscard]] RasterizerDownloadArea OnCPURead(DAddr addr, u64 size);
+    void OnNativeCPURead(DAddr addr, u64 size, bool shared_page = false);
 
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
     void FlushRegion(DAddr addr, u64 size);
@@ -262,6 +270,10 @@ public:
 
     /// Notify rasterizer that any caches of the specified region should be flushed and invalidated
     void FlushAndInvalidateRegion(DAddr addr, u64 size);
+
+    /// Excludes command recording/compositing while guest GPU mappings change.
+    /// Never hold this lock while enqueueing and waiting for a GPU-thread request.
+    std::unique_lock<std::recursive_mutex> LockExecution();
 
     /// Register a host thread as an auxiliary thread.
     void RegisterHostThread();

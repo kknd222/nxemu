@@ -1,6 +1,7 @@
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <memory>
 #include <mutex>
 #include <thread>
@@ -12,6 +13,7 @@
 #include "yuzu_video_core/renderer_vulkan/vk_command_pool.h"
 #include "yuzu_video_core/renderer_vulkan/vk_master_semaphore.h"
 #include "yuzu_video_core/renderer_vulkan/vk_scheduler.h"
+#include "yuzu_video_core/renderer_vulkan/vk_stall_profile.h"
 #include "yuzu_video_core/renderer_vulkan/vk_state_tracker.h"
 #include "yuzu_video_core/renderer_vulkan/vk_texture_cache.h"
 #include "yuzu_video_core/vulkan_common/vulkan_device.h"
@@ -19,7 +21,6 @@
 #include "video_settings.h"
 
 namespace Vulkan {
-
 void Scheduler::CommandChunk::ExecuteAll(vk::CommandBuffer cmdbuf,
                                          vk::CommandBuffer upload_cmdbuf) {
     auto command = first;
@@ -54,6 +55,7 @@ u64 Scheduler::Flush(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
 }
 
 void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore) {
+    const StallProfile profile{"finish", CurrentTick()};
     // When finishing, we need to wait for the submission to have executed on the device.
     const u64 presubmit_tick = CurrentTick();
     SubmitExecution(signal_semaphore, wait_semaphore);
@@ -62,6 +64,7 @@ void Scheduler::Finish(VkSemaphore signal_semaphore, VkSemaphore wait_semaphore)
 }
 
 void Scheduler::WaitWorker() {
+    const StallProfile profile{"worker_wait", CurrentTick()};
     DispatchWork();
 
     // Ensure the queue is drained.
@@ -86,9 +89,10 @@ void Scheduler::DispatchWork() {
     AcquireNewChunk();
 }
 
-void Scheduler::RequestRenderpass(const Framebuffer* framebuffer) {
-    const VkRenderPass renderpass = framebuffer->RenderPass();
-    const VkFramebuffer framebuffer_handle = framebuffer->Handle();
+void Scheduler::RequestRenderpass(const Framebuffer* framebuffer, u32 color_scratch_mask) {
+    color_scratch_mask &= framebuffer->DuplicateColorAttachmentMask();
+    const VkRenderPass renderpass = framebuffer->RenderPassVariant(color_scratch_mask);
+    const VkFramebuffer framebuffer_handle = framebuffer->HandleVariant(color_scratch_mask);
     const VkExtent2D render_area = framebuffer->RenderArea();
     if (renderpass == state.renderpass && framebuffer_handle == state.framebuffer &&
         render_area.width == state.render_area.width &&
@@ -117,8 +121,11 @@ void Scheduler::RequestRenderpass(const Framebuffer* framebuffer) {
         cmdbuf.BeginRenderPass(renderpass_bi, VK_SUBPASS_CONTENTS_INLINE);
     });
     num_renderpass_images = framebuffer->NumImages();
-    renderpass_images = framebuffer->Images();
-    renderpass_image_ranges = framebuffer->ImageRanges();
+    renderpass_images = framebuffer->Images(color_scratch_mask);
+    renderpass_image_ranges = framebuffer->ImageRanges(color_scratch_mask);
+    if (query_cache) {
+        query_cache->NotifyRenderPass(true);
+    }
 }
 
 void Scheduler::RequestOutsideRenderPassOperationContext() {
@@ -144,6 +151,9 @@ bool Scheduler::UpdateRescaling(bool is_rescaling) {
 
 void Scheduler::WorkerThread(std::stop_token stop_token) {
     Common::SetCurrentThreadName("VulkanWorker");
+#ifdef __APPLE__
+    Common::SetCurrentThreadPriority(Common::ThreadPriority::Critical);
+#endif
 
     const auto TryPopQueue{[this](auto& work) -> bool {
         if (work_queue.empty()) {
@@ -178,7 +188,10 @@ void Scheduler::WorkerThread(std::stop_token stop_token) {
             // Perform the work, tracking whether the chunk was a submission
             // before executing.
             const bool has_submit = work->HasSubmit();
-            work->ExecuteAll(current_cmdbuf, current_upload_cmdbuf);
+            {
+                const StallProfile profile{"worker_commands", CurrentTick()};
+                work->ExecuteAll(current_cmdbuf, current_upload_cmdbuf);
+            }
 
             // If the chunk was a submission, reallocate the command buffer.
             if (has_submit) {
@@ -234,14 +247,14 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
             on_submit();
         }
 
-        std::scoped_lock lock{submit_mutex};
+        std::scoped_lock lock{device.QueueMutex()};
         switch (const VkResult result = master_semaphore->SubmitQueue(
                     cmdbuf, upload_cmdbuf, signal_semaphore, wait_semaphore, signal_value)) {
         case VK_SUCCESS:
             break;
         case VK_ERROR_DEVICE_LOST:
-            device.ReportLoss();
-            [[fallthrough]];
+            master_semaphore->MarkDeviceLost();
+            break;
         default:
             vk::Check(result);
             break;
@@ -252,7 +265,27 @@ u64 Scheduler::SubmitExecution(VkSemaphore signal_semaphore, VkSemaphore wait_se
     return signal_value;
 }
 
+void Scheduler::MarkBufferWrite(VkBuffer buffer) {
+    // Past this many buffers, searching them costs more than what reordering commands saves
+    static constexpr size_t MAX_WRITTEN_BUFFERS = 64;
+    if (buffer == VK_NULL_HANDLE || IsBufferWritten(buffer)) {
+        return;
+    }
+    if (written_buffers.size() == MAX_WRITTEN_BUFFERS) {
+        all_buffers_written = true;
+        return;
+    }
+    written_buffers.push_back(buffer);
+}
+
+bool Scheduler::IsBufferWritten(VkBuffer buffer) const noexcept {
+    return all_buffers_written ||
+           std::ranges::find(written_buffers, buffer) != written_buffers.end();
+}
+
 void Scheduler::AllocateNewContext() {
+    written_buffers.clear();
+    all_buffers_written = false;
     // Enable counters once again. These are disabled when a command buffer is finished.
     if (query_cache) {
 #if ANDROID
@@ -287,9 +320,25 @@ void Scheduler::EndPendingOperations() {
     EndRenderPass();
 }
 
+void Scheduler::ComputeMemoryBarrier(vk::CommandBuffer cmdbuf) {
+    static constexpr VkMemoryBarrier barrier{
+        .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+        .pNext = nullptr,
+        .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
+        .dstAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT,
+    };
+    // Submission order alone does not make storage buffer/image writes visible. Include
+    // all consumers: compute, graphics, indirect commands and transfers to sparse aliases.
+    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, barrier);
+}
+
 void Scheduler::EndRenderPass() {
     if (!state.renderpass) {
         return;
+    }
+    if (query_cache) {
+        query_cache->NotifyRenderPass(false);
     }
     Record([num_images = num_renderpass_images, images = renderpass_images,
             ranges = renderpass_image_ranges](vk::CommandBuffer cmdbuf) {
@@ -322,6 +371,7 @@ void Scheduler::EndRenderPass() {
     });
     state.renderpass = nullptr;
     num_renderpass_images = 0;
+    ++render_pass_end_tick;
 }
 
 void Scheduler::AcquireNewChunk() {
@@ -336,5 +386,4 @@ void Scheduler::AcquireNewChunk() {
         chunk_reserve.pop_back();
     }
 }
-
 } // namespace Vulkan

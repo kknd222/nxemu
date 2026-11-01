@@ -13,6 +13,7 @@
 #include "yuzu_common/settings.h"
 #include <nxemu-module-spec/base.h>
 #include "nxemu-os/os_settings_identifiers.h"
+#include <nxemu-core/settings/identifiers.h>
 #ifndef _WIN32
 #include "yuzu_common/string_util.h"
 #endif
@@ -926,7 +927,18 @@ PatchManager::Metadata PatchManager::ParseControlNCA(const NCA & nca) const
         return {};
     }
 
-    const auto romfs = PatchRomFS(&nca, base_romfs, LoaderContentRecordType::Control);
+    const auto patched = PatchRomFS(&nca, base_romfs, LoaderContentRecordType::Control);
+    auto metadata = ParseControlRomFS(patched);
+    if (!metadata.first && patched != base_romfs)
+    {
+        LOG_WARNING(Loader, "Invalid updated control metadata for {:016X}; using base metadata", title_id);
+        return ParseControlRomFS(base_romfs);
+    }
+    return metadata;
+}
+
+PatchManager::Metadata ParseControlRomFS(VirtualFile romfs)
+{
     if (romfs == nullptr)
     {
         return {};
@@ -945,9 +957,14 @@ PatchManager::Metadata PatchManager::ParseControlNCA(const NCA & nca) const
     }
 
     auto nacp = nacp_file == nullptr ? nullptr : std::make_unique<NACP>(nacp_file);
+    if (nacp && !nacp->IsValid())
+    {
+        LOG_ERROR(Loader, "Invalid control.nacp: truncated file, unterminated string or invalid UTF-8");
+        return {};
+    }
 
     // Get language code from settings
-    const auto language_code = Service::Set::GetLanguageCodeFromIndex((uint32_t)g_settings->GetInt(NXOsSetting::LanguageIndex));
+    const auto language_code = Service::Set::GetLanguageCodeFromIndex((uint32_t)g_settings->GetInt(NXCoreSetting::LanguageIndex));
 
     // Convert to application language and get priority list
     const auto application_language = Service::NS::ConvertToApplicationLanguage(language_code).value_or(Service::NS::ApplicationLanguage::AmericanEnglish);

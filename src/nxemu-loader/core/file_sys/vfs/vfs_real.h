@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
+#include "nxemu-module-spec/base.h"
 
 #include <map>
 #include <mutex>
@@ -95,6 +96,7 @@ private:
 
     RealVfsFilesystem& base;
     std::unique_ptr<FileReference> reference;
+    StorageReadDomain read_domain{StorageReadDomain::Content};
     std::string path;
     std::string parent_path;
     std::vector<std::string> path_components;

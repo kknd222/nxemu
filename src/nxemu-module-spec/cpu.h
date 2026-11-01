@@ -38,17 +38,19 @@ enum class ProcessorArchitecture
     AArch32,
 };
 
-enum class CpuHaltReason : uint64_t
+enum class CpuHaltReason
 {
-    StepThread = 1ULL << 0,
-    CacheInvalidation = 1ULL << 1,
-    DataAbort = 1ULL << 2,
-    BreakLoop = 1ULL << 3,
-    SupervisorCall = 1ULL << 4,
-    SupervisorCallBreakLoop = (1ULL << 4) | (1ULL << 3),
-    InstructionBreakpoint = 1ULL << 5,
-    PrefetchAbort = 1ULL << 6,
-    PrefetchAbortBreakLoop = (1ULL << 6) | (1ULL << 3),
+    StepThread,
+    CacheInvalidation,
+    DataAbort,
+    BreakLoop,
+    SupervisorCall,
+    SupervisorCallBreakLoop,
+    InstructionBreakpoint,
+    PrefetchAbort,
+    PrefetchAbortBreakLoop,
+    // A cycle-counted CPU run can exhaust its budget without an exceptional halt.
+    None,
 };
 
 struct CpuDebugWatchpoint
@@ -63,6 +65,10 @@ nxinterface ICoreTiming
     virtual void AddTicks(uint64_t ticks) = 0;
     virtual int64_t GetDowncount() const = 0;
     virtual uint64_t GetClockTicks() const = 0;
+    virtual void BeginCpuRun(uint32_t core) = 0;
+    virtual void EndCpuRun(uint32_t core) = 0;
+    virtual bool CpuHleSynchronizationEnabled() const = 0;
+    virtual void CpuCompilation(uint32_t core, bool compiling) = 0;
 };
 
 nxinterface ICoreSystem
@@ -76,6 +82,10 @@ nxinterface IMemory
     virtual bool IsValidVirtualAddressRange(uint64_t base, uint64_t size) const = 0;
     virtual void RasterizerMarkRegionCached(uint64_t vaddr, uint64_t size, bool cached) = 0;
     virtual uint8_t * GetPointerSilent(uint64_t vaddr) = 0;
+    virtual bool InvalidateNCE(uint64_t vaddr, uint64_t size) = 0;
+    virtual bool NceAccessAllowed(uint64_t vaddr, bool write) = 0;
+    virtual bool NceTrackWrites(uint64_t vaddr) = 0;
+    virtual bool NcePrepareCanonicalWrite(uint64_t vaddr) { return false; }
 
     virtual uint8_t Read8(uint64_t addr) = 0;
     virtual uint16_t Read16(uint64_t addr) = 0;
@@ -83,7 +93,6 @@ nxinterface IMemory
     virtual uint64_t Read64(uint64_t addr) = 0;
     virtual bool ReadBlock(uint64_t src_addr, void * dest_buffer, uint64_t size) = 0;
     virtual bool WriteBlock(uint64_t dest_addr, const void * src_buffer, uint64_t size) = 0;
-    virtual bool InvalidateNCE(uint64_t vaddr, uint64_t size) = 0;
 
     virtual void Write8(uint64_t addr, uint8_t value) = 0;
     virtual void Write16(uint64_t addr, uint16_t value) = 0;
@@ -95,6 +104,11 @@ nxinterface IMemory
     virtual bool WriteExclusive32(uint64_t addr, uint32_t value, uint32_t expected) = 0;
     virtual bool WriteExclusive64(uint64_t addr, uint64_t value, uint64_t expected) = 0;
     virtual bool WriteExclusive128(uint64_t addr, uint64_t valueHi, uint64_t valueLow, uint64_t expectedHi, uint64_t expectedLow) = 0;
+    // Readback-capable caches need native CPU reads tracked independently of buffer writes.
+    virtual void RasterizerMarkRegionReadCached(uint64_t vaddr, uint64_t size, int32_t delta) {}
+    virtual bool NceTrackReads(uint64_t vaddr) { return false; }
+    virtual void RasterizerSetNativeReadAccess(uint64_t vaddr, uint64_t size, bool readable) {}
+
 };
 
 nxinterface IExclusiveMonitor
@@ -120,6 +134,8 @@ nxinterface IKProcessPageTable
     virtual uint32_t GetAddressSpaceWidth() const = 0;
     virtual uint8_t * FastmemArena() const = 0;
     virtual void ** PageTable() const = 0;
+    virtual uint32_t GetNceWindows(uint64_t * starts, uint64_t * ends, uint32_t max) const = 0;
+    virtual uint64_t GetNceAtomicTable() const = 0;
 };
 
 nxinterface IKernelProcess
@@ -128,12 +144,33 @@ nxinterface IKernelProcess
     virtual IMemory & GetMemory() = 0;
     virtual bool Is64Bit() const = 0;
     virtual bool IsApplication() const = 0;
+    virtual uint64_t FindPostHandler(uint64_t pc) const = 0;
+    virtual void RegisterPostHandler(uint64_t module_text, uint64_t patch_text) = 0;
     virtual void LogBacktrace(ICpuCore & cpuCore) = 0;
+    // Restart an interrupted native sequence whose temporary state belongs to its host thread.
+    virtual uint64_t GetNceRestartPc(uint64_t pc) const = 0;
+    virtual void RegisterNceRestartPc(uint64_t interrupted_pc, uint64_t restart_pc) = 0;
+    virtual uint64_t FindNceAtomicHandler(uint64_t pc) const = 0;
+    virtual void RegisterNceAtomicHandler(uint64_t pc, uint64_t handler) = 0;
+    virtual void EnableNceAtomicHandlers() = 0;
+    virtual void RegisterNceReadHandler(uint64_t pc, uint64_t handler) {}
+    virtual uint64_t InstallNceReadHandler(uint64_t pc) { return 0; }
+};
+
+struct NativeExecutionParameters
+{
+    uint64_t tpidr_el0{};
+    uint64_t tpidrro_el0{};
+    void * native_context{};
+    uint32_t lock{1};
+    uint32_t is_running{};
+    uint32_t magic{0x4D45584E}; // 'NXEM'
 };
 
 nxinterface IKernelThread
 {
     virtual IKernelProcess * GetOwnerProcess() const = 0;
+    virtual NativeExecutionParameters & GetNativeExecutionParameters() = 0;
 };
 
 struct CpuThreadContext
@@ -156,8 +193,6 @@ nxinterface IPatchCollection
 {
     virtual void PatchText(int32_t patch_index, const uint8_t * program_image, uint32_t image_size, uint32_t code_offset, uint32_t code_size) = 0;
     virtual void Relocate(int32_t patch_index, uint64_t load_base, uint8_t * program_image, uint32_t * image_size, uint32_t code_offset, uint32_t code_size, uint64_t * segment_addr, uint32_t * segment_size) = 0;
-    virtual uint32_t GetPostHandlerCount() const { return 0; }
-    virtual bool GetPostHandler(uint32_t index, uint64_t * module_pc, uint64_t * patch_pc) const { (void)index; (void)module_pc; (void)patch_pc; return false; }
     virtual uint32_t GetTotalPatchSize() const = 0;
     virtual uint32_t GetPreTextSize(int32_t patch_index) const = 0;
     virtual int32_t GetLastIndex() const = 0;
@@ -190,9 +225,29 @@ nxinterface ICpuCore
     virtual void Release() = 0;
 };
 
+struct NativeCodeWordPatch {
+    uint32_t offset;
+    uint32_t original;
+    uint32_t replacement;
+};
+struct NativeCodeEntry { uint64_t pc; uint64_t target; };
+
+// Owned by the CPU module. Construction and relocation have no guest-visible side effects.
+nxinterface IRuntimeCodePatch {
+    virtual uint64_t GetCodeSize() const = 0;
+    virtual bool Relocate(uint64_t text_base, uint64_t patch_base) = 0;
+    virtual const uint8_t* GetCode() const = 0;
+    virtual const NativeCodeWordPatch* GetTextChanges(uint32_t* count) const = 0;
+    virtual const NativeCodeEntry* GetPostHandlers(uint32_t* count) const = 0;
+    virtual const NativeCodeEntry* GetRestartPcs(uint32_t* count) const = 0;
+    virtual const NativeCodeEntry* GetAtomicHandlers(uint32_t* count) const = 0;
+    virtual void Release() = 0;
+};
+
 nxinterface ICpu
 {
     virtual bool Initialize(void) = 0;
+    virtual IRuntimeCodePatch* CreateRuntimeCodePatch(const uint8_t* text, uint32_t size, uint64_t atomic_table) = 0;
 
     virtual IExclusiveMonitor * CreateExclusiveMonitor(IMemory & memory) = 0;
     virtual IPatchCollection * CreatePatchCollection(bool is_application) = 0;

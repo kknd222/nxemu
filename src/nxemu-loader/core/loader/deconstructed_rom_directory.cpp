@@ -7,6 +7,8 @@
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/romfs_factory.h"
+#include "core/file_sys/romfs.h"
+#include "core/file_sys/filesystem.h"
 #include "core/loader/nso.h"
 #include "loader_settings_identifiers.h"
 #include "system_loader.h"
@@ -14,9 +16,12 @@
 #include "yuzu_common/interface_pointer_def.h"
 #include "yuzu_common/logging/log.h"
 #include "yuzu_common/settings.h"
+#include <cstring>
+#include <nxemu-core/settings/identifiers.h>
 #include <nxemu-cpu/cpu_settings_identifiers.h>
 #include <nxemu-module-spec/cpu.h>
 #include <sstream>
+#include <nxemu-module-spec/operating_system.h>
 
 using IPatchCollectionPtr = InterfacePtr<IPatchCollection>;
 template class InterfacePtr<IPatchCollection>;
@@ -24,6 +29,22 @@ template class InterfacePtr<IPatchCollection>;
 extern IModuleSettings * g_settings;
 
 namespace {
+// Adapted from Eglantine nx2: prefer an image next to main, then the
+// sibling romfs directory of the selected ExeFS (including an update ExeFS).
+FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs) {
+    if (!exefs) return nullptr;
+    for (const auto& file : exefs->GetFiles()) {
+        if (file->GetExtension() == "romfs") return file;
+    }
+    if (const auto parent = exefs->GetParentDirectory()) {
+        if (const auto directory = parent->GetSubdirectory("romfs")) {
+            LOG_INFO(Loader, "Using RomFS directory next to ExeFS");
+            return FileSys::CreateRomFS(directory);
+        }
+    }
+    return nullptr;
+}
+
 std::string g_last_nce_loader_diagnostics = "nceLoaderDiagnostics=not-run";
 
 void SetLastNceLoaderDiagnostics(std::string text)
@@ -45,6 +66,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
     is_hbl(false) 
 {
     const auto file_dir = file->GetContainingDirectory();
+    romfs = FindLooseRomFS(file_dir);
 
     // Title ID
     const auto npdm = file_dir->GetFile("main.npdm");
@@ -108,6 +130,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
     override_update(override_update_), 
     is_hbl(is_hbl_)
 {
+    romfs = FindLooseRomFS(dir);
 }
 
 LoaderFileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::VirtualFile & dir_file)
@@ -171,24 +194,30 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
 
     const bool is_39bit = metadata.GetAddressSpaceType() == ProgramAddressSpaceType::Is39Bit;
     const bool is_application = metadata.GetPoolPartition() == PoolPartition::Application;
-    g_settings->SetBool(NXLoaderSetting::Has39BitAddressSpace, is_39bit);
-    LOG_INFO(Loader,
-             "Android NCE eligibility: title_id={:016X} address_space={} is_39bit={} pool={} is_application={} cpu_backend={} nce_enabled_after_metadata={}",
-             metadata.GetTitleID(), static_cast<int>(metadata.GetAddressSpaceType()), is_39bit,
-             static_cast<int>(metadata.GetPoolPartition()), is_application,
-             g_settings->GetInt(NXCpuSetting::CpuBackend),
-             g_settings->GetBool(NXCpuSetting::NceEnabled));
+    LOG_INFO(Loader, "Process CPU: AArch{}, address-space type {}",
+             metadata.Is64BitProgram() ? 64 : 32, static_cast<unsigned>(metadata.GetAddressSpaceType()));
+    // Disable eligibility while publishing the new process metadata.
+    g_settings->SetBool(NXCoreSetting::Is64BitProgram, false);
+    g_settings->SetBool(NXCoreSetting::Has36BitAddressSpace, metadata.GetAddressSpaceType() == ProgramAddressSpaceType::Is36Bit);
+    g_settings->SetBool(NXCoreSetting::Has39BitAddressSpace, metadata.GetAddressSpaceType() == ProgramAddressSpaceType::Is39Bit);
+    g_settings->SetBool(NXCoreSetting::Is64BitProgram, metadata.Is64BitProgram());
 
+    IOperatingSystem & operatingSystem = systemModules.OperatingSystem();
+
+    // Enable direct memory mapping in case of NCE.
+    uint64_t fastmem_base = 0;
+    if (is_application && g_settings->GetBool(NXCpuSetting::NceEnabled))
     {
-        std::ostringstream diag;
-        diag << "nceLoaderDiagnostics=metadata\n";
-        diag << "isApplication=" << (is_application ? "true" : "false") << "\n";
-        diag << "has39BitAddressSpace=" << (is_39bit ? "true" : "false") << "\n";
-        diag << "addressSpaceType=" << static_cast<int>(metadata.GetAddressSpaceType()) << "\n";
-        diag << "poolPartition=" << static_cast<int>(metadata.GetPoolPartition()) << "\n";
-        diag << "cpuBackendSetting=" << g_settings->GetInt(NXCpuSetting::CpuBackend) << "\n";
-        diag << "nceEnabledAfterMetadata=" << (g_settings->GetBool(NXCpuSetting::NceEnabled) ? "true" : "false");
-        SetLastNceLoaderDiagnostics(diag.str());
+        IDeviceMemory & buffer = operatingSystem.DeviceMemory();
+        buffer.EnableDirectMappedAddress();
+        fastmem_base = reinterpret_cast<uint64_t>(buffer.VirtualBasePointer());
+#if defined(__APPLE__)
+        if (fastmem_base == 0)
+        {
+            LOG_WARNING(Loader, "NCE address windows unavailable, falling back to Dynarmic before patching");
+            g_settings->SetBool(NXCpuSetting::NceEnabled, false);
+        }
+#endif
     }
 
     IPatchCollectionPtr patch_ctx(systemModules.Cpu().CreatePatchCollection(is_application));
@@ -198,6 +227,10 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     // Use the NSO module loader to figure out the code layout
     for (size_t i = 0; i < static_modules.size(); i++)
     {
+        if (loader.PrepareRomCancelled())
+        {
+            return {LoaderResultStatus::ErrorCancelled, {}};
+        }
         const auto& module = static_modules[i];
         const FileSys::VirtualFile module_file{dir->GetFile(module)};
         if (!module_file)
@@ -220,18 +253,6 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
         code_size = *tentative_next_load_addr;
     }
 
-    // Enable direct memory mapping in case of NCE.
-    const uint64_t fastmem_base = [&]() -> size_t
-    {
-        if (is_application && g_settings->GetBool(NXCpuSetting::NceEnabled))
-        {
-            auto& memory = systemModules.OperatingSystem().DeviceMemory();
-            memory.EnableDirectMappedAddress();
-            return reinterpret_cast<uint64_t>(memory.VirtualBasePointer());
-        }
-        return 0;
-    }();
-
     {
         std::ostringstream diag;
         diag << "nceLoaderDiagnostics=direct-map\n";
@@ -250,10 +271,9 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     code_size += patch_ctx ? patch_ctx->GetTotalPatchSize() : 0;
 
     // Setup the process code layout
-    IOperatingSystem & operatingSystem = systemModules.OperatingSystem();
     uint64_t base_address = 0;
     uint64_t processID = 0;
-    if (!operatingSystem.SetupCurrentProcess(code_size, metadata, base_address, processID, is_hbl))
+    if (!operatingSystem.SetupCurrentProcess(code_size, metadata, fastmem_base, base_address, processID, is_hbl))
     {
         return {LoaderResultStatus::ErrorUnableToParseKernelMetadata, {}};
     }
@@ -266,6 +286,10 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     const FileSys::PatchManager pm{metadata.GetTitleID(), loader.GetFileSystemController(), loader.GetContentProvider()};
     for (size_t i = 0; i < static_modules.size(); i++)
     {
+        if (loader.PrepareRomCancelled())
+        {
+            return {LoaderResultStatus::ErrorCancelled, {}};
+        }
         const auto& module = static_modules[i];
         const FileSys::VirtualFile module_file{dir->GetFile(module)};
         if (!module_file)
@@ -289,6 +313,12 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
         LOG_INFO(Loader, "loaded module {} @ {:#X}", module, load_addr);
     }
 
+    // A standalone ExeFS has no NCA loader to register its process for FS.
+    // Register the factory even if RomFS is absent, as the NRO loader does.
+    loader.GetFileSystemController().RegisterProcess(
+        processID, metadata.GetTitleID(),
+        std::make_shared<FileSys::RomFSFactory>(romfs, false, loader.GetContentProvider(),
+                                               loader.GetFileSystemController()));
     is_loaded = true;
     return {LoaderResultStatus::Success, LoadParameters{metadata.GetMainThreadPriority(), metadata.GetMainThreadStackSize(), base_address, processID}};
 }

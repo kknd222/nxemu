@@ -29,6 +29,7 @@
 #include "core/hle/kernel/svc_common.h"
 #include "core/hle/kernel/svc_types.h"
 #include "core/hle/result.h"
+#include "core/hle_execution_time.h"
 
 namespace Common
 {
@@ -144,6 +145,20 @@ private:
 
 public:
     static constexpr s32 DefaultThreadPriority = 44;
+    // Owned by this fiber, including suspension and migration between host threads.
+    Core::Timing::HleExecutionTime hle_execution;
+    // Serialized by the scheduler lock; dies with the actor instead of leaving
+    // an entry indexed by a monotonically increasing thread id.
+    u64 hle_available_time{};
+    void SuspendHleExecution() {
+        if (hle_execution.IsCollecting())
+            hle_execution.Suspend(Core::Timing::ReadNativeThreadTimeNs());
+    }
+    void ResumeHleExecution() {
+        if (hle_execution.IsCollecting())
+            hle_execution.Resume(Core::Timing::ReadNativeThreadTimeNs());
+    }
+
     static constexpr s32 IdleThreadPriority = Svc::LowestThreadPriority + 1;
     static constexpr s32 DummyThreadPriority = Svc::LowestThreadPriority + 2;
 
@@ -365,10 +380,7 @@ public:
         return m_parent;
     }
 
-    IKernelProcess * GetOwnerProcess() const override
-    {
-        return (IKernelProcess *)m_parent;
-    }
+    IKernelProcess * GetOwnerProcess() const override;
 
     bool IsUserThread() const
     {
@@ -629,7 +641,8 @@ public:
 
     void ClearDpc(DpcFlag flag)
     {
-        this->GetStackParameters().dpc_flags &= ~static_cast<u8>(flag);
+        this->GetStackParameters().dpc_flags = static_cast<u8>(
+            this->GetStackParameters().dpc_flags & ~static_cast<u8>(flag));
     }
 
     u8 GetDpc() const
@@ -678,6 +691,10 @@ public:
         return this->RemoveWaiterByKey(out_has_waiters, key, true);
     }
 
+    /// Finds a user lock that still has waiters on this thread. Used by the abandoned lock
+    /// handoff, see KConditionVariable::ReleaseAbandonedUserLocks.
+    bool FindHeldUserLockKey(KProcessAddress * out_key);
+
     KProcessAddress GetAddressKey() const
     {
         return m_address_key;
@@ -720,6 +737,7 @@ public:
     }
 
     void BeginWait(KThreadQueue * queue);
+    u64 GetWaitGeneration() const { return m_wait_generation; }
     void NotifyAvailable(KSynchronizationObject * signaled_object, Result wait_result);
     void EndWait(Result wait_result);
     void CancelWait(Result wait_result, bool cancel_timer_task);
@@ -758,18 +776,7 @@ public:
     }
 
 public:
-    // TODO: This shouldn't be defined in kernel namespace
-    struct NativeExecutionParameters
-    {
-        u64 tpidr_el0{};
-        u64 tpidrro_el0{};
-        void * native_context{};
-        std::atomic<u32> lock{1};
-        bool is_running{};
-        u32 magic{Common::MakeMagic('Y', 'U', 'Z', 'U')};
-    };
-
-    NativeExecutionParameters & GetNativeExecutionParameters()
+    NativeExecutionParameters & GetNativeExecutionParameters() override
     {
         return m_native_execution_parameters;
     }
@@ -1004,6 +1011,7 @@ private:
     s64 m_schedule_count{};
     s64 m_last_scheduled_tick{};
     std::array<QueueEntry, Hardware::NUM_CPU_CORES> m_per_core_priority_queue_entry{};
+    u64 m_wait_generation{}; // Protected by the scheduler lock.
     KThreadQueue * m_wait_queue{};
     LockWithPriorityInheritanceInfoList m_held_lock_info_list{};
     LockWithPriorityInheritanceInfo * m_waiting_lock_info{};

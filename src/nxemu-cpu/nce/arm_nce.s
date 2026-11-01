@@ -1,14 +1,14 @@
 ﻿/* SPDX-FileCopyrightText: Copyright 2023 yuzu Emulator Project */
 /* SPDX-License-Identifier: GPL-2.0-or-later */
 
-#include "core/arm/nce/arm_nce_asm_definitions.h"
+#include "nce/arm_nce_asm_definitions.h"
 
 #define LOAD_IMMEDIATE_32(reg, val)                     \
     mov     reg, #(((val) >> 0x00) & 0xFFFF);           \
     movk    reg, #(((val) >> 0x10) & 0xFFFF), lsl #16
 
 
-/* static HaltReason Core::ArmNce::ReturnToRunCodeByTrampoline(void* tpidr, Core::GuestContext* ctx, u64 trampoline_addr) */
+/* static Dynarmic::HaltReason Core::ArmNce::ReturnToRunCodeByTrampoline(void* tpidr, Core::GuestContext* ctx, u64 trampoline_addr) */
 .section    .text._ZN4Core6ArmNce27ReturnToRunCodeByTrampolineEPvPNS_12GuestContextEm, "ax", %progbits
 .global     _ZN4Core6ArmNce27ReturnToRunCodeByTrampolineEPvPNS_12GuestContextEm
 .type       _ZN4Core6ArmNce27ReturnToRunCodeByTrampolineEPvPNS_12GuestContextEm, %function
@@ -42,6 +42,11 @@ _ZN4Core6ArmNce27ReturnToRunCodeByTrampolineEPvPNS_12GuestContextEm:
     stp     q12, q13, [x5, #(HostContextVregs+0x40)]
     stp     q14, q15, [x5, #(HostContextVregs+0x60)]
 
+    /* Save host fpcr and fpsr. The guest state loaded by the trampoline replaces them. */
+    mrs     x6, fpcr
+    mrs     x7, fpsr
+    stp     w6, w7, [x5, #(HostContextFpcrFpsr)]
+
     /* Load guest tpidr_el0 from argument. */
     msr     tpidr_el0, x0
 
@@ -49,7 +54,7 @@ _ZN4Core6ArmNce27ReturnToRunCodeByTrampolineEPvPNS_12GuestContextEm:
     br      x2
 
 
-/* static HaltReason Core::ArmNce::ReturnToRunCodeByExceptionLevelChange(int tid, void* tpidr) */
+/* static Dynarmic::HaltReason Core::ArmNce::ReturnToRunCodeByExceptionLevelChange(int tid, void* tpidr) */
 .section    .text._ZN4Core6ArmNce37ReturnToRunCodeByExceptionLevelChangeEiPv, "ax", %progbits
 .global     _ZN4Core6ArmNce37ReturnToRunCodeByExceptionLevelChangeEiPv
 .type       _ZN4Core6ArmNce37ReturnToRunCodeByExceptionLevelChangeEiPv, %function

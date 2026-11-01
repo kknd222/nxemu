@@ -1,6 +1,5 @@
 #pragma once
 #include <stdint.h>
-#include <string>
 
 #if !defined(EXPORT) && defined(__cplusplus) && defined(_WIN32)
 #define EXPORT extern "C" __declspec(dllexport)
@@ -26,10 +25,13 @@
 
 enum
 {
-    MODULE_LOADER_SPECS_VERSION = 0x012E,
-    MODULE_VIDEO_SPECS_VERSION = 0x011E,
-    MODULE_CPU_SPECS_VERSION = 0x0114,
-    MODULE_OPERATING_SYSTEM_SPECS_VERSION = 0x011C,
+    // This integration preserves local virtual methods in addition to upstream
+    // interfaces. Reserve the high bit so official DLLs cannot be mixed with
+    // local module vtables, even when their upstream base version is identical.
+    MODULE_LOADER_SPECS_VERSION = 0x813A,
+    MODULE_VIDEO_SPECS_VERSION = 0x8129,
+    MODULE_CPU_SPECS_VERSION = 0x8121,
+    MODULE_OPERATING_SYSTEM_SPECS_VERSION = 0x812A,
 };
 
 enum MODULE_TYPE : uint16_t
@@ -44,6 +46,22 @@ enum class NotificationResponse : uint32_t
 {
     No = 0,
     Yes = 1,
+};
+
+// Native files under the configured NAND/SD mounts retain their emulated
+// device identity. Files mounted directly as game content use a separate
+// virtual-content device rather than their host PC's drive identity.
+enum class StorageReadDomain : uint32_t
+{
+    Content,
+    Nand,
+    SdCard,
+    Count
+};
+
+struct StorageReadTraffic
+{
+    uint64_t bytes[static_cast<uint32_t>(StorageReadDomain::Count)]{};
 };
 
 nxinterface IModuleNotification
@@ -72,7 +90,7 @@ nxinterface IModuleSettings
     virtual void SetDefaultString(const char * setting, const char * value) = 0;
 
     virtual const char * GetSectionSettings(const char * section) const = 0;
-    virtual void SetSectionSettings(const char * section, const std::string & json) = 0;
+    virtual void SetSectionSettings(const char * section, const char * json) = 0;
 
     virtual void RegisterCallback(const char * setting, SettingChangeCallback callback, void * userData) = 0;
     virtual void UnregisterCallback(const char * setting, SettingChangeCallback callback, void * userData) = 0;
@@ -225,9 +243,20 @@ typedef struct
     char name[200];   // Name of the DLL
 } MODULE_INFO;
 
+enum class RenderWindowSystem : uint32_t
+{
+    Default = 0,
+    Windows,
+    Wayland,
+    Cocoa,
+    Android,
+};
+
 nxinterface IRenderWindow
 {
     virtual void * RenderSurface(void) const = 0;
+    virtual void * DisplayConnection(void) const = 0;
+    virtual RenderWindowSystem WindowSystem(void) const = 0;
     virtual float PixelRatio(void) const = 0;
 };
 
@@ -306,7 +335,8 @@ nxinterface ISystemModules
 {
     virtual void StartEmulation() = 0;
     virtual void StopEmulation(bool wait) = 0;
-
+    virtual bool IsValid() const = 0;
+    
     virtual ISystemloader & Systemloader() = 0;
     virtual IOperatingSystem & OperatingSystem() = 0;
     virtual IVideo & Video() = 0;

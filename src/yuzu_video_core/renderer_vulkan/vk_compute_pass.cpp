@@ -20,7 +20,10 @@
 #include "yuzu_video_core/host_shaders/queries_prefix_scan_sum_nosubgroups_comp_spv.h"
 #include "yuzu_video_core/host_shaders/resolve_conditional_render_comp_spv.h"
 #include "yuzu_video_core/host_shaders/vulkan_quad_indexed_comp_spv.h"
+#include "yuzu_video_core/host_shaders/vulkan_readback_delta_comp_spv.h"
 #include "yuzu_video_core/host_shaders/vulkan_uint8_comp_spv.h"
+#include "yuzu_video_core/host_shaders/vulkan_indirect_count_comp_spv.h"
+#include "yuzu_video_core/host_shaders/vulkan_vtg_indirect_comp_spv.h"
 #include "yuzu_video_core/renderer_vulkan/vk_compute_pass.h"
 #include "yuzu_video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "yuzu_video_core/renderer_vulkan/vk_scheduler.h"
@@ -96,6 +99,23 @@ constexpr DescriptorBankInfo INPUT_OUTPUT_BANK_INFO{
     .textures = 0,
     .images = 0,
     .score = 2,
+};
+
+constexpr std::array<VkDescriptorSetLayoutBinding, 4> READBACK_DELTA_BINDINGS{{
+    {0, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {2, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+    {3, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1, VK_SHADER_STAGE_COMPUTE_BIT, nullptr},
+}};
+constexpr std::array<VkDescriptorUpdateTemplateEntry, 4> READBACK_DELTA_TEMPLATES{{
+    {0, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 0 * sizeof(VkDescriptorBufferInfo), sizeof(VkDescriptorBufferInfo)},
+    {1, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 1 * sizeof(VkDescriptorBufferInfo), sizeof(VkDescriptorBufferInfo)},
+    {2, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 2 * sizeof(VkDescriptorBufferInfo), sizeof(VkDescriptorBufferInfo)},
+    {3, 0, 1, VK_DESCRIPTOR_TYPE_STORAGE_BUFFER, 3 * sizeof(VkDescriptorBufferInfo), sizeof(VkDescriptorBufferInfo)},
+}};
+constexpr DescriptorBankInfo READBACK_DELTA_BANK{
+    .uniform_buffers = 0, .storage_buffers = 4, .texture_buffers = 0,
+    .image_buffers = 0, .textures = 0, .images = 0, .score = 4,
 };
 
 constexpr DescriptorBankInfo QUERIES_SCAN_BANK_INFO{
@@ -280,7 +300,7 @@ ComputePass::ComputePass(const Device& device_, DescriptorPool& descriptor_pool,
         .pNext = nullptr,
         .requiredSubgroupSize = optional_subgroup_size ? *optional_subgroup_size : 32U,
     };
-    bool use_setup_size = device.IsExtSubgroupSizeControlSupported() && optional_subgroup_size;
+    bool use_setup_size = device.CanRequestComputeSubgroupSize() && optional_subgroup_size;
     pipeline = device.GetLogical().CreateComputePipeline({
         .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
         .pNext = nullptr,
@@ -302,6 +322,121 @@ ComputePass::ComputePass(const Device& device_, DescriptorPool& descriptor_pool,
 
 ComputePass::~ComputePass() = default;
 
+IndirectCountPass::IndirectCountPass(const Device& device_, Scheduler& scheduler_,
+                                       DescriptorPool& pool)
+    : ComputePass(device_, pool, QUERIES_SCAN_DESCRIPTOR_SET_BINDINGS,
+                  QUERIES_SCAN_DESCRIPTOR_UPDATE_TEMPLATE, QUERIES_SCAN_BANK_INFO,
+                  COMPUTE_PUSH_CONSTANT_RANGE<4 * sizeof(u32)>, VULKAN_INDIRECT_COUNT_COMP_SPV),
+      scheduler{scheduler_} {}
+
+void IndirectCountPass::Convert(VkBuffer source, u64 source_offset, VkBuffer count,
+                                u64 count_offset, VkBuffer destination, u64 destination_offset,
+                                u32 max_draws, u32 stride) {
+    const u64 alignment = device.GetStorageBufferAlignment();
+    const u64 source_base = source_offset - source_offset % alignment;
+    const u64 count_base = count_offset - count_offset % alignment;
+    const std::array<VkDescriptorBufferInfo, 3> descriptors{{
+        {source, source_base, source_offset - source_base + u64{stride} * (max_draws - 1) + 20},
+        {count, count_base, count_offset - count_base + sizeof(u32)},
+        {destination, destination_offset, u64{max_draws} * 20},
+    }};
+    const std::array<u32, 4> parameters{
+        static_cast<u32>((source_offset - source_base) / 4),
+        static_cast<u32>((count_offset - count_base) / 4), max_draws, stride / 4};
+    scheduler.RecordWithUploadBuffer([this, descriptors, parameters](vk::CommandBuffer,
+                                                                    vk::CommandBuffer upload) {
+        // Include previous submissions, even when guest barriers are recorded
+        // later in the main buffer. The caller excludes current-context writes.
+        std::array<VkBufferMemoryBarrier, 2> before{};
+        for (size_t index = 0; index < before.size(); ++index) {
+            before[index] = {VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr,
+                             VK_ACCESS_MEMORY_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                             VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+                             descriptors[index].buffer, descriptors[index].offset,
+                             descriptors[index].range};
+        }
+        upload.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                               VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, {}, before, {});
+        const auto set = descriptor_allocator.Commit();
+        device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptors.data());
+        upload.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
+        upload.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
+        upload.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(parameters), &parameters);
+        upload.Dispatch(Common::DivCeil(parameters[2], 64U), 1, 1);
+        const VkBufferMemoryBarrier after{
+            VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER, nullptr, VK_ACCESS_SHADER_WRITE_BIT,
+            VK_ACCESS_INDIRECT_COMMAND_READ_BIT, VK_QUEUE_FAMILY_IGNORED, VK_QUEUE_FAMILY_IGNORED,
+            descriptors[2].buffer, descriptors[2].offset, descriptors[2].range};
+        upload.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                               VK_PIPELINE_STAGE_DRAW_INDIRECT_BIT, 0, {}, after, {});
+    });
+}
+
+VtgIndirectPass::VtgIndirectPass(const Device& device_, DescriptorPool& pool)
+    : ComputePass(device_, pool, READBACK_DELTA_BINDINGS, READBACK_DELTA_TEMPLATES,
+                  READBACK_DELTA_BANK, COMPUTE_PUSH_CONSTANT_RANGE<5 * sizeof(u32)>,
+                  VULKAN_VTG_INDIRECT_COMP_SPV) {}
+
+void VtgIndirectPass::Record(vk::CommandBuffer cmdbuf,
+                             const std::array<VkDescriptorBufferInfo, 4>& buffers,
+                             const std::array<u32, 5>& parameters) {
+    const VkDescriptorSet set = descriptor_allocator.Commit();
+    device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, buffers.data());
+    cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
+    cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
+    cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(parameters),
+                         parameters.data());
+    cmdbuf.Dispatch(1, 1, 1);
+}
+
+ReadbackDeltaPass::ReadbackDeltaPass(const Device& device_, Scheduler& scheduler_,
+                                   DescriptorPool& pool, ComputePassDescriptorQueue& queue_)
+    : ComputePass(device_, pool, READBACK_DELTA_BINDINGS, READBACK_DELTA_TEMPLATES,
+                  READBACK_DELTA_BANK, COMPUTE_PUSH_CONSTANT_RANGE<8 * sizeof(u32)>,
+                  VULKAN_READBACK_DELTA_COMP_SPV), scheduler{scheduler_}, queue{queue_} {}
+
+void ReadbackDeltaPass::Copy(VkBuffer source, VkBuffer reference, VkBuffer destination,
+                            VkBuffer flags, u64 source_offset, u64 destination_offset,
+                            u64 size, u64 flag_offset, u64 flags_size,
+                            const std::array<u32, 4>& valid_mask) {
+    const u64 alignment = device.GetStorageBufferAlignment();
+    const u64 src_aligned = Common::AlignDown(source_offset, alignment);
+    const u64 dst_aligned = Common::AlignDown(destination_offset, alignment);
+    queue.Acquire(4);
+    queue.AddBuffer(source, src_aligned, size + source_offset - src_aligned);
+    queue.AddBuffer(reference, src_aligned, size + source_offset - src_aligned);
+    queue.AddBuffer(destination, dst_aligned, size + destination_offset - dst_aligned);
+    queue.AddBuffer(flags, 0, flags_size);
+    const void* descriptors = queue.UpdateData();
+    const std::array<u32, 8> parameters{
+        static_cast<u32>(size / 4), static_cast<u32>((source_offset - src_aligned) / 4),
+        static_cast<u32>((destination_offset - dst_aligned) / 4), static_cast<u32>(flag_offset / 4),
+        valid_mask[0], valid_mask[1], valid_mask[2], valid_mask[3],
+    };
+    scheduler.RequestOutsideRenderPassOperationContext();
+    scheduler.Record([this, descriptors, parameters](vk::CommandBuffer cb) {
+        // Serialize reference reads/updates across queued epochs, and make every
+        // original producer visible. Source usage tracking still prevents upload reorder.
+        const VkMemoryBarrier before{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                                    VK_ACCESS_MEMORY_WRITE_BIT | VK_ACCESS_MEMORY_READ_BIT,
+                                    VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT};
+        cb.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                           VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, before);
+        const auto set = descriptor_allocator.Commit();
+        device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptors);
+        cb.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
+        cb.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
+        cb.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, 0, sizeof(parameters), &parameters);
+        cb.Dispatch(Common::DivCeil(parameters[0], 16384U), 1, 1);
+        const VkMemoryBarrier after{VK_STRUCTURE_TYPE_MEMORY_BARRIER, nullptr,
+                                   VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT,
+                                   VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT |
+                                       VK_ACCESS_HOST_READ_BIT};
+        cb.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
+                           VK_PIPELINE_STAGE_ALL_COMMANDS_BIT | VK_PIPELINE_STAGE_HOST_BIT, 0, after);
+    });
+}
+
 Uint8Pass::Uint8Pass(const Device& device_, Scheduler& scheduler_, DescriptorPool& descriptor_pool,
                      StagingBufferPool& staging_buffer_pool_,
                      ComputePassDescriptorQueue& compute_pass_descriptor_queue_)
@@ -318,7 +453,7 @@ std::pair<VkBuffer, VkDeviceSize> Uint8Pass::Assemble(u32 num_vertices, VkBuffer
     const u32 staging_size = static_cast<u32>(num_vertices * sizeof(u16));
     const auto staging = staging_buffer_pool.Request(staging_size, MemoryUsage::DeviceLocal);
 
-    compute_pass_descriptor_queue.Acquire();
+    compute_pass_descriptor_queue.Acquire(2);
     compute_pass_descriptor_queue.AddBuffer(src_buffer, src_offset, num_vertices);
     compute_pass_descriptor_queue.AddBuffer(staging.buffer, staging.offset, staging_size);
     const void* const descriptor_data{compute_pass_descriptor_queue.UpdateData()};
@@ -330,7 +465,7 @@ std::pair<VkBuffer, VkDeviceSize> Uint8Pass::Assemble(u32 num_vertices, VkBuffer
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
             .srcAccessMask = VK_ACCESS_SHADER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT,
+            .dstAccessMask = VK_ACCESS_INDEX_READ_BIT,
         };
         const VkDescriptorSet set = descriptor_allocator.Commit();
         device.GetLogical().UpdateDescriptorSet(set, *descriptor_template, descriptor_data);
@@ -376,7 +511,7 @@ std::pair<VkBuffer, VkDeviceSize> QuadIndexedPass::Assemble(
     const std::size_t staging_size = num_tri_vertices * sizeof(u32);
     const auto staging = staging_buffer_pool.Request(staging_size, MemoryUsage::DeviceLocal);
 
-    compute_pass_descriptor_queue.Acquire();
+    compute_pass_descriptor_queue.Acquire(2);
     compute_pass_descriptor_queue.AddBuffer(src_buffer, src_offset, input_size);
     compute_pass_descriptor_queue.AddBuffer(staging.buffer, staging.offset, staging_size);
     const void* const descriptor_data{compute_pass_descriptor_queue.UpdateData()};
@@ -417,7 +552,7 @@ void ConditionalRenderingResolvePass::Resolve(VkBuffer dst_buffer, VkBuffer src_
                                               u32 src_offset, bool compare_to_zero) {
     const size_t compare_size = compare_to_zero ? 8 : 24;
 
-    compute_pass_descriptor_queue.Acquire();
+    compute_pass_descriptor_queue.Acquire(2);
     compute_pass_descriptor_queue.AddBuffer(src_buffer, src_offset, compare_size);
     compute_pass_descriptor_queue.AddBuffer(dst_buffer, 0, sizeof(u32));
     const void* const descriptor_data{compute_pass_descriptor_queue.UpdateData()};
@@ -473,7 +608,7 @@ void QueriesPrefixScanPass::Run(VkBuffer accumulation_buffer, VkBuffer dst_buffe
         static constexpr size_t DISPATCH_SIZE = 2048U;
         size_t runs_to_do = std::min<size_t>(current_runs, DISPATCH_SIZE);
         current_runs -= runs_to_do;
-        compute_pass_descriptor_queue.Acquire();
+        compute_pass_descriptor_queue.Acquire(QUERIES_SCAN_DESCRIPTOR_SET_BINDINGS.size());
         compute_pass_descriptor_queue.AddBuffer(src_buffer, 0, number_of_sums * sizeof(u64));
         compute_pass_descriptor_queue.AddBuffer(dst_buffer, 0, number_of_sums * sizeof(u64));
         compute_pass_descriptor_queue.AddBuffer(accumulation_buffer, 0, sizeof(u64));
@@ -516,7 +651,7 @@ void QueriesPrefixScanPass::Run(VkBuffer accumulation_buffer, VkBuffer dst_buffe
             cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, uniforms);
             cmdbuf.Dispatch(1, 1, 1);
             cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
-                                   VK_PIPELINE_STAGE_CONDITIONAL_RENDERING_BIT_EXT, 0,
+                                   VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0,
                                    write_barrier);
         });
     }
@@ -580,7 +715,7 @@ void ASTCDecoderPass::Assemble(Image& image, const StagingBufferRef& map,
         const u32 num_dispatches_y = Common::DivCeil(swizzle.num_tiles.height, 8U);
         const u32 num_dispatches_z = image.info.resources.layers;
 
-        compute_pass_descriptor_queue.Acquire();
+        compute_pass_descriptor_queue.Acquire(2);
         compute_pass_descriptor_queue.AddBuffer(map.buffer, input_offset,
                                                 image.guest_size_bytes - swizzle.buffer_offset);
         compute_pass_descriptor_queue.AddImage(image.StorageImageView(swizzle.level));
@@ -685,7 +820,7 @@ void MSAACopyPass::CopyImage(Image& dst_image, Image& src_image,
         ASSERT(copy.dst_subresource.base_layer == 0);
         ASSERT(copy.dst_subresource.num_layers == 1);
 
-        compute_pass_descriptor_queue.Acquire();
+        compute_pass_descriptor_queue.Acquire(2);
         compute_pass_descriptor_queue.AddImage(
             src_image.StorageImageView(copy.src_subresource.base_level));
         compute_pass_descriptor_queue.AddImage(

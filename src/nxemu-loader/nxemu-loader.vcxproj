@@ -132,6 +132,8 @@
     <ClInclude Include="core\loader\xci.h" />
     <ClInclude Include="loader_settings.h" />
     <ClInclude Include="loader_settings_identifiers.h" />
+    <ClInclude Include="firmware_install.h" />
+    <ClInclude Include="game_list_cache.h" />
     <ClInclude Include="rom_info.h" />
     <ClInclude Include="system_loader.h" />
   </ItemGroup>
@@ -203,9 +205,11 @@
     <ClCompile Include="core\loader\nso.cpp" />
     <ClCompile Include="core\loader\nsp.cpp" />
     <ClCompile Include="core\loader\xci.cpp" />
+    <ClCompile Include="firmware_install.cpp" />
     <ClCompile Include="firmware_zip.cpp" />
     <ClCompile Include="loader_settings.cpp" />
     <ClCompile Include="nxemu-loader.cpp" />
+    <ClCompile Include="game_list_cache.cpp" />
     <ClCompile Include="rom_info.cpp" />
     <ClCompile Include="system_loader.cpp" />
   </ItemGroup>
@@ -221,6 +225,9 @@
     </ProjectReference>
     <ProjectReference Include="..\common\common.vcxproj">
       <Project>{ec81be93-8316-4db6-8a26-b13fb5b13848}</Project>
+    </ProjectReference>
+    <ProjectReference Include="..\nx_tzdb\nx_tzdb.vcxproj">
+      <Project>{93a649b4-9e40-44a4-80a5-5eafa3af6024}</Project>
     </ProjectReference>
     <ProjectReference Include="..\yuzu_common\yuzu_common.vcxproj">
       <Project>{250224f2-2e89-410e-8bdb-875959daba2c}</Project>

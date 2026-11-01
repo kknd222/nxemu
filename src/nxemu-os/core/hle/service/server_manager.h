@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <atomic>
 #include <list>
 #include <mutex>
 #include <optional>
@@ -74,6 +75,9 @@ private:
 
     // Events
     Kernel::KEvent* m_wakeup_event{};
+    // Manual-reset, signaled only at shutdown. Completion waits must never
+    // consume or clear the selection queue's notification.
+    Kernel::KEvent* m_shutdown_event{};
     Kernel::KEvent* m_deferral_event{};
 
     // Deferred wait list
@@ -85,6 +89,7 @@ private:
     Common::IntrusiveListBaseTraits<Port>::ListType m_servers{};
     Common::IntrusiveListBaseTraits<Session>::ListType m_sessions{};
     std::list<Session*> m_deferred_sessions{};
+    std::atomic<u64> m_deferral_generation{};
     std::optional<MultiWaitHolder> m_wakeup_holder{};
     std::optional<MultiWaitHolder> m_deferral_holder{};
 

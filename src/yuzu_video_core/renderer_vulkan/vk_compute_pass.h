@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <array>
 #include <optional>
 #include <span>
 #include <utility>
@@ -47,6 +48,43 @@ protected:
 
 private:
     vk::ShaderModule module;
+};
+
+class ReadbackDeltaPass final : public ComputePass {
+public:
+    ReadbackDeltaPass(const Device& device, Scheduler& scheduler, DescriptorPool& pool,
+                     ComputePassDescriptorQueue& queue);
+    void Copy(VkBuffer source, VkBuffer reference, VkBuffer destination, VkBuffer flags,
+              u64 source_offset, u64 destination_offset, u64 size, u64 flag_offset,
+              u64 flags_size, const std::array<u32, 4>& valid_mask);
+private:
+    Scheduler& scheduler;
+    ComputePassDescriptorQueue& queue;
+};
+
+// Prepares indexed indirect counts on the upload command buffer. The caller
+// must exclude inputs written by the current main command buffer.
+class IndirectCountPass final : public ComputePass {
+public:
+    IndirectCountPass(const Device& device, Scheduler& scheduler, DescriptorPool& pool);
+    void Convert(VkBuffer source, u64 source_offset, VkBuffer count, u64 count_offset,
+                 VkBuffer destination, u64 destination_offset, u32 max_draws, u32 stride);
+
+private:
+    Scheduler& scheduler;
+};
+
+/// Prepares an indirect draw whose vertex and geometry stages run as compute
+class VtgIndirectPass final : public ComputePass {
+public:
+    VtgIndirectPass(const Device& device, DescriptorPool& pool);
+
+    /// Records the preparation. The buffers are the draw arguments, the draw information read by
+    /// the stages, the dispatch and draw commands, and the capacity feedback. The parameters are
+    /// the first argument word, the topology, the capacity in vertices, the indices per
+    /// primitive and the mask the guest macro applies to the instance count.
+    void Record(vk::CommandBuffer cmdbuf, const std::array<VkDescriptorBufferInfo, 4>& buffers,
+                const std::array<u32, 5>& parameters);
 };
 
 class Uint8Pass final : public ComputePass {

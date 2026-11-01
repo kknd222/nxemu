@@ -14,11 +14,21 @@ set(GLSL_INCLUDES
 )
 
 set(SHADER_FILES
+    vulkan_indirect_count.comp
+    vulkan_vtg_indirect.comp
     astc_decoder.comp
     blit_color_float.frag
+    blit_color_msaa.frag
+    blit_color_msaa_sint.frag
+    blit_color_msaa_uint.frag
+    blit_depth_msaa.frag
+    blit_depth_stencil_msaa.frag
     block_linear_unswizzle_2d.comp
     block_linear_unswizzle_3d.comp
     convert_abgr8_to_d24s8.frag
+    convert_abgr8_to_d24s8_depth.frag
+    convert_abgr8_to_s8d24.frag
+    convert_abgr8_to_s8d24_depth.frag
     convert_abgr8_to_d32f.frag
     convert_d32f_to_abgr8.frag
     convert_d24s8_to_abgr8.frag
@@ -26,6 +36,13 @@ set(SHADER_FILES
     convert_float_to_depth.frag
     convert_msaa_to_non_msaa.comp
     convert_non_msaa_to_msaa.comp
+    convert_non_msaa_to_msaa.frag
+    convert_non_msaa_to_msaa_sint.frag
+    convert_non_msaa_to_msaa_uint.frag
+    convert_non_msaa_to_msaa_depth.frag
+    convert_non_msaa_to_msaa_depth_stencil.frag
+    convert_packed_depth_to_msaa.frag
+    convert_packed_depth_stencil_to_msaa.frag
     convert_s8d24_to_abgr8.frag
     full_screen_triangle.vert
     fxaa.frag
@@ -54,6 +71,8 @@ set(SHADER_FILES
     smaa_neighborhood_blending.frag
     vulkan_blit_depth_stencil.frag
     vulkan_color_clear.frag
+    vulkan_color_clear_sint.frag
+    vulkan_color_clear_uint.frag
     vulkan_color_clear.vert
     vulkan_depthstencil_clear.frag
     vulkan_fidelityfx_fsr.vert
@@ -66,13 +85,14 @@ set(SHADER_FILES
     vulkan_present_scaleforce_fp16.frag
     vulkan_present_scaleforce_fp32.frag
     vulkan_quad_indexed.comp
+    vulkan_readback_delta.comp
     vulkan_turbo_mode.comp
     vulkan_uint8.comp
     watermark.frag
     watermark.vert
 )
 
-find_program(GLSLANGVALIDATOR "glslangValidator")
+find_program(GLSLANGVALIDATOR "glslangValidator" HINTS "$ENV{VULKAN_SDK}/Bin")
 if ("${GLSLANGVALIDATOR}" STREQUAL "GLSLANGVALIDATOR-NOTFOUND")
     message(FATAL_ERROR "Required program `glslangValidator` not found.")
 endif()

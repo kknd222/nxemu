@@ -38,6 +38,11 @@ struct ResolutionScalingInfo
 void UpdateGPUAccuracy();
 bool IsGPULevelExtreme();
 bool IsGPULevelHigh();
+bool IsDMALevelDefault();
+bool IsDMALevelSafe();
+bool UseSafeDMAReads();
+bool IsGpuCommandSynchronizationEnabled();
+bool IsGpuReadbackExact();
 void TranslateResolutionInfo(ResolutionSetup setup, ResolutionScalingInfo & info);
 void UpdateRescalingInfo();
 
@@ -50,6 +55,8 @@ struct VideoSettings
     int32_t vulkan_device;
 
     bool use_disk_shader_cache;
+    // Records which pipelines a game uses, so they can be exported as a .nxshader profile.
+    bool record_shader_recipes;
     bool use_asynchronous_gpu_emulation;
     VSyncMode vsync_mode;
     NvdecEmulation nvdec_emulation;
@@ -72,11 +79,17 @@ struct VideoSettings
     bool renderer_force_max_clock;
     AstcDecodeMode accelerate_astc;
     GpuAccuracy gpu_accuracy;
+    int32_t dma_accuracy;
     AnisotropyMode max_anisotropy;
     bool async_presentation;
     bool use_reactive_flushing;
+    bool gpu_command_synchronization;
+    bool fast_gpu_readback;
 
     bool use_asynchronous_shaders;
+    int32_t nxshader_warmup_mode;
+    int32_t nxshader_initial_minimum;
+    int32_t nxshader_initial_seconds;
     bool use_fast_gpu_time;
     bool use_vulkan_driver_pipeline_cache;
     bool enable_compute_pipelines;

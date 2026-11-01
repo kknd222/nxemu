@@ -174,15 +174,7 @@ public:
             return true;
         }
 
-#ifdef tofix
-        const auto match{m_parent.MatchingWatchpoint(addr, size, type) };
-        if (match)
-        {
-            m_parent.m_halted_watchpoint = match;
-            m_parent.m_jit->HaltExecution(Core::DataAbort);
-            return false;
-        }
-#endif
+        UNIMPLEMENTED();
         return true;
     }
 
@@ -246,9 +238,14 @@ std::shared_ptr<Dynarmic::A32::Jit> ArmDynarmic32::MakeJit(IKernelProcess & proc
         config.check_halt_on_memory_access = true;
     }
 
+#if !defined(NDEBUG)
+    config.optimizations &= ~Dynarmic::OptimizationFlag::DisableVerification;
+#endif
+
     // Safe optimizations
     if (cpuSettings.cpu_debug_mode)
     {
+        config.optimizations &= ~Dynarmic::OptimizationFlag::DisableVerification;
         if (!cpuSettings.cpuopt_page_tables)
         {
             config.page_table = nullptr;
@@ -528,7 +525,7 @@ void ArmDynarmic32::ClearInstructionCache()
     m_jit->ClearCache();
 }
 
-void ArmDynarmic32::InvalidateCacheRange(u64 addr, std::size_t size)
+void ArmDynarmic32::InvalidateCacheRange(uint64_t addr, uint64_t size)
 {
     m_jit->InvalidateCacheRange(static_cast<u32>(addr), size);
 }

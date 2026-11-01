@@ -9,6 +9,7 @@
 #include <memory>
 #include <mutex>
 #include <span>
+#include <stop_token>
 #include <string>
 #include <vector>
 
@@ -71,6 +72,7 @@ class ARPManager;
 }
 
 class ServerManager;
+class Event;
 
 namespace SM {
 class ServiceManager;
@@ -153,13 +155,14 @@ public:
     System(System &&) = delete;
     System & operator=(System &&) = delete;
 
-    void InitializeKernel(uint64_t titleID);
+    void InitializeKernel(uint64_t titleID, bool is_64_bit = true);
 
     /**
      * Initializes the system
      * This function will initialize core functionality used for system emulation
      */
     void Initialize();
+    void InitializeInput();
 
     /**
      * Run the OS and Application
@@ -188,6 +191,7 @@ public:
     /// Forcibly detach the debugger if it is running.
     void DetachDebugger();
 
+    [[nodiscard]] std::stop_token GetShutdownToken() const;
     std::unique_lock<std::mutex> StallApplication();
     void UnstallApplication();
 
@@ -221,7 +225,7 @@ public:
 
     std::span<GPUDirtyMemoryManager> GetGPUDirtyMemoryManager();
 
-    void GatherGPUDirtyMemory(ICacheInvalidator * invalidator);
+    void GatherGPUDirtyMemory(ICacheInvalidator * invalidator, bool rearm_native_reads = true);
 
     ISystemModules & GetSystemModules();
     IVideo & GetVideo();
@@ -403,6 +407,9 @@ public:
      * It is used to transfer data between programs.
      */
     [[nodiscard]] std::deque<std::vector<u8>> & GetUserChannel();
+    void PushGeneralChannelData(std::vector<u8>&& data);
+    bool TryPopGeneralChannel(std::vector<u8>& out_data);
+    [[nodiscard]] Service::Event& GetGeneralChannelEvent();
 
     /**
      * Registers a callback from the frontend for System to exit the application.

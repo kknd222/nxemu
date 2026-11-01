@@ -1,5 +1,39 @@
-﻿<?xml version="1.0" encoding="utf-8"?>
+<?xml version="1.0" encoding="utf-8"?>
 <Project ToolsVersion="4.0" xmlns="http://schemas.microsoft.com/developer/msbuild/2003">
+  <ItemGroup>
+    <ClInclude Include="shader_profile_export.h"><Filter>Header Files</Filter></ClInclude>
+    <ClCompile Include="shader_profile_export.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="shader_profile_discovery.h"><Filter>Header Files</Filter></ClInclude>
+    <ClCompile Include="shader_profile_discovery.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="shader_profile_compact.h"><Filter>Header Files</Filter></ClInclude>
+    <ClCompile Include="shader_profile_compact.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClInclude Include="shader_profile_journal.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="renderer_vulkan\guest_pipeline_recorder.h"><Filter>Header Files\renderer_vulkan</Filter></ClInclude>
+    <ClInclude Include="renderer_vulkan\guest_recipe_input_cache.h"><Filter>Header Files\renderer_vulkan</Filter></ClInclude>
+    <ClInclude Include="pipeline_cache_store.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_audit.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_location.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_runtime.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_sph.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_import_status.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_identity.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_file_stamp.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_context.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_provenance.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_publication.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_candidate_budget.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_reuse.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shared_shader_bytes.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_text.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_validation.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="renderer_vulkan\startup_pipeline_variants.h"><Filter>Header Files\renderer_vulkan</Filter></ClInclude>
+    <ClInclude Include="shader_profile.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="shader_profile_codec.h"><Filter>Header Files</Filter></ClInclude>
+    <ClInclude Include="renderer_vulkan\guest_pipeline_recipe_probe.h"><Filter>Header Files\renderer_vulkan</Filter></ClInclude>
+    <ClCompile Include="pipeline_cache_store.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="shader_profile.cpp"><Filter>Source Files</Filter></ClCompile>
+    <ClCompile Include="shader_profile_codec.cpp"><Filter>Source Files</Filter></ClCompile>
+  </ItemGroup>
   <ItemGroup>
     <Filter Include="Source Files">
       <UniqueIdentifier>{4FC737F1-C7A5-4376-A066-2A32D752A2FF}</UniqueIdentifier>
@@ -243,6 +277,9 @@
     <ClInclude Include="query_cache\bank_base.h">
       <Filter>Header Files\query_cache</Filter>
     </ClInclude>
+    <ClInclude Include="query_cache\query_bank_operations.h">
+      <Filter>Header Files\query_cache</Filter>
+    </ClInclude>
     <ClInclude Include="query_cache\query_base.h">
       <Filter>Header Files\query_cache</Filter>
     </ClInclude>
@@ -267,10 +304,16 @@
     <ClInclude Include="cache_types.h">
       <Filter>Header Files</Filter>
     </ClInclude>
+    <ClInclude Include="flush_region_cache_filter.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
     <ClInclude Include="capture.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="cdma_pusher.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="composite_request.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="compatible_formats.h">
@@ -468,6 +511,18 @@
     <ClInclude Include="renderer_vulkan\vk_compute_pass.h">
       <Filter>Header Files\renderer_vulkan</Filter>
     </ClInclude>
+    <ClInclude Include="renderer_vulkan\descriptor_limits.h">
+      <Filter>Header Files\renderer_vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="renderer_vulkan\descriptor_payload.h">
+      <Filter>Header Files\renderer_vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="renderer_vulkan\descriptor_lookup.h">
+      <Filter>Header Files\renderer_vulkan</Filter>
+    </ClInclude>
+    <ClInclude Include="renderer_vulkan\cbuf_size_dependencies.h">
+      <Filter>Header Files\renderer_vulkan</Filter>
+    </ClInclude>
     <ClInclude Include="renderer_vulkan\vk_compute_pipeline.h">
       <Filter>Header Files\renderer_vulkan</Filter>
     </ClInclude>
@@ -573,6 +628,9 @@
     <ClInclude Include="texture_cache\image_info.h">
       <Filter>Header Files\texture_cache</Filter>
     </ClInclude>
+    <ClInclude Include="texture_cache\mip_levels.h">
+      <Filter>Header Files\texture_cache</Filter>
+    </ClInclude>
     <ClInclude Include="texture_cache\image_view_base.h">
       <Filter>Header Files\texture_cache</Filter>
     </ClInclude>
@@ -630,6 +688,9 @@
     <ClInclude Include="vulkan_common\vulkan_device.h">
       <Filter>Header Files\vulkan_common</Filter>
     </ClInclude>
+    <ClInclude Include="vulkan_common\moltenvk_workarounds.h">
+      <Filter>Header Files\vulkan_common</Filter>
+    </ClInclude>
     <ClInclude Include="vulkan_common\vulkan_instance.h">
       <Filter>Header Files\vulkan_common</Filter>
     </ClInclude>
@@ -668,6 +729,9 @@
     </ClInclude>
     <ClInclude Include="watermark.h">
       <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="renderer_vulkan\vk_display.h">
+      <Filter>Header Files\renderer_vulkan</Filter>
     </ClInclude>
   </ItemGroup>
   <ItemGroup>
@@ -1084,6 +1148,9 @@
     </ClCompile>
     <ClCompile Include="watermark.cpp">
       <Filter>Source Files</Filter>
+    </ClCompile>
+    <ClCompile Include="renderer_vulkan\vk_display.cpp">
+      <Filter>Source Files\renderer_vulkan</Filter>
     </ClCompile>
   </ItemGroup>
 </Project>

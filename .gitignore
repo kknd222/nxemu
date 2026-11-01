@@ -22,6 +22,9 @@
 *.o
 
 Thumbs.db
+.DS_Store
+__pycache__/
+*.pyc
 /.vs
 /bin
 /build
@@ -49,6 +52,7 @@ Thumbs.db
 /git.properties
 /ipch
 /modules
+/package
 /src/nxemu-core/version.h
 /src/nxemu-video/version.h
 /src/nxemu-cpu/version.h
@@ -69,5 +73,6 @@ src/android/local.properties
 src/android/*.iml
 src/android/app/*.iml
 
+# Python bytecode
 __pycache__/
 *.pyc

@@ -57,6 +57,7 @@ public:
                     KernelCapabilityDescriptors capabilities);
 
     bool Is64BitProgram() const;
+    bool IsSwitch2() const { return is_switch2; }
     ProgramAddressSpaceType GetAddressSpaceType() const;
     u8 GetMainThreadPriority() const;
     u8 GetMainThreadCore() const;
@@ -161,6 +162,7 @@ private:
     };
 
     Header npdm_header{};
+    bool is_switch2{};
     AciHeader aci_header{};
     AcidHeader acid_header{};
 

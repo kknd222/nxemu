@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <string_view>
 #include <functional>
 #include <optional>
 #include <span>
@@ -30,6 +31,9 @@ enum class LoadCallbackStage {
     Prepare,
     Build,
     Complete,
+    ReadProfile,
+    ImportProfile,
+    BuildProfile,
 };
 using DiskResourceLoadCallback = std::function<void(LoadCallbackStage, std::size_t, std::size_t)>;
 
@@ -41,7 +45,10 @@ public:
     virtual void Draw(bool is_indexed, u32 instance_count) = 0;
 
     /// Dispatches an indirect draw invocation
-    virtual void DrawIndirect() {}
+    /// Returns false when the host needs the parameters of the draw on the CPU, nothing is drawn
+    virtual bool DrawIndirect() {
+        return true;
+    }
 
     /// Dispatches an draw texture invocation
     virtual void DrawTexture() = 0;
@@ -68,6 +75,12 @@ public:
     /// Signal a GPU based semaphore as a fence
     virtual void SignalFence(std::function<void()>&& func) = 0;
 
+    /// Arm an explicit memory-operation synchronization fence without blocking the DMA pusher.
+    virtual void SignalMemoryOperationFence(std::function<void()>&& func) = 0;
+
+    /// Signal a fence and wait for its deferred synchronization operations to complete.
+    virtual void WaitForFence() = 0;
+
     /// Send an operation to be done after a certain amount of flushes.
     virtual void SyncOperation(std::function<void()>&& func) = 0;
 
@@ -86,6 +99,12 @@ public:
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
     virtual void FlushRegion(DAddr addr, u64 size,
                              VideoCommon::CacheType which = VideoCommon::CacheType::All) = 0;
+
+    /// Synchronize native reads while retaining GPU cache ownership.
+    virtual void FlushNativeRegion(DAddr addr, u64 size) { FlushRegion(addr, size); }
+
+    /// Check if guest memory sharing a host page with a CPU access is behind data the guest reads.
+    virtual bool MustFlushSharedPage(DAddr addr, u64 size) { return true; }
 
     /// Check if the the specified memory area requires flushing to CPU Memory.
     virtual bool MustFlushRegion(DAddr addr, u64 size,
@@ -114,8 +133,10 @@ public:
     /// Unmap memory range
     virtual void UnmapMemory(DAddr addr, u64 size) = 0;
 
-    /// Remap GPU memory range. This means underneath backing memory changed
-    virtual void ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size) = 0;
+    /// Invalidate textures before changing GPU backing memory or its layout.
+    /// Preserve their contents when the physical backing keeps its data.
+    virtual void ModifyGPUMemory(size_t as_id, GPUVAddr addr, u64 size,
+                                 bool preserve_contents = false) = 0;
 
     /// Notify rasterizer that any caches of the specified region should be flushed to Switch memory
     /// and invalidated
@@ -153,7 +174,7 @@ public:
     virtual void AccelerateInlineToMemory(GPUVAddr address, size_t copy_size, std::span<const u8> memory) = 0;
 
     /// Initialize disk cached resources for the game being emulated
-    virtual void LoadDiskResources(u64 title_id, std::stop_token stop_loading,  const DiskResourceLoadCallback& callback) {}
+    virtual void LoadDiskResources(u64 title_id, std::stop_token stop_loading,  const DiskResourceLoadCallback& callback, std::string_view content_identity = {}, std::string_view game_path = {}) {}
 
     virtual void InitializeChannel(Tegra::Control::ChannelState& channel) {}
 

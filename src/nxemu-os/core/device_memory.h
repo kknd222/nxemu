@@ -1,4 +1,4 @@
-﻿// SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
+// SPDX-FileCopyrightText: Copyright 2020 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
@@ -33,12 +33,17 @@ public:
         return buffer.BackingBasePointer();
     }
 
-    uint8_t * VirtualBasePointer() override
+    uint64_t BackingSize() const
+    {
+        return buffer.BackingSize();
+    }
+
+    uint8_t * VirtualBasePointer()
     {
         return buffer.VirtualBasePointer();
     }
 
-    void EnableDirectMappedAddress() override
+    void EnableDirectMappedAddress()
     {
         buffer.EnableDirectMappedAddress();
     }

@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <array>
+#include <tuple>
 #include <functional>
 #include <memory>
 #include <mutex>
@@ -18,13 +19,16 @@
 #include "yuzu_common/literals.h"
 #include "yuzu_common/lru_cache.h"
 #include "yuzu_common/range_sets.h"
+#include "yuzu_common/readback_reference.h"
 #include "yuzu_common/scope_exit.h"
 #include "yuzu_common/settings.h"
 #include "yuzu_common/slot_vector.h"
 #include "yuzu_video_core/buffer_cache/buffer_base.h"
+#include "yuzu_video_core/buffer_cache/empty_storage_buffer_warning.h"
 #include "yuzu_video_core/control/channel_state_cache.h"
 #include "yuzu_video_core/delayed_destruction_ring.h"
 #include "yuzu_video_core/dirty_flags.h"
+#include "yuzu_video_core/gpu_write_history.h"
 #include "yuzu_video_core/engines/draw_manager.h"
 #include "yuzu_video_core/engines/kepler_compute.h"
 #include "yuzu_video_core/engines/maxwell_3d.h"
@@ -33,17 +37,12 @@
 #include "yuzu_video_core/texture_cache/types.h"
 
 namespace VideoCommon {
-
 using BufferId = Common::SlotId;
 
 using VideoCore::Surface::PixelFormat;
 using namespace Common::Literals;
 
-#ifdef __APPLE__
-constexpr u32 NUM_VERTEX_BUFFERS = 16;
-#else
 constexpr u32 NUM_VERTEX_BUFFERS = 32;
-#endif
 constexpr u32 NUM_TRANSFORM_FEEDBACK_BUFFERS = 4;
 constexpr u32 NUM_GRAPHICS_UNIFORM_BUFFERS = 18;
 constexpr u32 NUM_COMPUTE_UNIFORM_BUFFERS = 8;
@@ -74,6 +73,10 @@ struct Binding {
     DAddr device_addr{};
     u32 size{};
     BufferId buffer_id;
+    /// Guest address of a range that is not continuous in device memory, it is bound from the
+    /// buffer assembled from its parts
+    GPUVAddr sparse_gpu_addr{};
+    bool is_sparse{};
 };
 
 struct TextureBufferBinding : Binding {
@@ -104,6 +107,10 @@ public:
     BufferCacheChannelInfo& operator=(const BufferCacheChannelInfo&) = delete;
 
     Binding index_buffer;
+    /// Set when the index buffer is not continuous in device memory, it is then bound from the
+    /// buffer assembled from its parts
+    bool is_index_buffer_sparse = false;
+    GPUVAddr index_buffer_sparse_gpu_addr = 0;
     std::array<Binding, NUM_VERTEX_BUFFERS> vertex_buffers;
     std::array<std::array<Binding, NUM_GRAPHICS_UNIFORM_BUFFERS>, NUM_STAGES> uniform_buffers;
     std::array<std::array<Binding, NUM_STORAGE_BUFFERS>, NUM_STAGES> storage_buffers;
@@ -214,9 +221,25 @@ public:
 
     void UpdateComputeBuffers();
 
+    /// Brings what the GPU wrote in assembled buffers back to the buffers of their parts, once the
+    /// draw or dispatch writing them is recorded
+    void CopySparseWrites();
+
     void BindHostGeometryBuffers(bool is_indexed);
 
     void BindHostStageBuffers(size_t stage);
+
+    /// Binds the uniform and storage buffers of a stage, leaving its texture buffers unbound
+    void BindHostStageUniformAndStorageBuffers(size_t stage);
+
+    /// Binds the texture buffers of a stage
+    void BindHostStageTextureBuffers(size_t stage);
+
+    /// Returns the host buffer with the offset and size of a vertex stream of the draw
+    [[nodiscard]] std::tuple<Buffer*, u32, u32> VertexBufferBinding(u32 index);
+
+    /// Returns the host buffer with the offset and size of the index buffer of the draw
+    [[nodiscard]] std::tuple<Buffer*, u32, u32> IndexBufferBinding();
 
     void BindHostComputeBuffers();
 
@@ -269,6 +292,7 @@ public:
     /// Pop asynchronous downloads
     void PopAsyncFlushes();
     void PopAsyncBuffers();
+    void InvalidateReadbackReferences(DAddr device_addr, u64 size);
 
     bool DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 amount);
 
@@ -276,6 +300,9 @@ public:
 
     /// Return true when a CPU region is modified from the GPU
     [[nodiscard]] bool IsRegionGpuModified(DAddr addr, size_t size);
+    [[nodiscard]] bool MayHaveGpuWrites(DAddr addr, size_t size) const noexcept {
+        return gpu_write_history.MayHaveWrites(addr, size);
+    }
 
     /// Return true when a region is registered on the cache
     [[nodiscard]] bool IsRegionRegistered(DAddr addr, size_t size);
@@ -409,6 +436,10 @@ private:
 
     bool SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size);
 
+    /// @param uploads Receives the ranges of the buffer that were uploaded
+    bool SynchronizeBuffer(Buffer& buffer, DAddr device_addr, u32 size,
+                           boost::container::small_vector<BufferCopy, 4>& uploads);
+
     void UploadMemory(Buffer& buffer, u64 total_size_bytes, u64 largest_copy,
                       std::span<BufferCopy> copies);
 
@@ -424,7 +455,7 @@ private:
     void DeleteBuffer(BufferId buffer_id, bool do_not_mark = false);
 
     [[nodiscard]] Binding StorageBufferBinding(GPUVAddr ssbo_addr, u32 cbuf_index,
-                                               bool is_written) const;
+                                               u32 cbuf_offset, bool is_written) const;
 
     [[nodiscard]] TextureBufferBinding GetTextureBufferBinding(GPUVAddr gpu_addr, u32 size,
                                                                PixelFormat format);
@@ -450,14 +481,110 @@ private:
     u32 last_index_count = 0;
 
     MemoryTracker memory_tracker;
+    mutable EmptyStorageBufferWarningCounter empty_storage_warnings;
+
+    /// Part of a guest range that is continuous in device memory
+    struct SparseBufferPart {
+        DAddr device_addr{};
+        u32 size{};
+        u32 offset{};
+        BufferId buffer_id;
+        u64 content_version{};
+    };
+
+    /// Host buffer assembled from the parts of a guest range that is not continuous in device
+    /// memory. It is not registered, only the buffers of its parts track guest memory.
+    struct SparseBuffer {
+        const Tegra::MemoryManager* gpu_memory{};
+        GPUVAddr gpu_addr{};
+        u32 size{};
+        /// Size of the host buffer, it stops after the last part
+        u32 capacity{};
+        BufferId buffer_id;
+        /// Mapping generation of the address space the parts were found at
+        u64 mapping_generation{};
+        u64 frame_tick{};
+        /// Draw or dispatch the buffer was last bound by
+        u64 bind_tick{};
+        std::vector<SparseBufferPart> parts;
+    };
+
+    struct SparseBinding {
+        BufferId buffer_id;
+        u32 offset{};
+        u32 size{};
+    };
+
+    [[nodiscard]] SparseBuffer& FindSparseBuffer(GPUVAddr gpu_addr, u32 size);
+
+    /// Finds the parts of the buffer holding a guest range and their buffers
+    void UpdateSparseBuffer(GPUVAddr gpu_addr, u32 size);
+
+    void ResolveSparseBufferPart(SparseBufferPart& part);
+
+    /// Where a guest range is in the buffer assembled for it
+    [[nodiscard]] SparseBinding GetSparseBinding(GPUVAddr gpu_addr, u32 size);
+
+    /// Brings the buffer holding a guest range up to date with its parts
+    SparseBinding SynchronizeSparseBuffer(GPUVAddr gpu_addr, u32 size);
+
+    void ResizeSparseBuffer(SparseBuffer& sparse, u32 capacity);
+
+    /// Guest address a binding has in an assembled buffer bound by the same draw or dispatch,
+    /// zero when it is not part of one
+    [[nodiscard]] GPUVAddr FindSparseAlias(const Binding& binding, bool is_written) const;
+
+    /// Tracks what the GPU is about to write in an assembled buffer
+    void MarkSparseWrite(GPUVAddr gpu_addr, u32 size);
+
+    void RemoveUnusedSparseBuffers();
+
+    void MarkBufferContentChanged(Buffer& buffer, DAddr changed_addr = 0,
+                                  u64 changed_size = std::numeric_limits<u64>::max()) noexcept {
+        const u64 previous_version = buffer.content_version;
+        buffer.content_version = ++content_version;
+        // A large canonical buffer can contain many independent sparse parts. Updating one
+        // part must not cause every other part to be copied again on its next use.
+        if (changed_size == std::numeric_limits<u64>::max() || !buffer.has_sparse_references) {
+            return;
+        }
+        const DAddr changed_end = changed_addr + changed_size;
+        for (SparseBuffer& sparse : sparse_buffers) {
+            for (SparseBufferPart& part : sparse.parts) {
+                if (part.buffer_id && &slot_buffers[part.buffer_id] == &buffer &&
+                    part.content_version == previous_version &&
+                    (part.device_addr >= changed_end ||
+                     part.device_addr + part.size <= changed_addr)) {
+                    part.content_version = buffer.content_version;
+                }
+            }
+        }
+    }
+
+    std::vector<SparseBuffer> sparse_buffers;
+    std::vector<std::pair<GPUVAddr, u32>> sparse_writes;
+    u64 sparse_bind_tick = 0;
+    bool has_bound_sparse = false;
+    bool has_written_sparse = false;
+    u64 content_version = 0;
+
     Common::RangeSet<DAddr> uncommitted_gpu_modified_ranges;
     Common::RangeSet<DAddr> gpu_modified_ranges;
+    GpuWriteHistory<> gpu_write_history;
+
     std::deque<Common::RangeSet<DAddr>> committed_gpu_modified_ranges;
 
     // Async Buffers
     Common::OverlapRangeSet<DAddr> async_downloads;
+    Common::RangeSet<DAddr> downloaded_ranges;
     std::deque<std::optional<Async_Buffer>> async_buffers;
     std::deque<boost::container::small_vector<BufferCopy, 4>> pending_downloads;
+    /// Separate flags keep data staging allocations at their original sizes.
+    std::deque<std::optional<Async_Buffer>> pending_readback_flags;
+    std::deque<std::vector<u64>> pending_readback_flag_offsets;
+    std::deque<std::vector<Common::ReadbackCpuCopy>> pending_readback_cpu_copies;
+    /// Ranges of each pending download that guest memory did not get newer data for since
+    std::deque<Common::RangeSet<DAddr>> pending_download_ranges;
     std::optional<Async_Buffer> current_buffer;
 
     std::deque<Async_Buffer> async_buffers_death_ring;
@@ -479,5 +606,4 @@ private:
     std::array<BufferId, ((1ULL << 34) >> CACHING_PAGEBITS)> page_table;
     Common::ScratchBuffer<u8> tmp_buffer;
 };
-
 } // namespace VideoCommon

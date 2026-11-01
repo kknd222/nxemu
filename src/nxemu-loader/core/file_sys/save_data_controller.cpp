@@ -117,17 +117,16 @@ bool SaveDataControllerPtr::CreateSaveData(IVirtualDirectory ** out_save_data, S
     return created;
 }
 
-SaveDataSize SaveDataControllerPtr::ReadSaveDataSize(SaveDataType type, uint64_t title_id,
-                                                     const uint64_t* user_id)
+SaveDataSize SaveDataControllerPtr::ReadSaveDataSize(SaveDataType type, uint64_t title_id, uint64_t user_id_high, uint64_t user_id_low)
 {
-    return m_saveDataController->ReadSaveDataSize(type, title_id,
-                                                  u128{user_id[0], user_id[1]});
+    const u128 user_id{user_id_low, user_id_high};
+    return m_saveDataController->ReadSaveDataSize(type, title_id, user_id);
 }
 
-void SaveDataControllerPtr::WriteSaveDataSize(SaveDataType type, uint64_t title_id,
-                                              const uint64_t* user_id, SaveDataSize size)
+void SaveDataControllerPtr::WriteSaveDataSize(SaveDataType type, uint64_t title_id, uint64_t user_id_high, uint64_t user_id_low, SaveDataSize new_value)
 {
-    m_saveDataController->WriteSaveDataSize(type, title_id, u128{user_id[0], user_id[1]}, size);
+    const u128 user_id{user_id_low, user_id_high};
+    m_saveDataController->WriteSaveDataSize(type, title_id, user_id, new_value);
 }
 
 void SaveDataControllerPtr::Release()

@@ -23,9 +23,13 @@
 #include "yuzu_hid_core/frontend/emulated_controller.h"
 #include "yuzu_hid_core/hid_core.h"
 #include "core/hle/service/nxemu_android_diagnostics.h"
+#include "yuzu_input_common/drivers/android.h"
 #include "yuzu_input_common/drivers/keyboard.h"
 #include "yuzu_input_common/drivers/virtual_gamepad.h"
 #include "yuzu_input_common/main.h"
+#ifdef ANDROID
+#include <jni.h>
+#endif
 #include <nxemu-core/settings/identifiers.h>
 #include <filesystem>
 #include <cstring>
@@ -558,13 +562,26 @@ void OSManager::EmulationStarting()
 {
     g_settings->SetBool(NXOsSetting::UseSpeedLimit, true);
 
+    if (m_emuThread && m_emuThread->AwaitingRelease())
+    {
+        m_emuThread->Release();
+        return;
+    }
     m_emuThread = std::make_unique<EmuThread>(m_coreSystem, m_applicationProcess);
     m_emuThread->Start();
+}
+
+void OSManager::StartEmulationThread(EmulationPrepareCallback prepare, void * userData)
+{
+    m_emuThread = std::make_unique<EmuThread>(m_coreSystem, m_applicationProcess);
+    m_emuThread->StartPrepared(prepare, userData);
 }
 
 void OSManager::EmulationStopping(bool wait)
 {
     g_settings->SetBool(NXOsSetting::UseSpeedLimit, true);
+    g_settings->SetBool(NXCoreSetting::Is64BitProgram, false);
+    g_settings->SetBool(NXCoreSetting::Has36BitAddressSpace, false);
     g_settings->SetBool(NXCoreSetting::Has39BitAddressSpace, false);
 
     if (m_emuThread)
@@ -587,8 +604,13 @@ bool OSManager::Initialize(void)
 {
     SetupOsSetting();
     m_coreSystem.Initialize();
-    m_coreSystem.HIDCore().ReloadInputDevices();
     return true;
+}
+
+void OSManager::InitializeInput(void)
+{
+    m_coreSystem.InitializeInput();
+    m_coreSystem.HIDCore().ReloadInputDevices();
 }
 
 void OSManager::ShutDown()
@@ -617,11 +639,11 @@ void OSManager::ShutdownMainProcess()
     m_coreSystem.ShutdownMainProcess();
 }
 
-bool OSManager::SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl)
+bool OSManager::SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t aslr_space_start, uint64_t & baseAddress, uint64_t & processID, bool is_hbl)
 {
     if (m_applicationProcess == nullptr)
     {
-        return CreateApplicationProcess(codeSize, metaData, baseAddress, processID, is_hbl);
+        return CreateApplicationProcess(codeSize, metaData, aslr_space_start, baseAddress, processID, is_hbl);
     }
     Kernel::KProcess * const current = m_coreSystem.CurrentProcess();
     if (current == nullptr)
@@ -629,7 +651,7 @@ bool OSManager::SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & 
         UNIMPLEMENTED();
         return false;
     }
-    if (current->LoadFromMetadata(metaData, codeSize, 0, is_hbl).IsError())
+    if (current->LoadFromMetadata(metaData, codeSize, aslr_space_start, is_hbl).IsError())
     {
         return false;
     }
@@ -638,13 +660,23 @@ bool OSManager::SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & 
     return true;
 }
 
-bool OSManager::CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl)
+IKernelProcess * OSManager::CurrentProcess()
+{
+    Kernel::KProcess * current = m_coreSystem.CurrentProcess();
+    if (current != nullptr)
+    {
+        return current;
+    }
+    return m_applicationProcess;
+}
+
+bool OSManager::CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t aslr_space_start, uint64_t & baseAddress, uint64_t & processID, bool is_hbl)
 {
     if (m_applicationProcess != nullptr)
     {
         return false;
     }
-    m_coreSystem.InitializeKernel(metaData.GetTitleID());
+    m_coreSystem.InitializeKernel(metaData.GetTitleID(), metaData.Is64BitProgram());
     Kernel::KernelCore & kernel = m_coreSystem.Kernel();
     m_applicationProcess = Kernel::KProcess::Create(kernel);
     if (m_applicationProcess == nullptr)
@@ -654,9 +686,8 @@ bool OSManager::CreateApplicationProcess(uint64_t codeSize, const IProgramMetada
     Kernel::KProcess::Register(kernel, m_applicationProcess);
     kernel.AppendNewProcess(m_applicationProcess);
     kernel.MakeApplicationProcess(m_applicationProcess);
-    g_settings->SetBool(NXCoreSetting::Has39BitAddressSpace, metaData.GetAddressSpaceType() == ProgramAddressSpaceType::Is39Bit);
 
-    if (m_applicationProcess->LoadFromMetadata(metaData, codeSize, 0, is_hbl).IsError())
+    if (m_applicationProcess->LoadFromMetadata(metaData, codeSize, aslr_space_start, is_hbl).IsError())
     {
         return false;
     }
@@ -671,7 +702,8 @@ bool OSManager::CreateApplicationProcess(uint64_t codeSize, const IProgramMetada
         .previous_program_index = m_previousProgramIndex,
     };
     params.program_id = metaData.GetTitleID();
-    m_coreSystem.GetAppletManager().CreateAndInsertByFrontendAppletParameters(m_applicationProcess->GetProcessId(), params);
+    m_coreSystem.GetAppletManager().CreateAndInsertByFrontendAppletParameters(
+        m_applicationProcess->GetProcessId(), params, m_applicationProcess);
 
     processID = m_applicationProcess->GetProcessId();
     baseAddress = m_applicationProcess->GetEntryPoint().GetValue();
@@ -690,6 +722,7 @@ void OSManager::StartApplicationProcess(int32_t priority, int64_t stackSize, uin
 {
     m_coreSystem.AddGlueRegistrationForProcess(*m_applicationProcess, version, baseGameStorageId, updateStorageId, nacpData, nacpDataLen);
     m_applicationProcess->Run(priority, stackSize);
+    m_coreSystem.GetAppletManager().NotifyAppletStarted(m_applicationProcess->GetProcessId());
 }
 
 void OSManager::SetMainThreadStartupArguments(uint64_t argument0, uint64_t argument1, uint64_t mainThreadHandleWriteAddress)
@@ -834,6 +867,11 @@ void OSManager::GatherGPUDirtyMemory(ICacheInvalidator * invalidator)
     m_coreSystem.GatherGPUDirtyMemory(invalidator);
 }
 
+void OSManager::GatherGPUDirtyMemoryForReadback(ICacheInvalidator * invalidator)
+{
+    m_coreSystem.GatherGPUDirtyMemory(invalidator, false);
+}
+
 uint64_t OSManager::GetGPUTicks()
 {
     return m_coreSystem.CoreTiming().GetGPUTicks();
@@ -890,6 +928,55 @@ IParamPackageList * OSManager::GetInputDevices() const
 IEmulatedController & OSManager::GetEmulatedController(NpadIdType index)
 {
     return *m_coreSystem.HIDCore().GetEmulatedController(index);
+}
+
+void OSManager::AndroidRegisterController(void * j_input_device)
+{
+#ifdef ANDROID
+    if (j_input_device == nullptr)
+    {
+        return;
+    }
+    InputCommon::Android * android = m_coreSystem.InputSubsystem()->GetAndroid();
+    if (android != nullptr)
+    {
+        android->RegisterController((jobject)j_input_device);
+    }
+#else
+    (void)j_input_device;
+#endif
+}
+
+void OSManager::SetButtonState(const char * guid, int32_t port, int32_t button_id, bool pressed)
+{
+#ifdef ANDROID
+    InputCommon::Android * android = m_coreSystem.InputSubsystem()->GetAndroid();
+    if (android != nullptr && guid != nullptr)
+    {
+        android->SetButtonState(guid, static_cast<size_t>(port), button_id, pressed);
+    }
+#else
+    (void)guid;
+    (void)port;
+    (void)button_id;
+    (void)pressed;
+#endif
+}
+
+void OSManager::SetAxisPosition(const char * guid, int32_t port, int32_t axis_id, float value)
+{
+#ifdef ANDROID
+    InputCommon::Android * android = m_coreSystem.InputSubsystem()->GetAndroid();
+    if (android != nullptr && guid != nullptr)
+    {
+        android->SetAxisPosition(guid, static_cast<size_t>(port), axis_id, value);
+    }
+#else
+    (void)guid;
+    (void)port;
+    (void)axis_id;
+    (void)value;
+#endif
 }
 
 ButtonNames OSManager::GetButtonName(const IParamPackage& param) const
@@ -954,6 +1041,11 @@ void OSManager::PumpInputEvents() const
 PerfStatsResults OSManager::GetAndResetPerfStats()
 {
     return m_coreSystem.GetAndResetPerfStats();
+}
+
+void OSManager::MeasureGameFrames(bool measure)
+{
+    m_coreSystem.GetPerfStats().MeasureGameFrames(measure);
 }
 
 void OSManager::SetEmulationPaused(bool paused)

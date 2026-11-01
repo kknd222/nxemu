@@ -51,6 +51,11 @@ Result IHOSBinderDriver::AdjustRefcount(s32 binder_id, s32 addval, s32 type) {
         "Nvnflinger.Binder.AdjustRefcount",
         "binder_id=" + std::to_string(binder_id) + " addval=" + std::to_string(addval) +
             " type=" + std::to_string(type));
+    LOG_DEBUG(Service_VI, "called id={}, addval={}, type={}", binder_id, addval, type);
+    R_UNLESS(type == 0 || type == 1, ResultUnknown);
+
+    // HOS uses type 0 for weak references and type 1 for strong references.
+    m_server->AdjustRefcount(binder_id, addval, type == 0);
     R_SUCCEED();
 }
 
@@ -60,11 +65,15 @@ Result IHOSBinderDriver::GetNativeHandle(s32 binder_id, u32 type_id,
     NxemuAndroidDiagnostics::RecordEvent(
         "Nvnflinger.Binder.GetNativeHandle",
         "binder_id=" + std::to_string(binder_id) + " type_id=" + std::to_string(type_id));
+    LOG_DEBUG(Service_VI, "called id={}, type_id={}", binder_id, type_id);
 
     const auto binder = m_server->TryGetBinder(binder_id);
     R_UNLESS(binder != nullptr, ResultUnknown);
 
-    *out_handle = binder->GetNativeHandle(type_id);
+    const auto native_handle = binder->GetNativeHandle(type_id);
+    R_UNLESS(native_handle != nullptr, ResultUnknown);
+
+    *out_handle = native_handle;
 
     R_SUCCEED();
 }

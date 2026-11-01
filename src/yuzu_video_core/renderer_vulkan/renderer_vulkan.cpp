@@ -13,6 +13,7 @@
 #ifdef __ANDROID__
 #include <android/log.h>
 #endif
+#include <fmt/ranges.h>
 
 #include "frontend/graphics_context.h"
 #include "yuzu_common/logging/log.h"
@@ -114,7 +115,6 @@ namespace Vulkan
 {
 namespace
 {
-
 constexpr VkExtent2D CaptureImageSize{
     .width = VideoCore::Capture::LinearWidth,
     .height = VideoCore::Capture::LinearHeight,
@@ -162,7 +162,6 @@ std::string BuildCommaSeparatedExtensions(
 {
     return fmt::format("{}", fmt::join(available_extensions, ","));
 }
-
 } // Anonymous namespace
 
 Device CreateDevice(const vk::Instance & instance, const vk::InstanceDispatch & dld,
@@ -181,21 +180,14 @@ Device CreateDevice(const vk::Instance & instance, const vk::InstanceDispatch & 
 
 RendererVulkan::RendererVulkan(Core::Frontend::EmuWindow & emu_window,
                                Tegra::MaxwellDeviceMemoryManager & device_memory_, Tegra::GPU & gpu_,
-                               std::unique_ptr<Core::Frontend::GraphicsContext> context_)
+                               std::unique_ptr<Core::Frontend::GraphicsContext> context_,
+                               Display & display_)
 try :
     RendererBase(emu_window, std::move(context_)),
-    device_memory(device_memory_), gpu(gpu_), library(OpenLibrary(context.get())),
-    instance(CreateInstance(*library, dld, VK_API_VERSION_1_1, render_window.GetWindowInfo().type,
-                            videoSettings.renderer_debug)),
-    debug_messenger(videoSettings.renderer_debug ? CreateDebugUtilsCallback(instance)
-                                                    : vk::DebugUtilsMessenger{}),
-    surface(CreateSurface(instance, render_window.GetWindowInfo())),
-    device(CreateDevice(instance, dld, *surface)), memory_allocator(device), state_tracker(),
+    device_memory(device_memory_), gpu(gpu_), display(display_), device(display.GetDevice()),
+    memory_allocator(display.GetAllocator()), swapchain(display.GetSwapchain()), state_tracker(),
     scheduler(device, state_tracker),
-    swapchain(*surface, device, scheduler, render_window.GetFramebufferLayout().width,
-              render_window.GetFramebufferLayout().height),
-    present_manager(instance, render_window, device, memory_allocator, scheduler, swapchain,
-                    surface),
+    present_manager(render_window, device, memory_allocator, scheduler, display),
     blit_swapchain(device_memory, device, memory_allocator, present_manager, scheduler,
                    PresentFiltersForDisplay),
     blit_capture(device_memory, device, memory_allocator, present_manager, scheduler,
@@ -209,7 +201,7 @@ try :
 {
     if (videoSettings.renderer_force_max_clock && device.ShouldBoostClocks())
     {
-        turbo_mode.emplace(instance, dld);
+        turbo_mode.emplace(display.GetInstance(), display.GetDispatch());
         scheduler.RegisterOnSubmit([this] { turbo_mode->QueueSubmitted(); });
     }
     InitializeWatermark();
@@ -224,7 +216,12 @@ catch (const vk::Exception & exception)
 RendererVulkan::~RendererVulkan()
 {
     scheduler.RegisterOnSubmit([] {});
-    void(device.GetLogical().WaitIdle());
+    rasterizer.WaitForShaderBuilds();
+    scheduler.Finish();
+    {
+        std::scoped_lock lock{device.QueueMutex()};
+        void(device.GetLogical().WaitIdle());
+    }
     CleanupWatermark();
 }
 
@@ -291,6 +288,14 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
         }
     }
 #endif
+    if (HoldIncompleteFrame())
+    {
+        scheduler.Flush();
+        gpu.RendererFrameEndNotify();
+        rasterizer.TickFrame();
+        return;
+    }
+    presented_once = true;
     Frame * frame = present_manager.GetRenderFrame();
     blit_swapchain.DrawToFrame(rasterizer, frame, framebuffers,
                                render_window.GetFramebufferLayout(), swapchain.GetImageCount(),
@@ -309,6 +314,34 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     gpu.RendererFrameEndNotify();
     rasterizer.TickFrame();
+}
+
+bool RendererVulkan::HoldIncompleteFrame()
+{
+    // A scene that just loaded compiles many pipelines at once, and its first frames miss many
+    // draws. Those frames are not shown: the screen keeps the previous frame, often the
+    // transition, while emulation goes on. During play, a few missing draws are better than a
+    // frozen screen, so frames are held only right after a scene change, and never for long.
+    constexpr std::chrono::milliseconds scene_change_window{1000};
+    constexpr std::chrono::milliseconds max_hold{1500};
+    constexpr u32 incomplete_percent = 10;
+    const auto draws = rasterizer.TakeFrameDraws();
+    const auto now = std::chrono::steady_clock::now();
+    if (draws.new_render_targets)
+    {
+        last_new_render_target = now;
+    }
+    const bool incomplete = draws.skipped > 0 && draws.skipped * 100 >= draws.total * incomplete_percent;
+    if (!incomplete)
+    {
+        incomplete_since.reset();
+    }
+    else if (!incomplete_since)
+    {
+        incomplete_since = now;
+        hold_incomplete = last_new_render_target && now - *last_new_render_target < scene_change_window;
+    }
+    return incomplete && hold_incomplete && presented_once && now - *incomplete_since < max_hold;
 }
 
 void RendererVulkan::InitializeWatermark()
@@ -815,7 +848,7 @@ void RendererVulkan::RenderAppletCaptureLayer(std::span<const Tegra::Framebuffer
         applet_frame.framebuffer = blit_applet.CreateFramebuffer(VideoCore::Capture::Layout, *applet_frame.image_view, CaptureFormat);
     }
 
-    blit_applet.DrawToFrame(rasterizer, &applet_frame, framebuffers, VideoCore::Capture::Layout, 1, CaptureFormat);
+    // Several resource sets, so drawing a frame does not wait for the previous one on the GPU.
+    blit_applet.DrawToFrame(rasterizer, &applet_frame, framebuffers, VideoCore::Capture::Layout, 3, CaptureFormat);
 }
-
 } // namespace Vulkan

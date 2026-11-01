@@ -5,6 +5,7 @@
 #include <climits>
 #include <common/json_util.h>
 #include <cstring>
+#include <nxemu-core/settings/identifiers.h>
 #include <nxemu-module-spec/base.h>
 #include <yuzu_common/yuzu_assert.h>
 
@@ -30,6 +31,7 @@ enum class SettingType
     Language,
     DockedMode,
     MemoryLayout,
+    AppletMode,
 };
 
 enum class RangedWidth
@@ -51,6 +53,7 @@ public:
     OsSetting(const char * id, const char * path, Language * val, Language defaultValue);
     OsSetting(const char * id, const char * path, DockedMode * val, DockedMode defaultValue);
     OsSetting(const char * id, const char * path, MemoryLayout * val, MemoryLayout defaultValue);
+    OsSetting(const char * id, const char * path, AppletMode * val, AppletMode defaultValue);
     OsSetting(const char * id, const char * path, u8 * val, int32_t defaultValue, int32_t minValue, int32_t maxValue);
     OsSetting(const char * id, const char * path, u16 * val, int32_t defaultValue, int32_t minValue, int32_t maxValue);
     OsSetting(const char * id, const char * path, s32 * val, s32 defaultValue);
@@ -80,6 +83,7 @@ public:
         Language language;
         DockedMode dockedMode;
         MemoryLayout memoryLayout;
+        AppletMode appletMode;
     } defaults;
     union
     {
@@ -98,6 +102,7 @@ public:
         Language * language;
         DockedMode * dockedMode;
         MemoryLayout * memoryLayout;
+        AppletMode * appletMode;
     } value;
 };
 
@@ -482,14 +487,31 @@ static OsSetting settings[] = {
         {NXOsSetting::AudioMuted, "audio\\muted", &osSettings.audio_muted, false},
         {NXOsSetting::SpeedLimit, "system\\speed_limit", &osSettings.speed_limit, 100, 0, 9999},
         {NXOsSetting::UseMultiCore, "system\\use_multi_core", &osSettings.use_multi_core, true},
+        {NXOsSetting::CpuHleSynchronization, "system\\cpu_hle_synchronization", &osSettings.cpu_hle_synchronization, true},
         {NXOsSetting::UseSpeedLimit, nullptr, &osSettings.use_speed_limit, true},
         {NXOsSetting::MemoryLayout, "system\\memory_layout_mode", &osSettings.memory_layout_mode, MemoryLayout::Memory_4Gb},
-        {NXOsSetting::LanguageIndex, "system\\language_index", &osSettings.language_index, Language::EnglishAmerican},
+        {NXOsSetting::Region, "system\\region", &osSettings.region_setting, kRegionOfLanguage},
         {NXOsSetting::CurrentUser, "system\\current_user", &osSettings.current_user, 0},
         {NXOsSetting::RngSeedEnabled, "system\\rng_seed_enabled", &osSettings.rng_seed_enabled, false},
         {NXOsSetting::RngSeed, "system\\rng_seed", &osSettings.rng_seed, 0u},
         {NXOsSetting::CustomRtcEnabled, "system\\custom_rtc_enabled", &osSettings.custom_rtc_enabled, false},
         {NXOsSetting::CustomRtcOffset, "system\\custom_rtc_offset", &osSettings.custom_rtc_offset, 0, INT_MIN, INT_MAX},
+        {NXOsSetting::CabinetAppletMode, "applet\\cabinet_applet_mode", &osSettings.cabinet_applet_mode, AppletMode::LLE},
+        {NXOsSetting::ControllerAppletMode, "applet\\controller_applet_mode", &osSettings.controller_applet_mode, AppletMode::HLE},
+        {NXOsSetting::DataEraseAppletMode, "applet\\data_erase_applet_mode", &osSettings.data_erase_applet_mode, AppletMode::LLE},
+        {NXOsSetting::ErrorAppletMode, "applet\\error_applet_mode", &osSettings.error_applet_mode, AppletMode::LLE},
+        {NXOsSetting::NetConnectAppletMode, "applet\\net_connect_applet_mode", &osSettings.net_connect_applet_mode, AppletMode::LLE},
+        {NXOsSetting::PlayerSelectAppletMode, "applet\\player_select_applet_mode", &osSettings.player_select_applet_mode, AppletMode::HLE},
+        // Preserve the local HLE default in the official configurable applet table.
+        {NXOsSetting::SwkbdAppletMode, "applet\\swkbd_applet_mode", &osSettings.swkbd_applet_mode, AppletMode::HLE},
+        {NXOsSetting::MiiEditAppletMode, "applet\\mii_edit_applet_mode", &osSettings.mii_edit_applet_mode, AppletMode::LLE},
+        {NXOsSetting::WebAppletMode, "applet\\web_applet_mode", &osSettings.web_applet_mode, AppletMode::LLE},
+        {NXOsSetting::ShopAppletMode, "applet\\shop_applet_mode", &osSettings.shop_applet_mode, AppletMode::LLE},
+        {NXOsSetting::PhotoViewerAppletMode, "applet\\photo_viewer_applet_mode", &osSettings.photo_viewer_applet_mode, AppletMode::LLE},
+        {NXOsSetting::OfflineWebAppletMode, "applet\\offline_web_applet_mode", &osSettings.offline_web_applet_mode, AppletMode::LLE},
+        {NXOsSetting::LoginShareAppletMode, "applet\\login_share_applet_mode", &osSettings.login_share_applet_mode, AppletMode::LLE},
+        {NXOsSetting::WifiWebAuthAppletMode, "applet\\wifi_web_auth_applet_mode", &osSettings.wifi_web_auth_applet_mode, AppletMode::LLE},
+        {NXOsSetting::MyPageAppletMode, "applet\\my_page_applet_mode", &osSettings.my_page_applet_mode, AppletMode::LLE},
 #ifdef ANDROID
         {NXOsSetting::DockedMode, "system\\docked_mode", &osSettings.use_docked_mode, DockedMode::Handheld},
 #else
@@ -516,6 +538,11 @@ void ApplyRangedS64(OsSetting & osSetting, s64 value)
 }
 
 } // namespace
+
+void LanguageChanged(const char * /*setting*/, void * /*userData*/)
+{
+    osSettings.language_index = static_cast<Language>(g_settings->GetInt(NXCoreSetting::LanguageIndex));
+}
 
 void OsSettingChanged(const char * setting, void * /*userData*/)
 {
@@ -574,6 +601,9 @@ void OsSettingChanged(const char * setting, void * /*userData*/)
         case SettingType::MemoryLayout:
             *osSetting.value.memoryLayout = static_cast<MemoryLayout>(g_settings->GetInt(setting));
             break;
+        case SettingType::AppletMode:
+            *osSetting.value.appletMode = static_cast<AppletMode>(g_settings->GetInt(setting));
+            break;
         default:
             UNIMPLEMENTED();
         }
@@ -585,28 +615,7 @@ namespace
 
 void InitializeOsSettingDefaults()
 {
-    osSettings.cabinet_applet_mode = AppletMode::LLE;
-    osSettings.controller_applet_mode = AppletMode::HLE;
-    osSettings.data_erase_applet_mode = AppletMode::HLE;
-    osSettings.error_applet_mode = AppletMode::LLE;
-    osSettings.net_connect_applet_mode = AppletMode::HLE;
-    osSettings.player_select_applet_mode = AppletMode::HLE;
-    // NXEmu does not yet provide a complete guest swkbd renderer/input path.
-    // When firmware is installed, LLE can launch successfully but then leave
-    // games waiting forever for text input. Keep swkbd on the working HLE
-    // frontend until the guest applet is fully supported.
-    osSettings.swkbd_applet_mode = AppletMode::HLE;
-    osSettings.mii_edit_applet_mode = AppletMode::LLE;
-    osSettings.web_applet_mode = AppletMode::HLE;
-    osSettings.shop_applet_mode = AppletMode::HLE;
-    osSettings.photo_viewer_applet_mode = AppletMode::LLE;
-    osSettings.offline_web_applet_mode = AppletMode::LLE;
-    osSettings.login_share_applet_mode = AppletMode::HLE;
-    osSettings.wifi_web_auth_applet_mode = AppletMode::HLE;
-    osSettings.my_page_applet_mode = AppletMode::LLE;
-
     osSettings.dump_audio_commands = false;
-    osSettings.region_index = Region::Usa;
     osSettings.time_zone_index = TimeZone::Auto;
     osSettings.custom_rtc = 0;
     osSettings.device_name = "NxEmu";
@@ -693,6 +702,9 @@ void SetupOsSetting(void)
             break;
         case SettingType::MemoryLayout:
             *osSetting.value.memoryLayout = osSetting.defaults.memoryLayout;
+            break;
+        case SettingType::AppletMode:
+            *osSetting.value.appletMode = osSetting.defaults.appletMode;
             break;
         default:
             UNIMPLEMENTED();
@@ -802,6 +814,12 @@ void SetupOsSetting(void)
                     *osSetting.value.memoryLayout = MemoryLayoutFromString(value.asString());
                 }
                 break;
+            case SettingType::AppletMode:
+                if (value.isString())
+                {
+                    *osSetting.value.appletMode = AppletModeFromString(value.asString(), osSetting.defaults.appletMode);
+                }
+                break;
             default:
                 UNIMPLEMENTED();
             }
@@ -879,15 +897,22 @@ void SetupOsSetting(void)
             g_settings->SetDefaultInt(osSetting.identifier, static_cast<int32_t>(osSetting.defaults.memoryLayout));
             g_settings->SetInt(osSetting.identifier, static_cast<int32_t>(*osSetting.value.memoryLayout));
             break;
+        case SettingType::AppletMode:
+            g_settings->SetDefaultInt(osSetting.identifier, static_cast<int32_t>(osSetting.defaults.appletMode));
+            g_settings->SetInt(osSetting.identifier, static_cast<int32_t>(*osSetting.value.appletMode));
+            break;
         default:
             UNIMPLEMENTED();
         }
         g_settings->RegisterCallback(osSetting.identifier, OsSettingChanged, nullptr);
     }
+    LanguageChanged(nullptr, nullptr);
+    g_settings->RegisterCallback(NXCoreSetting::LanguageIndex, LanguageChanged, nullptr);
 }
 
 void CleanupOsSetting(void)
 {
+    g_settings->UnregisterCallback(NXCoreSetting::LanguageIndex, LanguageChanged, nullptr);
     for (const OsSetting & osSetting : settings)
     {
         if (osSetting.identifier == nullptr)
@@ -997,11 +1022,17 @@ void SaveOsSettings(void)
                 JsonSetNestedValue(root, osSetting.json_path, MemoryLayoutToString(*osSetting.value.memoryLayout));
             }
             break;
+        case SettingType::AppletMode:
+            if (*osSetting.value.appletMode != osSetting.defaults.appletMode)
+            {
+                JsonSetNestedValue(root, osSetting.json_path, AppletModeToString(*osSetting.value.appletMode));
+            }
+            break;
         default:
             UNIMPLEMENTED();
         }
     }
-    g_settings->SetSectionSettings("nxemu-os", root.isNull() ? "" : JsonStyledWriter().write(root));
+    g_settings->SetSectionSettings("nxemu-os", root.isNull() ? "" : JsonStyledWriter().write(root).c_str());
 }
 
 namespace
@@ -1087,6 +1118,15 @@ OsSetting::OsSetting(const char * id, const char * path, MemoryLayout * val, Mem
     value.memoryLayout = val;
 }
 
+OsSetting::OsSetting(const char * id, const char * path, AppletMode * val, AppletMode defaultValue) :
+    identifier(id),
+    json_path(path),
+    settingType(SettingType::AppletMode)
+{
+    defaults.appletMode = defaultValue;
+    value.appletMode = val;
+}
+
 OsSetting::OsSetting(const char * id, const char * path, u8 * val, int32_t defaultValue, int32_t minValue, int32_t maxValue) :
     identifier(id),
     json_path(path),
@@ -1140,3 +1180,13 @@ OsSetting::OsSetting(const char * id, const char * path, s64 * val, s64 defaultV
     value.s64Value = val;
 }
 } // namespace
+
+Region ConsoleRegion()
+{
+    const s32 chosen = osSettings.region_setting;
+    if (chosen >= static_cast<s32>(Region::Japan) && chosen <= static_cast<s32>(Region::Taiwan))
+    {
+        return static_cast<Region>(chosen);
+    }
+    return RegionOfLanguage(osSettings.language_index);
+}

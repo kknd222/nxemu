@@ -7,6 +7,7 @@
 #include <fmt/ostream.h>
 
 #include "core/file_sys/content_archive.h"
+#include "core/file_sys/common_funcs.h"
 #include "core/file_sys/nca_metadata.h"
 #include "core/file_sys/partition_filesystem.h"
 #include "core/file_sys/program_metadata.h"
@@ -18,9 +19,10 @@
 namespace FileSys
 {
 
-NSP::NSP(VirtualFile file_, uint64_t title_id_, std::size_t program_index_) :
+NSP::NSP(VirtualFile file_, uint64_t title_id_, std::size_t program_index_, uint64_t content_filter_base_id_) :
     file(std::move(file_)), expected_program_id(title_id_),
-    program_index(program_index_), status{LoaderResultStatus::Success},
+    program_index(program_index_), content_filter_base_id(content_filter_base_id_),
+    status{LoaderResultStatus::Success},
     pfs(std::make_shared<PartitionFilesystem>(file))
 {
     if (pfs->GetStatus() != LoaderResultStatus::Success)
@@ -264,6 +266,13 @@ void NSP::ReadNCAs(const std::vector<VirtualFile> & files)
 
             const CNMT cnmt(inner_file);
 
+            // Add-on discovery only needs titles belonging to the selected game.
+            // Avoid opening every content NCA in unrelated packages.
+            if (content_filter_base_id != 0 && GetBaseTitleID(cnmt.GetTitleID()) != content_filter_base_id)
+            {
+                continue;
+            }
+
             ncas[cnmt.GetTitleID()][{cnmt.GetType(), LoaderContentRecordType::Meta}] = nca;
 
             for (const auto & rec : cnmt.GetContentRecords())
@@ -303,13 +312,22 @@ void NSP::ReadNCAs(const std::vector<VirtualFile> & files)
                     // If the last 3 hexadecimal digits of the NCA's TitleID is between 0x1 and
                     // 0x7FF, this is a multi-program update NCA. Otherwise, this is a regular
                     // update NCA.
-                    if ((next_nca->GetTitleId() & 0x7FF) != 0 &&
-                        (next_nca->GetTitleId() & 0x800) == 0)
+                    if ((next_nca->GetTitleId() & 0x7FF) != 0)
                     {
                         ncas[next_nca->GetTitleId()][{cnmt.GetType(), rec.type}] = std::move(next_nca);
                     }
                     else
                     {
+                        // Fix for Bayonetta Origins in Bayonetta 3 and external content
+                        // where multiple update NCAs exist for the same title and type.
+                        auto & target_map = ncas[cnmt.GetTitleID()];
+                        auto existing = target_map.find({cnmt.GetType(), rec.type});
+
+                        if (existing != target_map.end() &&
+                            rec.type == LoaderContentRecordType::Program)
+                        {
+                            continue;
+                        }
                         ncas[cnmt.GetTitleID()][{cnmt.GetType(), rec.type}] = std::move(next_nca);
                     }
                 }

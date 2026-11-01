@@ -45,7 +45,7 @@ struct OSSettings
 
     // System
     Language language_index;
-    Region region_index;
+    s32 region_setting;
     TimeZone time_zone_index;
     MemoryLayout memory_layout_mode;
     bool custom_rtc_enabled;
@@ -57,6 +57,7 @@ struct OSSettings
     s32 current_user;
     DockedMode use_docked_mode;
     bool use_multi_core;
+    bool cpu_hle_synchronization;
     bool use_speed_limit;
     u16 speed_limit;
 
@@ -106,3 +107,4 @@ extern OSSettings osSettings;
 void SetupOsSetting(void);
 void CleanupOsSetting(void);
 void SaveOsSettings(void);
+Region ConsoleRegion();

@@ -2,6 +2,7 @@
 // SPDX-FileCopyrightText: 2021 Skyline Team and Contributors
 // SPDX-License-Identifier: GPL-3.0-or-later
 
+#include <optional>
 #include <bit>
 #include <cstdlib>
 #include <cstring>
@@ -40,6 +41,16 @@ NvResult nvhost_ctrl::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> inp
     switch (command.group) {
     case 0x0:
         switch (command.cmd) {
+        case 0x14:
+            return WrapFixed(this, &nvhost_ctrl::IocSyncptRead, input, output);
+        case 0x15:
+            return WrapFixed(this, &nvhost_ctrl::IocSyncptIncr, input, output);
+        case 0x16:
+            return WrapFixed(this, &nvhost_ctrl::IocSyncptWait, input, output);
+        case 0x19:
+            return WrapFixed(this, &nvhost_ctrl::IocSyncptWaitEx, input, output);
+        case 0x1a:
+            return WrapFixed(this, &nvhost_ctrl::IocSyncptReadMax, input, output);
         case 0x1b:
             return WrapFixed(this, &nvhost_ctrl::NvOsGetConfigU32, input, output);
         case 0x1c:
@@ -76,9 +87,78 @@ NvResult nvhost_ctrl::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> inp
     return NvResult::NotImplemented;
 }
 
+std::optional<SyncpointWaitParams> nvhost_ctrl::GetSyncpointWait(
+    Ioctl command, std::span<const u8> input) const {
+    if (command.group != 0 || (command.cmd != 0x16 && command.cmd != 0x19)) {
+        return std::nullopt;
+    }
+
+    // WAIT and WAITEX share this input prefix. Match WrapFixed's zero-filled short input.
+    IocSyncptWaitParams params{};
+    if (!input.empty()) {
+        std::memcpy(&params, input.data(), std::min(input.size(), sizeof(params)));
+    }
+    if (params.id == 0 || params.id >= MaxSyncPoints) {
+        return std::nullopt;
+    }
+    return SyncpointWaitParams{params.id, params.thresh, static_cast<u32>(params.timeout)};
+}
+
 void nvhost_ctrl::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {}
 
 void nvhost_ctrl::OnClose(DeviceFD fd) {}
+
+NvResult nvhost_ctrl::IocSyncptRead(IocSyncptReadParams& params) {
+    if (params.id >= MaxSyncPoints) {
+        LOG_WARNING(Service_NVDRV, "Invalid syncpoint id={} for READ", params.id);
+        return NvResult::BadParameter;
+    }
+
+    params.value = syncpoint_manager.ReadSyncpointValue(params.id);
+    return NvResult::Success;
+}
+
+NvResult nvhost_ctrl::IocSyncptIncr(IocSyncptIncrParams& params) {
+    if (params.id >= MaxSyncPoints) {
+        LOG_WARNING(Service_NVDRV, "Invalid syncpoint id={} for INCR", params.id);
+        return NvResult::BadParameter;
+    }
+
+    syncpoint_manager.IncrementSyncpoint(params.id);
+    return NvResult::Success;
+}
+
+NvResult nvhost_ctrl::IocSyncptWait(IocSyncptWaitParams& params) {
+    if (params.id == 0 || params.id >= MaxSyncPoints) {
+        LOG_WARNING(Service_NVDRV, "Invalid syncpoint id={} for WAIT", params.id);
+        return NvResult::BadParameter;
+    }
+
+    const bool reached = syncpoint_manager.PollSyncpoint(params.id, params.thresh);
+    return reached ? NvResult::Success : NvResult::Timeout;
+}
+
+NvResult nvhost_ctrl::IocSyncptWaitEx(IocSyncptWaitexParams& params) {
+    if (params.id == 0 || params.id >= MaxSyncPoints) {
+        LOG_WARNING(Service_NVDRV, "Invalid syncpoint id={} for WAITEX", params.id);
+        return NvResult::BadParameter;
+    }
+
+    u32 value{};
+    const bool reached = syncpoint_manager.PollSyncpoint(params.id, params.thresh, &value);
+    params.value = value;
+    return reached ? NvResult::Success : NvResult::Timeout;
+}
+
+NvResult nvhost_ctrl::IocSyncptReadMax(IocSyncptReadMaxParams& params) {
+    if (params.id >= MaxSyncPoints) {
+        LOG_WARNING(Service_NVDRV, "Invalid syncpoint id={} for READ_MAX", params.id);
+        return NvResult::BadParameter;
+    }
+
+    params.value = syncpoint_manager.ReadSyncpointMaxValue(params.id);
+    return NvResult::Success;
+}
 
 NvResult nvhost_ctrl::NvOsGetConfigU32(IocGetConfigParams& params) {
     LOG_TRACE(Service_NVDRV, "called, setting={}!{}", params.domain_str.data(),
@@ -97,8 +177,12 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
             " allocation=" + (is_allocation ? std::string{"true"} : std::string{"false"}) +
             " value_raw=" + std::to_string(params.value.raw));
 
-    bool must_unmark_fail = !is_allocation;
     const u32 event_id = params.value.raw;
+    if (!is_allocation && event_id >= MaxNvEvents) {
+        return NvResult::BadParameter;
+    }
+
+    bool must_unmark_fail = !is_allocation;
     SCOPE_EXIT {
         if (must_unmark_fail) {
             events[event_id].fails = 0;
@@ -164,7 +248,7 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
 
     must_unmark_fail = false;
 
-    const auto check_failing = [&]() {
+    const auto check_failing = [&]() -> std::optional<NvResult> {
         if (events[slot].fails > 2) {
             NxemuAndroidDiagnostics::RecordEvent(
                 "NVDRV.nvhost_ctrl.EventWait.ForceWaitHost",
@@ -173,13 +257,17 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
                     " fails=" + std::to_string(events[slot].fails));
             {
                 auto lk = system.StallApplication();
-                system.GetVideo().WaitHost(fence_id, target_value);
+                if (!system.GetVideo().WaitHost(fence_id, target_value,
+                                               system.GetShutdownToken())) {
+                    return NvResult::Timeout;
+                }
                 system.UnstallApplication();
             }
             params.value.raw = target_value;
-            return true;
+            events[slot].fails = 0;
+            return NvResult::Success;
         }
-        return false;
+        return std::nullopt;
     };
 
     if (slot >= MaxNvEvents) {
@@ -190,14 +278,8 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
     }
 
     if (params.timeout == 0) {
-        if (check_failing()) {
-            events[slot].fails = 0;
-            NxemuAndroidDiagnostics::RecordEvent(
-                "NVDRV.nvhost_ctrl.EventWait.Result",
-                "poll-success-after-force slot=" + std::to_string(slot) +
-                    " syncpt=" + std::to_string(fence_id) +
-                    " target=" + std::to_string(target_value));
-            return NvResult::Success;
+        if (const auto result = check_failing()) {
+            return *result;
         }
         NxemuAndroidDiagnostics::RecordEvent(
             "NVDRV.nvhost_ctrl.EventWait.Result",
@@ -225,14 +307,8 @@ NvResult nvhost_ctrl::IocCtrlEventWait(IocCtrlEventWaitParams& params, bool is_a
         return NvResult::BadParameter;
     }
 
-    if (check_failing()) {
-        event.fails = 0;
-        NxemuAndroidDiagnostics::RecordEvent(
-            "NVDRV.nvhost_ctrl.EventWait.Result",
-            "wait-success-after-force slot=" + std::to_string(slot) +
-                " syncpt=" + std::to_string(fence_id) +
-                " target=" + std::to_string(target_value));
-        return NvResult::Success;
+    if (const auto result = check_failing()) {
+        return *result;
     }
 
     params.value.raw = 0;

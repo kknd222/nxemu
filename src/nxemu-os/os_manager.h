@@ -28,11 +28,14 @@ public:
 
     // IOperatingSystem
     bool Initialize() override;
+    void InitializeInput() override;
+    void StartEmulationThread(EmulationPrepareCallback prepare, void * userData) override;
     void ShutDown() override;
     bool IsShuttingDown() const override;
     bool IsPoweredOn() const override;
     void ShutdownMainProcess() override;
-    bool SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl) override;
+    bool SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t aslr_space_start, uint64_t & baseAddress, uint64_t & processID, bool is_hbl) override;
+    IKernelProcess * CurrentProcess() override;
     void StartApplicationProcess(int32_t priority, int64_t stackSize, uint32_t version, StorageId baseGameStorageId, StorageId updateStorageId, uint8_t * nacpData, uint32_t nacpDataLen) override;
     void SetMainThreadStartupArguments(uint64_t argument0, uint64_t argument1, uint64_t mainThreadHandleWriteAddress) override;
     bool LoadModule(const IModuleInfo & module, uint64_t baseAddress) override;
@@ -41,6 +44,7 @@ public:
     void KeyboardKeyPress(int modifier, int keyIndex, int keyCode) override;
     void KeyboardKeyRelease(int modifier, int keyIndex, int keyCode) override;
     void GatherGPUDirtyMemory(ICacheInvalidator * invalidator) override;
+    void GatherGPUDirtyMemoryForReadback(ICacheInvalidator * invalidator) override;
     uint64_t GetGPUTicks() override;
     uint64_t GetProgramId() override;
     bool GetExitLocked() const override;
@@ -50,6 +54,9 @@ public:
     void RegisterHostThread() override;
     IParamPackageList * GetInputDevices() const override;
     IEmulatedController & GetEmulatedController(NpadIdType index) override;
+    void AndroidRegisterController(void * j_input_device) override;
+    void SetButtonState(const char * guid, int32_t port, int32_t button_id, bool pressed) override;
+    void SetAxisPosition(const char * guid, int32_t port, int32_t axis_id, float value) override;
     ButtonNames GetButtonName(const IParamPackage & param) const override;
     bool IsController(const IParamPackage& params) const override;
     NpadStyleSet GetSupportedStyleTag() const override;
@@ -61,6 +68,7 @@ public:
     IParamPackage * GetNextInput() const override;
     void PumpInputEvents() const override;
     PerfStatsResults GetAndResetPerfStats() override;
+    void MeasureGameFrames(bool measure) override;
     void SetEmulationPaused(bool paused) override;
     bool IsEmulationPaused() const override;
     void SetFrontendApplets(ICabinetApplet * cabinet, IControllerApplet * controller, IErrorApplet * error, IMiiEditApplet * mii_edit, IParentalControlsApplet * parental_controls, IPhotoViewerApplet * photo_viewer, IProfileSelectApplet * profile_select, ISoftwareKeyboardApplet * software_keyboard, IWebBrowserApplet * web_browser) override;
@@ -86,7 +94,7 @@ private:
     OSManager(const OSManager &) = delete;
     OSManager & operator=(const OSManager &) = delete;
 
-    bool CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t & baseAddress, uint64_t & processID, bool is_hbl);
+    bool CreateApplicationProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t aslr_space_start, uint64_t & baseAddress, uint64_t & processID, bool is_hbl);
 
     Core::System m_coreSystem;
     ISystemModules & m_modules;

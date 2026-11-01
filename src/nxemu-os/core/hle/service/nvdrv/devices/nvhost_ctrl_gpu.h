@@ -12,13 +12,17 @@
 
 namespace Service::Nvidia {
 class EventInterface;
+namespace NvCore {
+class Container;
 }
+} // namespace Service::Nvidia
 
 namespace Service::Nvidia::Devices {
 
 class nvhost_ctrl_gpu final : public nvdevice {
 public:
-    explicit nvhost_ctrl_gpu(Core::System& system_, EventInterface& events_interface_);
+    explicit nvhost_ctrl_gpu(Core::System& system_, EventInterface& events_interface_,
+                             NvCore::Container& core_);
     ~nvhost_ctrl_gpu() override;
 
     NvResult Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
@@ -93,6 +97,21 @@ private:
     static_assert(sizeof(IoctlGpuGetTpcMasksArgs) == 24,
                   "IoctlGpuGetTpcMasksArgs is incorrect size");
 
+    struct IoctlNumVsms {
+        u32_le num_vsms{};
+        u32_le reserved{};
+    };
+    static_assert(sizeof(IoctlNumVsms) == 8, "IoctlNumVsms is incorrect size");
+
+    struct IoctlVsmsMapping {
+        u8 sm0_gpc_index{};
+        u8 sm0_tpc_index{};
+        u8 sm1_gpc_index{};
+        u8 sm1_tpc_index{};
+        u32_le reserved{};
+    };
+    static_assert(sizeof(IoctlVsmsMapping) == 8, "IoctlVsmsMapping is incorrect size");
+
     struct IoctlActiveSlotMask {
         u32_le slot; // always 0x07
         u32_le mask;
@@ -158,6 +177,8 @@ private:
     NvResult GetTPCMasks1(IoctlGpuGetTpcMasksArgs& params);
     NvResult GetTPCMasks3(IoctlGpuGetTpcMasksArgs& params, std::span<u32> tpc_mask);
 
+    NvResult GetNumVsms(IoctlNumVsms& params);
+    NvResult GetVsmsMapping(IoctlVsmsMapping& params);
     NvResult GetActiveSlotMask(IoctlActiveSlotMask& params);
     NvResult ZCullGetCtxSize(IoctlZcullGetCtxSize& params);
     NvResult ZCullGetInfo(IoctlNvgpuGpuZcullGetInfoArgs& params);
@@ -167,6 +188,7 @@ private:
     NvResult GetGpuTime(IoctlGetGpuTime& params);
 
     EventInterface& events_interface;
+    NvCore::Container& core;
 
     // Events
     Kernel::KEvent* error_notifier_event;

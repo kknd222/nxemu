@@ -244,6 +244,9 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
         return;
     }
     DAddr cpu_addr = *cpu_addr_opt;
+    impl->device_memory.InvalidateNativeReadRegion(cpu_addr, has_timestamp ? 16 : 4);
+    impl->device_memory.RegisterFlushCacheRegion(cpu_addr, has_timestamp ? 16 : 4,
+                                                CacheType::QueryCache);
     const size_t new_query_id = streamer->WriteCounter(cpu_addr, has_timestamp, payload, subreport);
     auto* query = streamer->GetQuery(new_query_id);
     if (is_fence) {
@@ -258,13 +261,10 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     };
     u8* pointer = impl->device_memory.template GetPointer<u8>(cpu_addr);
     u8* pointer_timestamp = impl->device_memory.template GetPointer<u8>(cpu_addr + 8);
-    bool is_synced = !Settings::IsGPULevelHigh() && is_fence;
-    std::function<void()> operation([this, is_synced, streamer, query_base = query, query_location,
+    std::function<void()> operation([this, streamer, query_base = query, query_location,
                                      pointer, pointer_timestamp] {
         if (True(query_base->flags & QueryFlagBits::IsInvalidated)) {
-            if (!is_synced) [[likely]] {
-                impl->pending_unregister.push_back(query_location);
-            }
+            impl->pending_unregister.push_back(query_location);
             return;
         }
         if (False(query_base->flags & QueryFlagBits::IsFinalValueSynced)) [[unlikely]] {
@@ -281,30 +281,32 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
             u32 value = static_cast<u32>(query_base->value);
             std::memcpy(pointer, &value, sizeof(value));
         }
-        if (!is_synced) [[likely]] {
-            impl->pending_unregister.push_back(query_location);
-        }
+        impl->pending_unregister.push_back(query_location);
     });
+    // Fast readback publishes payloads at submission, like ordinary fences, even when the
+    // report is a fence: waiting for the host GPU here serializes the guest with it.
+    // A fence still submits the pending readbacks now, as ordinary fences do, and the
+    // slot stays alive until the GPU work submitted with it retires.
+    if (!Settings::IsGpuReadbackExact() && counter_type == QueryType::Payload) {
+        if (has_timestamp) {
+            u64 timestamp = impl->gpu.GetTicks();
+            u64 value = static_cast<u64>(payload);
+            std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
+            std::memcpy(pointer, &value, sizeof(value));
+        } else {
+            std::memcpy(pointer, &payload, sizeof(payload));
+        }
+        impl->rasterizer.SyncOperation(
+            [streamer, new_query_id] { streamer->Free(new_query_id); });
+        if (is_fence) {
+            impl->rasterizer.SignalReference();
+        }
+        return;
+    }
     if (is_fence) {
         impl->rasterizer.SignalFence(std::move(operation));
     } else {
-        if (!Settings::IsGPULevelHigh() && counter_type == QueryType::Payload) {
-            if (has_timestamp) {
-                u64 timestamp = impl->gpu.GetTicks();
-                u64 value = static_cast<u64>(payload);
-                std::memcpy(pointer_timestamp, &timestamp, sizeof(timestamp));
-                std::memcpy(pointer, &value, sizeof(value));
-            } else {
-                std::memcpy(pointer, &payload, sizeof(payload));
-            }
-            streamer->Free(new_query_id);
-            return;
-        }
         impl->rasterizer.SyncOperation(std::move(operation));
-    }
-    if (is_synced) {
-        streamer->Free(new_query_id);
-        return;
     }
     auto [cont_addr, base] = gen_caching_indexing(cpu_addr);
     {
@@ -383,6 +385,14 @@ void QueryCacheBase<Traits>::NotifySegment(bool resume) {
             CounterClose(VideoCommon::QueryType::StreamingByteCount);
         }
         impl->runtime.PauseHostConditionalRendering();
+    }
+}
+
+template <typename Traits>
+void QueryCacheBase<Traits>::NotifyRenderPass(bool begin) {
+    auto* streamer = impl->streamers[static_cast<size_t>(QueryType::ZPassPixelCount64)];
+    if (streamer) {
+        streamer->NotifyRenderPass(begin);
     }
 }
 

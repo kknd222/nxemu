@@ -291,11 +291,17 @@
     <ClCompile Include="rom_info.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="game_list_cache.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
     <ClCompile Include="core\file_sys\vfs\vfs_ivirtualdirectory.cpp">
       <Filter>Source Files\core\file_sys\vfs</Filter>
     </ClCompile>
     <ClCompile Include="core\file_sys\vfs\vfs_ivirtualfile.cpp">
       <Filter>Source Files\core\file_sys\vfs</Filter>
+    </ClCompile>
+    <ClCompile Include="firmware_install.cpp">
+      <Filter>Source Files</Filter>
     </ClCompile>
     <ClCompile Include="firmware_zip.cpp">
       <Filter>Source Files</Filter>
@@ -561,6 +567,12 @@
       <Filter>Header Files\core\loader</Filter>
     </ClInclude>
     <ClInclude Include="rom_info.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="firmware_install.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="game_list_cache.h">
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="core\file_sys\vfs\vfs_ivirtualdirectory.h">

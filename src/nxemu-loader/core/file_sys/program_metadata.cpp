@@ -7,6 +7,7 @@
 #include "yuzu_common/logging/log.h"
 #include "yuzu_common/scope_exit.h"
 #include "core/file_sys/program_metadata.h"
+#include "core/file_sys/npdm_layout.h"
 #include "core/file_sys/vfs/vfs.h"
 #include "core/loader/loader.h"
 
@@ -17,6 +18,8 @@ ProgramMetadata::ProgramMetadata() = default;
 ProgramMetadata::~ProgramMetadata() = default;
 
 LoaderResultStatus ProgramMetadata::Load(VirtualFile file) {
+    is_switch2 = false;
+    if (!file) return LoaderResultStatus::ErrorNullFile;
     const std::size_t total_size = file->GetSize();
     if (total_size < sizeof(Header)) {
         return LoaderResultStatus::ErrorBadNPDMHeader;
@@ -26,9 +29,19 @@ LoaderResultStatus ProgramMetadata::Load(VirtualFile file) {
         return LoaderResultStatus::ErrorBadNPDMHeader;
     }
 
-    if (sizeof(AcidHeader) != file->ReadObject(&acid_header, npdm_header.acid_offset)) {
+    const auto bytes = file->ReadAllBytes();
+    const auto layout = InspectNpdmLayout(bytes);
+    if (!layout) return LoaderResultStatus::ErrorBadACIDHeader;
+
+    acid_header = {};
+    // Keep the original structure for the parsed body. Switch 2 uses 0x300
+    // signature/key bytes, while the body has the same layout as Switch 1.
+    constexpr std::size_t body_size = sizeof(AcidHeader) - 0x200;
+    if (file->ReadBytes(reinterpret_cast<u8*>(&acid_header) + 0x200,
+                        body_size, layout->acid_body) != body_size) {
         return LoaderResultStatus::ErrorBadACIDHeader;
     }
+    is_switch2 = layout->switch2;
 
     if (sizeof(AciHeader) != file->ReadObject(&aci_header, npdm_header.aci_offset)) {
         return LoaderResultStatus::ErrorBadACIHeader;
@@ -36,7 +49,7 @@ LoaderResultStatus ProgramMetadata::Load(VirtualFile file) {
 
     // Load acid_file_access per-component instead of the entire struct, since this struct does not
     // reflect the layout of the real data.
-    std::size_t current_offset = acid_header.fac_offset;
+    std::size_t current_offset = layout->acid_fac;
     if (sizeof(FileAccessControl::version) != file->ReadBytes(&acid_file_access.version,
                                                               sizeof(FileAccessControl::version),
                                                               current_offset)) {
@@ -54,7 +67,7 @@ LoaderResultStatus ProgramMetadata::Load(VirtualFile file) {
     }
 
     // Load aci_file_access per-component instead of the entire struct, same as acid_file_access
-    current_offset = aci_header.fah_offset;
+    current_offset = layout->aci_fah;
     if (sizeof(FileAccessHeader::version) != file->ReadBytes(&aci_file_access.version,
                                                              sizeof(FileAccessHeader::version),
                                                              current_offset)) {
@@ -88,7 +101,7 @@ LoaderResultStatus ProgramMetadata::Load(VirtualFile file) {
 
     aci_kernel_capabilities.resize(aci_header.kac_size / sizeof(u32));
     const uint64_t read_size = aci_header.kac_size;
-    const uint64_t read_offset = npdm_header.aci_offset + aci_header.kac_offset;
+    const uint64_t read_offset = layout->aci_kac;
     if (file->ReadBytes(aci_kernel_capabilities.data(), read_size, read_offset) != read_size) {
         return LoaderResultStatus::ErrorBadKernelCapabilityDescriptors;
     }
@@ -125,6 +138,7 @@ void ProgramMetadata::LoadManual(bool is_64_bit, ProgramAddressSpaceType address
                                  u32 main_thread_stack_size, uint64_t title_id,
                                  uint64_t filesystem_permissions, u32 system_resource_size,
                                  KernelCapabilityDescriptors capabilities) {
+    is_switch2 = false;
     npdm_header.has_64_bit_instructions.Assign(is_64_bit);
     npdm_header.address_space_type.Assign(address_space);
     npdm_header.main_thread_priority = static_cast<u8>(main_thread_prio);

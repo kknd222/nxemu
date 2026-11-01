@@ -1,7 +1,9 @@
 // SPDX-FileCopyrightText: 2023 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <atomic>
+#include <cstdlib>
 #include <limits>
 #include <memory>
 #include <type_traits>
@@ -9,17 +11,17 @@
 #include "yuzu_common/address_space.h"
 #include "yuzu_common/address_space.inc"
 #include "yuzu_common/alignment.h"
+#include "yuzu_common/coalesced_memory_copy.h"
+#include "yuzu_common/differential_memory_copy.h"
+#include "yuzu_common/parallel_readback_copy.h"
 #include "yuzu_common/yuzu_assert.h"
 #include "yuzu_common/div_ceil.h"
 #include "yuzu_common/scope_exit.h"
 #include <nxemu-module-spec/operating_system.h>
-#include "nxemu-os/os_settings_identifiers.h"
 
 #include "host1x/gpu_device_memory_manager.h"
 #include "rasterizer_interface.h"
 #include "device_memory_manager.h"
-
-extern IModuleSettings * g_settings;
 
 namespace Core
 {
@@ -148,7 +150,6 @@ private:
 struct EmptyAllocator {
     EmptyAllocator([[maybe_unused]] DAddr address) {}
 };
-
 } // namespace
 
 template <typename DTraits>
@@ -193,25 +194,18 @@ template <typename Traits>
 DeviceMemoryManager<Traits>::DeviceMemoryManager(const IDeviceMemory & device_memory_) :
     physical_base{reinterpret_cast<const uintptr_t>(device_memory_.BackingBasePointer())},
     device_inter{nullptr}, compressed_physical_ptr(device_as_size >> DEVICE_PAGEBITS),
-    compressed_device_addr(1ULL << ((g_settings->GetInt(NXOsSetting::MemoryLayout) == (int32_t)MemoryLayout::Memory_4Gb ? physical_min_bits : physical_max_bits) - DEVICE_PAGEBITS)),
+    compressed_device_addr(Common::AlignUp(device_memory_.BackingSize(), DEVICE_PAGESIZE) >> DEVICE_PAGEBITS),
     continuity_tracker(device_as_size >> DEVICE_PAGEBITS),
     cpu_backing_address(device_as_size >> DEVICE_PAGEBITS)
 {
     impl = std::make_unique<DeviceMemoryManagerAllocator<Traits>>();
     cached_pages = std::make_unique<CachedPages>();
 
+    // VirtualBuffer uses fresh, zero-filled OS pages. Leave the address tables
+    // untouched so unmapped pages do not consume physical memory. Only the
+    // continuity table has a nonzero initial value.
     const size_t total_virtual = device_as_size >> DEVICE_PAGEBITS;
-    for (size_t i = 0; i < total_virtual; i++)
-    {
-        compressed_physical_ptr[i] = 0;
-        continuity_tracker[i] = 1;
-        cpu_backing_address[i] = 0;
-    }
-    const size_t total_phys = 1ULL << ((g_settings->GetInt(NXOsSetting::MemoryLayout) == (int32_t)MemoryLayout::Memory_4Gb ? physical_min_bits : physical_max_bits) - DEVICE_PAGEBITS);
-    for (size_t i = 0; i < total_phys; i++)
-    {
-        compressed_device_addr[i] = 0;
-    }
+    std::fill_n(continuity_tracker.data(), total_virtual, 1U);
 }
 
 template <typename Traits>
@@ -244,10 +238,10 @@ void DeviceMemoryManager<Traits>::Free(DAddr start, size_t size)
 template <typename Traits>
 void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size_t size, Asid asid, bool track)
 {
-    IMemory * process_memory = registered_processes[asid.id];
+    IMemory * process_memory = GetRegisteredProcess(asid);
     size_t start_page_d = address >> DEVICE_PAGEBITS;
     size_t num_pages = Common::AlignUp(size, DEVICE_PAGESIZE) >> DEVICE_PAGEBITS;
-    std::scoped_lock lk(mapping_guard);
+    std::unique_lock lk(mapping_guard);
     for (size_t i = 0; i < num_pages; i++)
     {
         const VAddr new_vaddress = virtual_address + i * DEVICE_PAGESIZE;
@@ -278,6 +272,13 @@ void DeviceMemoryManager<Traits>::Map(DAddr address, VAddr virtual_address, size
     if (track)
     {
         TrackContinuityImpl(address, virtual_address, size, asid);
+    }
+    lk.unlock();
+    if (device_inter != nullptr)
+    {
+        // The caches may have synchronized these pages while nothing backed them. Their contents
+        // are unknown and the guest pages were never write protected, start over.
+        device_inter->InvalidateRegion(address, size);
     }
 }
 
@@ -315,7 +316,7 @@ void DeviceMemoryManager<Traits>::Unmap(DAddr address, size_t size)
 template <typename Traits>
 void DeviceMemoryManager<Traits>::TrackContinuityImpl(DAddr address, VAddr virtual_address, size_t size, Asid asid)
 {
-    IMemory * process_memory = registered_processes[asid.id];
+    IMemory * process_memory = GetRegisteredProcess(asid);
     size_t start_page_d = address >> DEVICE_PAGEBITS;
     size_t num_pages = Common::AlignUp(size, DEVICE_PAGESIZE) >> DEVICE_PAGEBITS;
     uintptr_t last_ptr = 0;
@@ -534,8 +535,48 @@ void DeviceMemoryManager<Traits>::WriteBlockUnsafe(DAddr address, const void* sr
 }
 
 template <typename Traits>
+void DeviceMemoryManager<Traits>::WriteBlockForGpuReadback(DAddr address,
+                                                         const void* src_pointer, size_t size)
+{
+    if (size < 96 * 1024 * 1024) {
+        // Retirement holds the cache mutex and excludes cancelled CPU writes.
+        WalkBlock(address, size, [&](size_t, DAddr current_vaddr)
+            {
+                LOG_ERROR(HW_Memory, "Unmapped Device WriteBlock @ 0x{:016X} (start address = 0x{:016X}, size = {})", current_vaddr, address, size);
+            },
+            [&](size_t copy_amount, u8* const dst_ptr)
+            {
+                Common::CopyChangedMemoryForReadback(dst_ptr, src_pointer, copy_amount);
+            },
+            [&](const std::size_t copy_amount)
+            {
+                src_pointer = static_cast<const u8*>(src_pointer) + copy_amount;
+            });
+        return;
+    }
+    Common::CoalescedMemoryCopy copies;
+    // Walk the original page mappings. Only combine the resulting host spans;
+    // do not infer continuity across a hole, alias or unrelated physical page.
+    WalkBlock(address, size, [&](size_t copy_amount, DAddr current_vaddr)
+        {
+            copies.Flush();
+            LOG_ERROR(HW_Memory,"Unmapped Device WriteBlock @ 0x{:016X} (start address = 0x{:016X}, size = {})", current_vaddr, address, size);
+        },
+        [&](size_t copy_amount, u8* const dst_ptr)
+        {
+            copies.Append(dst_ptr, src_pointer, copy_amount);
+        },
+        [&](const std::size_t copy_amount)
+        {
+            src_pointer = static_cast<const u8*>(src_pointer) + copy_amount;
+        });
+    copies.Flush();
+}
+
+template <typename Traits>
 Asid DeviceMemoryManager<Traits>::RegisterProcess(IMemory * memory_device_inter)
 {
+    std::scoped_lock lk(process_guard);
     size_t new_id{};
     if (!id_pool.empty())
     {
@@ -554,8 +595,102 @@ Asid DeviceMemoryManager<Traits>::RegisterProcess(IMemory * memory_device_inter)
 template <typename Traits>
 void DeviceMemoryManager<Traits>::UnregisterProcess(Asid asid)
 {
+    std::scoped_lock lk(process_guard);
     registered_processes[asid.id] = nullptr;
     id_pool.push_front(asid.id);
+}
+
+template <typename Traits>
+IMemory* DeviceMemoryManager<Traits>::GetRegisteredProcess(Asid asid)
+{
+    // A session's last allocation can be released on the compositor/GPU thread.
+    // Protect the registry and recycled IDs against concurrent registration.
+    std::scoped_lock lk(process_guard);
+    return asid.id < registered_processes.size() ? registered_processes[asid.id] : nullptr;
+}
+
+template <typename Traits>
+void DeviceMemoryManager<Traits>::RegisterNativeRead(DAddr addr, size_t size)
+{
+#if defined(__APPLE__)
+    static const bool enabled = std::getenv("NXEMU_NCE_PRECISE_READ_TRACKING") != nullptr;
+    if (!enabled || size == 0) return;
+    Common::ScopedRangeLock lk(counter_guard, addr, size);
+    const size_t end = Common::DivCeil(addr + size, DEVICE_PAGESIZE);
+    for (size_t page = addr >> DEVICE_PAGEBITS; page < end; ++page)
+    {
+        const auto [asid, address] = ExtractCPUBacking(page);
+        if (address == 0) continue;
+        if (auto* memory = GetRegisteredProcess(asid))
+        {
+            native_read_pages.insert(page);
+            memory->RasterizerSetNativeReadAccess(Common::AlignDown(address, DEVICE_PAGESIZE),
+                                                  DEVICE_PAGESIZE, true);
+        }
+    }
+#endif
+}
+
+template <typename Traits>
+void DeviceMemoryManager<Traits>::InvalidateNativeReadRegion(DAddr addr, size_t size)
+{
+#if defined(__APPLE__)
+    // The common case performs no range walk, mapping lookup or protection change.
+    if (size == 0 || native_read_pages.empty()) return;
+    const size_t end = Common::DivCeil(addr + size, DEVICE_PAGESIZE);
+    auto it = native_read_pages.lower_bound(addr >> DEVICE_PAGEBITS);
+    if (it == native_read_pages.end() || *it >= end) return;
+    Common::ScopedRangeLock lk(counter_guard, addr, size);
+    while (it != native_read_pages.end() && *it < end)
+    {
+        const size_t page = *it;
+        it = native_read_pages.erase(it);
+        const auto [asid, address] = ExtractCPUBacking(page);
+        if (address == 0) continue;
+        if (auto* memory = GetRegisteredProcess(asid))
+            memory->RasterizerSetNativeReadAccess(Common::AlignDown(address, DEVICE_PAGESIZE),
+                                                  DEVICE_PAGESIZE, false);
+    }
+#endif
+}
+
+template <typename Traits>
+void DeviceMemoryManager<Traits>::UpdatePagesReadCachedCount(DAddr addr, size_t size, s32 delta)
+{
+#if defined(__APPLE__)
+    if (size == 0) return;
+    Common::ScopedRangeLock lk(counter_guard, addr, size);
+    std::atomic_thread_fence(std::memory_order_acquire);
+    const size_t page_end = Common::DivCeil(addr + size, DEVICE_PAGESIZE);
+    size_t page = addr >> DEVICE_PAGEBITS;
+    IMemory* memory = nullptr;
+    Asid current_asid{};
+    VAddr begin{};
+    size_t bytes{};
+    const auto flush = [&] {
+        if (bytes && memory) memory->RasterizerMarkRegionReadCached(begin, bytes, delta);
+        bytes = 0;
+    };
+    for (; page < page_end; ++page)
+    {
+        const auto [asid, address] = ExtractCPUBacking(page);
+        if (address == 0)
+        {
+            flush();
+            continue;
+        }
+        const VAddr base = Common::AlignDown(address, DEVICE_PAGESIZE);
+        if (!bytes || asid.id != current_asid.id || base != begin + bytes)
+        {
+            flush();
+            current_asid = asid;
+            memory = GetRegisteredProcess(asid);
+            begin = base;
+        }
+        bytes += DEVICE_PAGESIZE;
+    }
+    flush();
+#endif
 }
 
 template <typename Traits>
@@ -572,7 +707,7 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCount(DAddr addr, size_t size
     const size_t page_end = Common::DivCeil(addr + size, DEVICE_PAGESIZE);
     size_t page = addr >> DEVICE_PAGEBITS;
     auto [asid, base_vaddress] = ExtractCPUBacking(page);
-    auto* memory_device_inter = registered_processes[asid.id];
+    auto* memory_device_inter = GetRegisteredProcess(asid);
     const auto release_pending = [&]
     {
         if (uncache_bytes > 0)
@@ -601,6 +736,8 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCount(DAddr addr, size_t size
 
         if (vpage == 0) [[unlikely]]
         {
+            // Keep counting pages without a backing, they are balanced once the page is mapped
+            count.fetch_add(static_cast<CounterType>(delta), std::memory_order_release);
             release_pending();
             continue;
         }
@@ -608,7 +745,8 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCount(DAddr addr, size_t size
         if (asid.id != asid_2.id) [[unlikely]]
         {
             release_pending();
-            memory_device_inter = registered_processes[asid_2.id];
+            memory_device_inter = GetRegisteredProcess(asid_2);
+            asid = asid_2;
         }
 
         if (vpage != old_vpage + 1) [[unlikely]]
@@ -651,12 +789,10 @@ void DeviceMemoryManager<Traits>::UpdatePagesCachedCount(DAddr addr, size_t size
     }
     release_pending();
 }
-
 } // namespace Core
 
 namespace Tegra
 {
-
 struct MaxwellDeviceMethods
 {
     static inline void MarkRegionCaching(IMemory * interface, VAddr address, size_t size, bool caching)
@@ -664,7 +800,6 @@ struct MaxwellDeviceMethods
         interface->RasterizerMarkRegionCached(address, size, caching);
     }
 };
-
 } // namespace Tegra
 
 template struct Core::DeviceMemoryManagerAllocator<Tegra::MaxwellDeviceTraits>;

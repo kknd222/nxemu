@@ -6,6 +6,7 @@ namespace NXVideoSetting
     constexpr const char * ShaderBackend = "nxvideo:ShaderBackend";
     constexpr const char * VulkanDevice = "nxvideo:VulkanDevice";
     constexpr const char * UseDiskPipelineCache = "nxvideo:UseDiskPipelineCache";
+    constexpr const char * RecordShaderRecipes = "nxvideo:RecordShaderRecipes";
     constexpr const char * UseAsynchronousGPUEmulation = "nxvideo:UseAsynchronousGPUEmulation";
     constexpr const char * AstcDecodeMode = "nxvideo:AstcDecodeMode";
     constexpr const char * VSyncMode = "nxvideo:VSyncMode";
@@ -19,12 +20,18 @@ namespace NXVideoSetting
     constexpr const char * EnableAsynchronousPresentation = "nxvideo:EnableAsynchronousPresentation";
     constexpr const char * ForceMaximumClocks = "nxvideo:ForceMaximumClocks";
     constexpr const char * EnableReactiveFlushing = "nxvideo:EnableReactiveFlushing";
+    constexpr const char * GpuCommandSynchronization = "nxvideo:GpuCommandSynchronization";
+    constexpr const char * FastGpuReadback = "nxvideo:FastGpuReadback";
     constexpr const char * UseAsynchronousShaderBuilding = "nxvideo:UseAsynchronousShaderBuilding";
+    constexpr const char * NXShaderWarmupMode = "nxvideo:NXShaderWarmupMode";
+    constexpr const char * NXShaderInitialMinimum = "nxvideo:NXShaderInitialMinimum";
+    constexpr const char * NXShaderInitialSeconds = "nxvideo:NXShaderInitialSeconds";
     constexpr const char * FastGPUTime = "nxvideo:FastGPUTime";
     constexpr const char * UseVulkanPipelineCache = "nxvideo:UseVulkanPipelineCache";
     constexpr const char * SyncToFramerateOfVideoPlayback = "nxvideo:SyncToFramerateOfVideoPlayback";
     constexpr const char * BarrierFeedbackLoops = "nxvideo:BarrierFeedbackLoops";
     constexpr const char * AccuracyLevel = "nxvideo:AccuracyLevel";
+    constexpr const char * DMAAccuracy = "nxvideo:DMAAccuracy";
     constexpr const char * AnisotropicFiltering = "nxvideo:AnisotropicFiltering";
     constexpr const char * ASTCRecompressionMethod = "nxvideo:ASTCRecompressionMethod";
     constexpr const char * VRAMUsageMode = "nxvideo:VRAMUsageMode";

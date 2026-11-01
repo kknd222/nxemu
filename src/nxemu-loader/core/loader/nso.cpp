@@ -1,11 +1,17 @@
+// SPDX-FileCopyrightText: Copyright 2026 Eden Emulator Project
+// SPDX-License-Identifier: GPL-3.0-or-later
+
 // SPDX-FileCopyrightText: Copyright 2018 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
+#include <algorithm>
 #include <cinttypes>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
+#include <limits>
+#include <span>
 #include <vector>
 
 #include "core/core.h"
@@ -19,9 +25,14 @@
 #include "yuzu_common/hex_util.h"
 #include "yuzu_common/logging/log.h"
 #include "yuzu_common/lz4_compression.h"
+#include "yuzu_common/zbic_compression.h"
 #include "yuzu_common/settings.h"
 #include "yuzu_common/swap.h"
+#include <nxemu-cpu/cpu_settings_identifiers.h>
+#include <nxemu-module-spec/base.h>
 
+
+extern IModuleSettings * g_settings;
 namespace Loader
 {
 namespace
@@ -38,15 +49,6 @@ struct MODHeader
 };
 static_assert(sizeof(MODHeader) == 0x1c, "MODHeader has incorrect size.");
 
-std::vector<u8> DecompressSegment(const std::vector<u8> & compressed_data, const NSOSegmentHeader & header)
-{
-    std::vector<u8> uncompressed_data = Common::Compression::DecompressDataLZ4(compressed_data, header.size);
-
-    ASSERT_MSG(uncompressed_data.size() == header.size, "{} != {}", header.size, uncompressed_data.size());
-
-    return uncompressed_data;
-}
-
 constexpr u32 PageAlignSize(u32 size)
 {
     return static_cast<u32>((size + Core::Memory::YUZU_PAGEMASK) & ~Core::Memory::YUZU_PAGEMASK);
@@ -58,6 +60,7 @@ bool NSOHeader::IsSegmentCompressed(size_t segment_num) const
     ASSERT_MSG(segment_num < 3, "Invalid segment {}", segment_num);
     return ((flags >> segment_num) & 1) != 0;
 }
+
 
 AppLoader_NSO::AppLoader_NSO(FileSys::VirtualFile file_) :
     AppLoader(std::move(file_))
@@ -105,19 +108,74 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Systemloader & loader, ISystemMod
     Kernel::PhysicalMemory program_image;
     for (std::size_t i = 0; i < nso_header.segments.size(); ++i)
     {
-        std::vector<u8> data = nso_file.ReadBytes(nso_header.segments_compressed_size[i], nso_header.segments[i].offset);
-        if (nso_header.IsSegmentCompressed(i))
+        const auto & segment = nso_header.segments[i];
+        const bool compressed = nso_header.IsSegmentCompressed(i);
+        const u32 stored_size = compressed ? nso_header.segments_compressed_size[i] : segment.size;
+        const u64 file_size = nso_file.GetSize();
+        // Check in wide arithmetic before allocating or calling the int-sized LZ4 API.
+        const u64 image_end = module_start + static_cast<u64>(segment.location) + segment.size;
+        if (segment.offset > file_size || stored_size > file_size - segment.offset ||
+            segment.size > static_cast<u32>(std::numeric_limits<int>::max()) ||
+            stored_size > static_cast<u32>(std::numeric_limits<int>::max()) ||
+            image_end > std::numeric_limits<u32>::max() - Core::Memory::YUZU_PAGEMASK)
         {
-            data = DecompressSegment(data, nso_header.segments[i]);
+            LOG_ERROR(Loader, "Invalid NSO segment {} in {} (offset={:#x}, stored={}, size={})",
+                      i, nso_file.GetName(), segment.offset, stored_size, segment.size);
+            return std::nullopt;
         }
-        program_image.resize(module_start + nso_header.segments[i].location + static_cast<u32>(data.size()));
-        std::memcpy(program_image.data() + module_start + nso_header.segments[i].location, data.data(), data.size());
+        std::vector<u8> data = nso_file.ReadBytes(stored_size, segment.offset);
+        if (data.size() != stored_size)
+        {
+            LOG_ERROR(Loader, "Truncated NSO segment {} in {}", i, nso_file.GetName());
+            return std::nullopt;
+        }
+        if (compressed)
+        {
+            if (nso_header.IsZBICCompressed())
+            {
+                std::vector<u8> uncompressed_data(segment.size);
+                if (!Common::Compression::DecompressDataZBIC(uncompressed_data, data))
+                {
+                    LOG_ERROR(Loader, "ZBIC decompression failed for segment {} in {}: expected {} bytes",
+                              i, nso_file.GetName(), segment.size);
+                    return std::nullopt;
+                }
+                data = std::move(uncompressed_data);
+            }
+            else
+            {
+                data = Common::Compression::DecompressDataLZ4(data, segment.size);
+                if (data.size() != segment.size)
+                {
+                    LOG_ERROR(Loader, "LZ4 decompression failed for segment {} in {}: expected {} bytes",
+                              i, nso_file.GetName(), segment.size);
+                    return std::nullopt;
+                }
+            }
+        }
+        // Preserve earlier segments even when a later segment is empty or located below them.
+        program_image.resize((std::max)(program_image.size(), static_cast<size_t>(image_end)));
+        if (!data.empty())
+        {
+            std::memcpy(program_image.data() + module_start + segment.location, data.data(), data.size());
+        }
         codeset.segments[i].addr = module_start + nso_header.segments[i].location;
         codeset.segments[i].offset = module_start + nso_header.segments[i].location;
         codeset.segments[i].size = nso_header.segments[i].size;
     }
 
-    if (should_pass_arguments && !Settings::values.program_args.GetValue().empty())
+    const u64 argument_size = should_pass_arguments && !Settings::values.program_args.GetValue().empty()
+                                  ? NSO_ARGUMENT_DATA_ALLOCATION_SIZE : 0;
+    if (program_image.size() + argument_size + static_cast<u64>(nso_header.segments[2].bss_size) >
+        std::numeric_limits<u32>::max() - Core::Memory::YUZU_PAGEMASK ||
+        (argument_size != 0 && Settings::values.program_args.GetValue().size() >
+                                  NSO_ARGUMENT_DATA_ALLOCATION_SIZE - sizeof(NSOArgumentHeader)))
+    {
+        LOG_ERROR(Loader, "Invalid NSO BSS or argument size in {}", nso_file.GetName());
+        return std::nullopt;
+    }
+
+    if (argument_size != 0)
     {
         const auto arg_data{Settings::values.program_args.GetValue()};
 
@@ -131,8 +189,25 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Systemloader & loader, ISystemMod
 
     codeset.DataSegment().size += nso_header.segments[2].bss_size;
     u32 image_size{PageAlignSize(static_cast<u32>(program_image.size()) + nso_header.segments[2].bss_size)};
-    program_image.resize(image_size);
+#if defined(__APPLE__)
+    // Native code execution maps 16 KiB host pages: start every module, and the patch section
+    // after the last one, on a host page, so the end of .bss never shares one with code.
+    if (g_settings->GetBool(NXCpuSetting::NceEnabled))
+    {
+        constexpr u32 HostPageMask = 0x3FFF;
+        image_size = (image_size + HostPageMask) & ~HostPageMask;
+    }
+#endif
+    const bool relocating = patch_collection && patch_index >= 0 && load_into_process;
+    const bool patch_follows_image = relocating && module_start == 0;
+    if (patch_follows_image)
+    {
+        program_image.resize(image_size);
+    }
 
+    // The padding to the host page stays unmapped for the guest, as nothing follows .bss on
+    // Horizon: the SDK reads program arguments from the end of rtld when that memory is
+    // read-write, and an empty padding there gives every application argc = 0.
     for (std::size_t i = 0; i < nso_header.segments.size(); ++i)
     {
         codeset.segments[i].size = PageAlignSize(codeset.segments[i].size);
@@ -149,7 +224,12 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Systemloader & loader, ISystemMod
 
         pi_header = pm->PatchNSO(pi_header, name);
 
-        std::copy(pi_header.begin() + sizeof(NSOHeader), pi_header.end(), patchable_section.data());
+        const size_t patched_size = std::min<size_t>(pi_header.size() - sizeof(NSOHeader), image_size - module_start);
+        if (module_start + patched_size > program_image.size())
+        {
+            program_image.resize(module_start + patched_size);
+        }
+        std::copy_n(pi_header.begin() + sizeof(NSOHeader), patched_size, program_image.begin() + module_start);
     }
 
     if (patch_collection && patch_index >= 0)
@@ -157,32 +237,20 @@ std::optional<VAddr> AppLoader_NSO::LoadModule(Systemloader & loader, ISystemMod
         const auto & code = codeset.CodeSegment();
         if (!load_into_process)
         {
-            patch_collection->PatchText(patch_index, program_image.data(), (uint32_t)program_image.size(), (uint32_t)code.offset, code.size);
+            patch_collection->PatchText(patch_index, program_image.data(), image_size, (uint32_t)code.offset, code.size);
         }
         else
         {
             uint64_t patch_segment_addr = 0;
             uint32_t patch_segment_size = 0;
-
-            // RelocateAndCopy appends the generated NCE patch code into program_image at the
-            // old image_size. The original nxemu Android port passed program_image.data()
-            // without growing the vector first, so the patch bytes were written past the
-            // vector and were not included in codeset.memory. On device this produced a jump
-            // into a zero-filled patch page (inst=0x00000000) and immediate SIGILL. Reserve a
-            // real writable tail before relocation, then shrink to the exact relocated size.
-            const uint32_t image_size_before_relocate = image_size;
-            const uint32_t patch_scratch_size = patch_collection->GetTotalPatchSize();
-            if (patch_scratch_size != 0)
+            const uint32_t patch_bytes = patch_collection->GetTotalPatchSize();
+            const size_t data_size = program_image.size();
+            if (patch_follows_image)
             {
-                program_image.resize(static_cast<size_t>(image_size_before_relocate) + patch_scratch_size);
+                program_image.resize(image_size + patch_bytes);
             }
-
             patch_collection->Relocate(patch_index, load_base, program_image.data(), &image_size, (uint32_t)code.offset, code.size, &patch_segment_addr, &patch_segment_size);
-            program_image.resize(image_size);
-            LOG_INFO(Loader,
-                     "Android NCE relocated NSO patch: name={} index={} load_base={:#x} image_before={:#x} image_after={:#x} scratch={:#x} patch_addr={:#x} patch_size={:#x}",
-                     name, patch_index, load_base, image_size_before_relocate, image_size,
-                     patch_scratch_size, patch_segment_addr, patch_segment_size);
+            program_image.resize(patch_follows_image ? image_size : data_size);
             if (patch_segment_size != 0)
             {
                 Kernel::CodeSet::Segment & patch_segment = codeset.PatchSegment();

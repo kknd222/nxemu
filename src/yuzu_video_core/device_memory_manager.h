@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <set>
 #include <array>
 #include <atomic>
 #include <bit>
@@ -15,6 +16,7 @@
 #include "yuzu_common/range_mutex.h"
 #include "yuzu_common/scratch_buffer.h"
 #include "yuzu_common/virtual_buffer.h"
+#include "yuzu_video_core/flush_region_cache_filter.h"
 
 #include <nxemu-module-spec/cpu.h>
 #include <nxemu-module-spec/operating_system.h>
@@ -105,19 +107,32 @@ public:
     void ReadBlockUnsafe(DAddr address, void* dest_pointer, size_t size);
     void WriteBlock(DAddr address, const void* src_pointer, size_t size);
     void WriteBlockUnsafe(DAddr address, const void* src_pointer, size_t size);
+    void WriteBlockForGpuReadback(DAddr address, const void* src_pointer, size_t size);
 
     Asid RegisterProcess(IMemory * memory);
     void UnregisterProcess(Asid id);
 
     void UpdatePagesCachedCount(DAddr addr, size_t size, s32 delta);
+    void UpdatePagesReadCachedCount(DAddr addr, size_t size, s32 delta);
+    // Called on the serialized GPU producer, under its execution lock.
+    void RegisterNativeRead(DAddr addr, size_t size);
+    void InvalidateNativeReadRegion(DAddr addr, size_t size);
+
+    // Presence remains conservative across deletion, remapping and address reuse.
+    void RegisterFlushCacheRegion(DAddr addr, u64 size, VideoCommon::CacheType types) {
+        flush_cache_filter.Register(addr, size, types);
+    }
+
+    [[nodiscard]] VideoCommon::CacheType FilterFlushCaches(
+        DAddr addr, u64 size, VideoCommon::CacheType requested) const {
+        return flush_cache_filter.Filter(addr, size, requested);
+    }
 
     static constexpr size_t AS_BITS = Traits::device_virtual_bits;
 
 private:
     static constexpr size_t device_virtual_bits = Traits::device_virtual_bits;
     static constexpr size_t device_as_size = 1ULL << device_virtual_bits;
-    static constexpr size_t physical_min_bits = 32;
-    static constexpr size_t physical_max_bits = 33;
     static constexpr size_t page_bits = 12;
     static constexpr size_t page_size = 1ULL << page_bits;
     static constexpr size_t page_mask = page_size - 1ULL;
@@ -158,6 +173,8 @@ private:
 
     std::deque<size_t> id_pool;
     std::deque<IMemory*> registered_processes;
+    std::mutex process_guard;
+    IMemory* GetRegisteredProcess(Asid asid);
 
     // Memory protection management
 
@@ -206,6 +223,10 @@ private:
         (1ULL << (device_virtual_bits - page_bits)) / subentries;
     using CachedPages = std::array<CounterEntry, num_counter_entries>;
     std::unique_ptr<CachedPages> cached_pages;
+    VideoCommon::FlushRegionCacheFilter<Traits::device_virtual_bits> flush_cache_filter;
+    // Physical pages opened by a completed native readback. Only actual GPU image
+    // writes consume these observers; cache-management commands leave them alone.
+    std::set<size_t> native_read_pages;
     Common::RangeMutex counter_guard;
     std::mutex mapping_guard;
 };

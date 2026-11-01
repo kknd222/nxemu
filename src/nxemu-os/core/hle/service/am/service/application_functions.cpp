@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "core/hle/service/am/service/application_functions.h"
+#include "nxemu-loader/core/file_sys/common_funcs.h"
 #include "core/file_sys/errors.h"
 #include "core/hle/kernel/k_transfer_memory.h"
 #include "core/hle/service/am/am_results.h"
@@ -35,7 +36,7 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_
         {1, D<&IApplicationFunctions::PopLaunchParameter>, "PopLaunchParameter"},
         {10, nullptr, "CreateApplicationAndPushAndRequestToStart"},
         {11, nullptr, "CreateApplicationAndPushAndRequestToStartForQuest"},
-        {12, nullptr, "CreateApplicationAndRequestToStart"},
+        {12, D<&IApplicationFunctions::CreateApplicationAndRequestToStart>, "CreateApplicationAndRequestToStart"},
         {13, nullptr, "CreateApplicationAndRequestToStartForQuest"},
         {14, nullptr, "CreateApplicationWithAttributeAndPushAndRequestToStartForQuest"},
         {15, nullptr, "CreateApplicationWithAttributeAndRequestToStartForQuest"},
@@ -59,7 +60,7 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_
         {37, nullptr, "GetLimitedApplicationLicenseUpgradableEvent"},
         {40, D<&IApplicationFunctions::NotifyRunning>, "NotifyRunning"},
         {50, D<&IApplicationFunctions::GetPseudoDeviceId>, "GetPseudoDeviceId"},
-        {60, nullptr, "SetMediaPlaybackStateForApplication"},
+        {60, D<&IApplicationFunctions::SetMediaPlaybackStateForApplication>, "SetMediaPlaybackStateForApplication"},
         {65, D<&IApplicationFunctions::IsGamePlayRecordingSupported>, "IsGamePlayRecordingSupported"},
         {66, D<&IApplicationFunctions::InitializeGamePlayRecording>, "InitializeGamePlayRecording"},
         {67, D<&IApplicationFunctions::SetGamePlayRecordingState>, "SetGamePlayRecordingState"},
@@ -86,12 +87,13 @@ IApplicationFunctions::IApplicationFunctions(Core::System& system_, std::shared_
         {150, D<&IApplicationFunctions::GetNotificationStorageChannelEvent>, "GetNotificationStorageChannelEvent"},
         {151, nullptr, "TryPopFromNotificationStorageChannel"},
         {160, D<&IApplicationFunctions::GetHealthWarningDisappearedSystemEvent>, "GetHealthWarningDisappearedSystemEvent"},
-        {170, nullptr, "SetHdcpAuthenticationActivated"},
+        {170, D<&IApplicationFunctions::SetHdcpAuthenticationActivated>, "SetHdcpAuthenticationActivated"},
         {180, nullptr, "GetLaunchRequiredVersion"},
         {181, nullptr, "UpgradeLaunchRequiredVersion"},
         {190, nullptr, "SendServerMaintenanceOverlayNotification"},
         {200, nullptr, "GetLastApplicationExitReason"},
         {210, D<&IApplicationFunctions::GetUnknownEvent210>, "Unknown210"},
+        {330, D<&IApplicationFunctions::Unknown330>, "Unknown330"},
         {500, nullptr, "StartContinuousRecordingFlushForDebug"},
         {1000, nullptr, "CreateMovieMaker"},
         {1001, D<&IApplicationFunctions::PrepareForJit>, "PrepareForJit"},
@@ -124,6 +126,31 @@ Result IApplicationFunctions::PopLaunchParameter(Out<SharedPointer<IStorage>> ou
 
     *out_storage = std::make_shared<IStorage>(system, std::move(data));
     R_SUCCEED();
+}
+
+Result IApplicationFunctions::CreateApplicationAndRequestToStart(u64 application_id) {
+    LOG_INFO(Service_AM, "called, application_id={:016X} current_program_id={:016X}",
+             application_id, m_applet->program_id);
+
+    // ApplicationId=0 requests a relaunch of the current application. Route this through
+    // RestartProgram so NXEmu preserves the current program index instead of forcing index 0.
+    if (application_id == 0) {
+        R_RETURN(ExecuteProgram(ProgramSpecifyKind::RestartProgram, 0));
+    }
+
+    // An ApplicationId from the same base title selects a program in the current content.
+    const u64 application_base_id = FileSys::GetBaseTitleID(application_id);
+    const u64 current_base_id = FileSys::GetBaseTitleID(m_applet->program_id);
+    if (application_base_id == current_base_id) {
+        const u64 program_index = application_id - application_base_id;
+        R_RETURN(ExecuteProgram(ProgramSpecifyKind::ExecuteProgram, program_index));
+    }
+
+    // A different base title would require resolving ApplicationId to another installed
+    // content path, which the current NXEmu ExecuteProgram frontend contract cannot do.
+    LOG_ERROR(Service_AM, "Launching a different application ({:016X}) is not implemented!",
+              application_id);
+    R_THROW(ResultUnknown);
 }
 
 Result IApplicationFunctions::EnsureSaveData(Out<u64> out_size, Common::UUID user_id)
@@ -234,39 +261,28 @@ Result IApplicationFunctions::GetDisplayVersion(Out<DisplayVersion> out_display_
     R_SUCCEED();
 }
 
-Result IApplicationFunctions::ExtendSaveData(Out<u64> out_required_size, SaveDataSizeInput input, u64 normal_size, u64 journal_size)
+Result IApplicationFunctions::ExtendSaveData(Out<u64> out_required_size, SaveDataSizeRequest request, u64 normal_size, u64 journal_size)
 {
-    const auto type = static_cast<SaveDataType>(input.type);
-    const auto& user_id = input.user_id;
-    LOG_DEBUG(Service_AM, "called with type={} user_id={} normal={:#x} journal={:#x}", static_cast<u8>(type), user_id.FormattedString(), normal_size, journal_size);
+    LOG_DEBUG(Service_AM, "called with type={} user_id={} normal={:#x} journal={:#x}", (uint8_t)request.type, request.user_id.FormattedString(), normal_size, journal_size);
 
-    uint64_t raw_user_id[2]{};
-    static_assert(sizeof(raw_user_id) == sizeof(user_id.uuid));
-    std::memcpy(&raw_user_id, user_id.uuid.data(), sizeof(raw_user_id));
-    ISaveDataControllerPtr controller(system.GetSystemloader().FileSystemController().OpenSaveDataController());
-    controller->WriteSaveDataSize(type, m_applet->program_id, raw_user_id,
-                                  SaveDataSize{normal_size, journal_size});
+    const u128 userId = request.user_id.AsU128();
+    ISaveDataControllerPtr(system.GetSystemloader().FileSystemController().OpenSaveDataController())->WriteSaveDataSize(request.type, m_applet->program_id, userId[1], userId[0], {normal_size, journal_size});
+
     // The following value is used to indicate the amount of space remaining on failure
     // due to running out of space. Since we always succeed, this should be 0.
     *out_required_size = 0;
-
     R_SUCCEED();
 }
 
-Result IApplicationFunctions::GetSaveDataSize(Out<u64> out_normal_size, Out<u64> out_journal_size, SaveDataSizeInput input)
+Result IApplicationFunctions::GetSaveDataSize(Out<u64> out_normal_size, Out<u64> out_journal_size, SaveDataSizeRequest request)
 {
-    const auto type = static_cast<SaveDataType>(input.type);
-    const auto& user_id = input.user_id;
-    uint64_t raw_user_id[2]{};
-    static_assert(sizeof(raw_user_id) == sizeof(user_id.uuid));
-    std::memcpy(&raw_user_id, user_id.uuid.data(), sizeof(raw_user_id));
-    ISaveDataControllerPtr controller(system.GetSystemloader().FileSystemController().OpenSaveDataController());
-    const SaveDataSize size = controller->ReadSaveDataSize(type, m_applet->program_id, raw_user_id);
+    LOG_DEBUG(Service_AM, "called with type={} user_id={}", (uint8_t)request.type, request.user_id.FormattedString());
+
+    const u128 userId = request.user_id.AsU128();
+    const SaveDataSize size = ISaveDataControllerPtr(system.GetSystemloader().FileSystemController().OpenSaveDataController())->ReadSaveDataSize(request.type, m_applet->program_id, userId[1], userId[0]);
+
     *out_normal_size = size.normal;
     *out_journal_size = size.journal;
-    LOG_INFO(Service_AM,
-             "SaveTrace GetSaveDataSize type={} uid={} normal=0x{:X} journal=0x{:X}", type,
-             user_id.FormattedString(), size.normal, size.journal);
     R_SUCCEED();
 }
 
@@ -291,7 +307,17 @@ Result IApplicationFunctions::GetSaveDataSizeMax(Out<u64> out_max_normal_size,
 Result IApplicationFunctions::GetCacheStorageMax(Out<u32> out_cache_storage_index_max, Out<u64> out_max_journal_size)
 {
     LOG_DEBUG(Service_AM, "called");
-    UNIMPLEMENTED();
+
+    ISystemloader& loader = system.GetSystemloader();
+    IFileSysNACPPtr metadata(loader.GetPMControlMetadata(m_applet->program_id));
+    if (!metadata)
+    {
+        metadata = loader.GetPMControlMetadata(FileSys::GetUpdateTitleID(m_applet->program_id));
+    }
+    R_UNLESS(metadata, FileSys::ResultTargetNotFound);
+
+    *out_cache_storage_index_max = static_cast<u32>(metadata->GetCacheStorageMaxIndex());
+    *out_max_journal_size = metadata->GetCacheStorageDataAndJournalMaxSize();
 
     R_SUCCEED();
 }
@@ -371,6 +397,13 @@ Result IApplicationFunctions::InitializeGamePlayRecording(
     R_SUCCEED();
 }
 
+Result IApplicationFunctions::SetMediaPlaybackStateForApplication(bool enabled) {
+    LOG_WARNING(Service_AM, "(STUBBED) called, enabled={}", enabled);
+    std::scoped_lock lk{m_applet->lock};
+    m_applet->media_playback_state = enabled;
+    R_SUCCEED();
+}
+
 Result IApplicationFunctions::SetGamePlayRecordingState(GamePlayRecordingState game_play_recording_state)
 {
     LOG_WARNING(Service_AM, "(STUBBED) called");
@@ -428,9 +461,16 @@ Result IApplicationFunctions::ExecuteProgram(ProgramSpecifyKind kind, u64 value)
     LOG_DEBUG(Service_AM, "called, kind={}, value={}", kind, value);
     ASSERT(kind == ProgramSpecifyKind::ExecuteProgram || kind == ProgramSpecifyKind::RestartProgram);
 
-    // Copy user channel ownership into the system so that it will be preserved
+    // RestartProgram carries value=0 on HOS/libnx, but it means restart the *current* program.
+    // NXEmu's frontend callback takes an explicit program index, so preserve the current index
+    // instead of forwarding the command value and accidentally falling back to program 0.
+    const auto program_index = kind == ProgramSpecifyKind::RestartProgram
+                                   ? static_cast<u64>(m_applet->program_index)
+                                   : value;
+
+    // Copy user channel ownership into the system so that it will be preserved.
     system.GetUserChannel() = m_applet->user_channel_launch_parameter;
-    system.ExecuteProgram(value);
+    system.ExecuteProgram(program_index);
     R_SUCCEED();
 }
 
@@ -491,10 +531,39 @@ Result IApplicationFunctions::GetHealthWarningDisappearedSystemEvent(
     R_SUCCEED();
 }
 
+Result IApplicationFunctions::SetHdcpAuthenticationActivated(bool activated) {
+    LOG_DEBUG(Service_AM, "called, activated={}", activated);
+
+    bool state_changed{};
+    {
+        std::scoped_lock lk{m_applet->lock};
+        // HOS AM/OMM analysis maps OMM HDCP states 0..4 to AM states {0, 1, 1, 0, 2}.
+        // NXEmu does not model the HDMI/OMM handshake, so keep the public state machine minimal:
+        // disabled -> 0, enabled -> 2 (virtual authentication succeeds immediately).
+        const s32 new_state = activated ? 2 : 0;
+        state_changed = m_applet->hdcp_authentication_state != new_state;
+        m_applet->hdcp_authentication_state = new_state;
+    }
+
+    if (state_changed) {
+        m_applet->hdcp_authentication_state_changed_event.Signal();
+    }
+
+    R_SUCCEED();
+}
+
 Result IApplicationFunctions::GetUnknownEvent210(
     OutCopyHandle<Kernel::KReadableEvent> out_event) {
     LOG_DEBUG(Service_AM, "called");
+    // The producer for this HOS 20.0.0+ event is still unknown. Expose a stable event object
+    // without inventing a signal source.
     *out_event = m_applet->unknown_event.GetHandle();
+    R_SUCCEED();
+}
+
+Result IApplicationFunctions::Unknown330(Out<u8> out) {
+    LOG_DEBUG(Service_AM, "called");
+    *out = 0;
     R_SUCCEED();
 }
 
