@@ -1,0 +1,91 @@
+﻿#include "core/hle/service/nxemu_android_diagnostics.h"
+
+#include <array>
+#include <chrono>
+#include <deque>
+#include <mutex>
+#include <sstream>
+#include <string>
+#include <unordered_map>
+#include <cstdint>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
+namespace Service::NxemuAndroidDiagnostics {
+namespace {
+
+std::mutex g_mutex;
+std::deque<std::string> g_recent_events;
+std::unordered_map<std::string, uint64_t> g_counters;
+std::string g_cached_snapshot{"osServiceDiagnostics=created"};
+bool g_dirty = true;
+constexpr std::size_t MaxRecentEvents = 512;
+
+std::string NowMs() {
+    using namespace std::chrono;
+    const auto ms = duration_cast<milliseconds>(steady_clock::now().time_since_epoch()).count();
+    return std::to_string(ms);
+}
+
+void RebuildSnapshotLocked() {
+    std::ostringstream out;
+    out << "osServiceDiagnostics=ok\n";
+    out << "eventCount=" << g_recent_events.size() << "\n";
+    out << "counters:\n";
+    for (const auto& [key, value] : g_counters) {
+        out << "  " << key << "=" << value << "\n";
+    }
+    out << "recent:\n";
+    for (const auto& event : g_recent_events) {
+        out << "  " << event << "\n";
+    }
+    g_cached_snapshot = out.str();
+}
+
+} // namespace
+
+void RecordEvent(const char* category, const std::string& detail) {
+    std::scoped_lock lk{g_mutex};
+    const std::string cat = category != nullptr ? category : "unknown";
+    g_counters[cat]++;
+    g_recent_events.push_back(NowMs() + " " + cat + " " + detail);
+#ifdef __ANDROID__
+    __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag", "%s %s", cat.c_str(),
+                        detail.c_str());
+#endif
+    while (g_recent_events.size() > MaxRecentEvents) {
+        g_recent_events.pop_front();
+    }
+    g_dirty = true;
+}
+
+void RecordEvent(const char* category, const char* detail) {
+    RecordEvent(category, std::string{detail != nullptr ? detail : ""});
+}
+
+std::string Snapshot() {
+    std::scoped_lock lk{g_mutex};
+    if (g_dirty) {
+        RebuildSnapshotLocked();
+        g_dirty = false;
+    }
+    return g_cached_snapshot;
+}
+
+void Clear() {
+    std::scoped_lock lk{g_mutex};
+    g_recent_events.clear();
+    g_counters.clear();
+    g_cached_snapshot = "osServiceDiagnostics=cleared";
+    g_dirty = false;
+}
+
+} // namespace Service::NxemuAndroidDiagnostics
+
+extern "C" const char* NxemuGetLastOsServiceDiagnostics() {
+    static thread_local std::string snapshot;
+    snapshot = Service::NxemuAndroidDiagnostics::Snapshot();
+    return snapshot.c_str();
+}
+
