@@ -9,6 +9,7 @@
 #include "ui/library/game_library.h"
 #include "ui/library/interface_language.h"
 #include "ui/views/main_window.h"
+#include "ui/emulation/debug_bridge.h"
 #include "ui/views/message_dialog.h"
 #include <RmlUi/Core/Context.h>
 #include <RmlUi/Core/ElementDocument.h>
@@ -98,7 +99,7 @@ bool SDLCALL DrawWhileResizing(void * userdata, SDL_Event * event)
     return true;
 }
 
-int Run(UiNotification & notification, const std::string & gamePath, const std::string & firmwarePath)
+int Run(UiNotification & notification, const std::string & gamePath, const std::string & firmwarePath, const std::string & debugPath)
 {
     const std::filesystem::path assetDir = FindAssetDirectory();
     if (assetDir.empty())
@@ -216,6 +217,8 @@ int Run(UiNotification & notification, const std::string & gamePath, const std::
         mainWindow.OpenGame(gamePath);
     }
 
+    DebugBridge debugBridge(debugPath);
+    debugBridge.Tick(session, mainWindow);
     uint64_t lastChange = SDL_GetTicks();
     uint64_t lastRender = 0;
     while (!mainWindow.QuitRequested())
@@ -243,6 +246,7 @@ int Run(UiNotification & notification, const std::string & gamePath, const std::
         liveResize.busy = true;
         window.SyncNativeState();
         mainWindow.Update();
+        debugBridge.Tick(session, mainWindow);
         const uint64_t now = SDL_GetTicks();
         if (changed || !mainWindow.Still())
         {
@@ -258,6 +262,7 @@ int Run(UiNotification & notification, const std::string & gamePath, const std::
         }
         liveResize.busy = false;
     }
+    debugBridge.Tick(session, mainWindow, true);
     SDL_RemoveEventWatch(&DrawWhileResizing, &liveResize);
     notification.SetPresenter({});
     return 0;
@@ -280,6 +285,7 @@ int RunUiApplication(int argc, char ** argv)
 
     std::string gamePath;
     std::string firmwarePath;
+    std::string debugPath;
     for (int i = 1; i < argc; ++i)
     {
         const std::string argument = argv[i];
@@ -287,6 +293,13 @@ int RunUiApplication(int argc, char ** argv)
         if (argument == "--nxshader-import") environment = "NXEMU_IMPORT_NXSHADER";
         else if (argument == "--nxshader-game-root") environment = "NXEMU_SHADER_GAME_ROOT";
         else if (argument == "--nxshader-record") environment = "NXEMU_NXSHADER_RECORD";
+        else if (argument == "--native-sparse-readback") environment = "NXEMU_NATIVE_SPARSE_READBACK";
+        else if (argument == "--native-dirty-readback") environment = "NXEMU_NATIVE_DIRTY_READBACK";
+        else if (argument == "--buffer-readback-segments") environment = "NXEMU_BUFFER_READBACK_SEGMENTS";
+        else if (argument == "--software-keyboard-name") environment = "NXEMU_SOFTWARE_KEYBOARD_NAME";
+        else if (argument == "--nxshader-timing") environment = "NXEMU_NXSHADER_TIMING";
+        else if (argument == "--nxshader-timing-file") environment = "NXEMU_NXSHADER_TIMING_FILE";
+        else if (argument == "--nxshader-runtime-report") environment = "NXEMU_NXSHADER_RUNTIME_REPORT";
         if (environment)
         {
             if (++i >= argc)
@@ -295,11 +308,21 @@ int RunUiApplication(int argc, char ** argv)
                 SetNotification(nullptr);
                 return 1;
             }
+            if ((argument == "--native-sparse-readback" || argument == "--native-dirty-readback" || argument == "--buffer-readback-segments") &&
+                std::string(argv[i]) != "0" && std::string(argv[i]) != "1") {
+                notification.DisplayError("Native readback option expects 0 or 1.", "NXEmu");
+                SetNotification(nullptr);
+                return 1;
+            }
 #ifdef _WIN32
             _putenv_s(environment, argv[i]);
 #else
             setenv(environment, argv[i], 1);
 #endif
+        }
+        else if (argument == "--debug-bridge") {
+            if (++i >= argc) { SetNotification(nullptr); return 1; }
+            debugPath = argv[i];
         }
         else if (argument == "--load" || argument == "-l" || argument == "--install-firmware")
         {
@@ -330,7 +353,7 @@ int RunUiApplication(int argc, char ** argv)
     else
     {
         LOG_INFO(Frontend, "Startup: Vulkan checked");
-        result = Run(notification, gamePath, firmwarePath);
+        result = Run(notification, gamePath, firmwarePath, debugPath);
     }
     SetNotification(nullptr);
     return result;

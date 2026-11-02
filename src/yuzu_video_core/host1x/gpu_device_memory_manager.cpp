@@ -63,20 +63,18 @@ public:
     void Register(u32 value, u32 start_entry)
     {
         auto entry_id = RegisterImplementation(value);
-        u32 iter_entry = start_entry;
-        Entry* current = &storage[iter_entry - 1];
-        while (current->next_entry != 0)
-        {
-            iter_entry = current->next_entry;
-            current = &storage[iter_entry - 1];
-        }
-        current->next_entry = entry_id;
+        // Keep insertion order, but do not walk every existing alias for every page.
+        // NS2 heaps can contain hundreds of thousands of aliases of a shared page.
+        auto& head = storage[start_entry - 1];
+        storage[head.tail_entry - 1].next_entry = entry_id;
+        head.tail_entry = entry_id;
     }
 
     std::pair<bool, u32> Unregister(u32 value, u32 start_entry)
     {
         u32 iter_entry = start_entry;
         Entry* previous{};
+        u32 previous_id{};
         Entry* current = &storage[iter_entry - 1];
         Entry* next{};
         bool more_than_one_remaining = false;
@@ -86,6 +84,7 @@ public:
         {
             count++;
             previous = current;
+            previous_id = iter_entry;
             iter_entry = current->next_entry;
             current = &storage[iter_entry - 1];
         }
@@ -99,10 +98,12 @@ public:
         if (previous)
         {
             previous->next_entry = next_entry;
+            if (next_entry == 0) storage[start_entry - 1].tail_entry = previous_id;
         }
         else
         {
             result_start = next_entry;
+            if (next) next->tail_entry = current->tail_entry;
         }
         free_entries.emplace_back(iter_entry);
         return std::make_pair(more_than_one_remaining || count > 1, result_start);
@@ -121,6 +122,7 @@ private:
         auto entry_id = GetNewEntry();
         auto& entry = storage[entry_id - 1];
         entry.next_entry = 0;
+        entry.tail_entry = entry_id;
         entry.value = value;
         return entry_id;
     }
@@ -140,6 +142,7 @@ private:
     struct Entry
     {
         u32 next_entry{};
+        u32 tail_entry{};
         u32 value{};
     };
 
@@ -192,7 +195,9 @@ struct DeviceMemoryManagerAllocator
 
 template <typename Traits>
 DeviceMemoryManager<Traits>::DeviceMemoryManager(const IDeviceMemory & device_memory_) :
+    source_backing{device_memory_},
     physical_base{reinterpret_cast<const uintptr_t>(device_memory_.BackingBasePointer())},
+    captured_backing_size{device_memory_.BackingSize()},
     device_inter{nullptr}, compressed_physical_ptr(device_as_size >> DEVICE_PAGEBITS),
     compressed_device_addr(Common::AlignUp(device_memory_.BackingSize(), DEVICE_PAGESIZE) >> DEVICE_PAGEBITS),
     continuity_tracker(device_as_size >> DEVICE_PAGEBITS),
@@ -206,6 +211,7 @@ DeviceMemoryManager<Traits>::DeviceMemoryManager(const IDeviceMemory & device_me
     // continuity table has a nonzero initial value.
     const size_t total_virtual = device_as_size >> DEVICE_PAGEBITS;
     std::fill_n(continuity_tracker.data(), total_virtual, 1U);
+    PublishBackingState("constructed");
 }
 
 template <typename Traits>

@@ -104,10 +104,15 @@ nvhost_gpu::~nvhost_gpu() {
     events_interface.FreeEvent(sm_exception_breakpoint_pause_report_event);
     events_interface.FreeEvent(error_notifier_event);
     syncpoint_manager.FreeSyncpoint(channel_syncpoint);
+    for(auto&[id,event]:nx2_events)events_interface.FreeEvent(event);
 }
 
 NvResult nvhost_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input,
                             std::span<u8> output) {
+    if(nx2_caller && command.group == 'H' && command.cmd == 0x20){
+        LOG_WARNING(Service_NVDRV,"(STUBBED) Switch 2 channel ioctl 0x20");
+        std::fill(output.begin(),output.end(),u8{});std::copy_n(input.begin(),std::min(input.size(),output.size()),output.begin());return NvResult::Success;
+    }
     switch (command.group) {
     case 0x0:
         switch (command.cmd) {
@@ -183,6 +188,8 @@ NvResult nvhost_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> inpu
 
 void nvhost_gpu::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {
     sessions[fd] = core.GetSessionReference(session_id);
+    const auto session=sessions[fd].lock();
+    nx2_caller=session && session->process && session->process->IsSwitch2();
 }
 
 void nvhost_gpu::OnClose(DeviceFD fd) {
@@ -300,13 +307,13 @@ static boost::container::small_vector<Tegra::CommandHeader, 512> BuildWaitComman
 }
 
 static boost::container::small_vector<Tegra::CommandHeader, 512> BuildIncrementCommandList(
-    NvFence fence) {
+    NvFence fence, u32 count = 2) {
     boost::container::small_vector<Tegra::CommandHeader, 512> result{
         Tegra::BuildCommandHeader(Tegra::BufferMethods::SyncpointPayload, 1,
                                   Tegra::SubmissionMode::Increasing),
         {}};
 
-    for (u32 count = 0; count < 2; ++count) {
+    for (u32 index = 0; index < count; ++index) {
         result.push_back(Tegra::BuildCommandHeader(Tegra::BufferMethods::SyncpointOperation, 1,
                                                    Tegra::SubmissionMode::Increasing));
         result.push_back(
@@ -317,12 +324,12 @@ static boost::container::small_vector<Tegra::CommandHeader, 512> BuildIncrementC
 }
 
 static boost::container::small_vector<Tegra::CommandHeader, 512> BuildIncrementWithWfiCommandList(
-    NvFence fence) {
+    NvFence fence, u32 count = 2) {
     boost::container::small_vector<Tegra::CommandHeader, 512> result{
         Tegra::BuildCommandHeader(Tegra::BufferMethods::WaitForIdle, 1,
                                   Tegra::SubmissionMode::Increasing),
         {}};
-    auto increment_list{BuildIncrementCommandList(fence)};
+    auto increment_list{BuildIncrementCommandList(fence, count)};
     result.insert(result.end(), increment_list.begin(), increment_list.end());
     return result;
 }
@@ -376,6 +383,11 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
         }
     }
 
+    // C56F native submissions report a completion count, without host syncpoint methods.
+    // Legacy increment_value streams retain their original explicit-increment behavior.
+    const u32 native_completion = nx2_caller && flags.increment_value.Value() &&
+                                  !flags.fence_increment.Value() ? params.fence.value : 0;
+    if (native_completion > 64) return NvResult::BadParameter;
     params.fence.id = channel_syncpoint;
 
     u32 increment{(flags.fence_increment.Value() != 0 ? 2 : 0) +
@@ -395,6 +407,14 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
         "bind=" + std::to_string(bind_id) + " syncpoint=" +
             std::to_string(channel_syncpoint) + " increment=" + std::to_string(increment) +
             " out_value=" + std::to_string(params.fence.value));
+    if (nx2_caller) {
+        static std::atomic<u32> trace{};
+        if (trace.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_INFO(Service_NVDRV, "NX2_SUBMIT channel={} flags={:#x} entries={} prefetch={} increment={} fence={}/{}",
+                     bind_id, flags.raw, entries.command_lists.size(), entries.prefetch_command_list.size(),
+                     increment, params.fence.id, params.fence.value);
+        }
+    }
     video.PushGPUEntries(bind_id, (const uint64_t*)entries.command_lists.data(), (uint32_t)entries.command_lists.size(), (const uint32_t*)entries.prefetch_command_list.data(), (uint32_t)entries.prefetch_command_list.size());
 
     if (flags.fence_increment.Value()) {
@@ -407,6 +427,20 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
         }
     }
 
+    if (native_completion) {
+        Tegra::CommandList completion{flags.suppress_wfi.Value()
+            ? BuildIncrementCommandList(params.fence, native_completion)
+            : BuildIncrementWithWfiCommandList(params.fence, native_completion)};
+        video.PushGPUEntries(bind_id, (const uint64_t*)completion.command_lists.data(),
+            (uint32_t)completion.command_lists.size(),
+            (const uint32_t*)completion.prefetch_command_list.data(),
+            (uint32_t)completion.prefetch_command_list.size());
+        static std::atomic<u32> trace{};
+        if (trace.fetch_add(1, std::memory_order_relaxed) < 64) {
+            LOG_INFO(Service_NVDRV, "NX2_ORDERED_COMPLETION channel={} increments={} fence={}/{}",
+                     bind_id, native_completion, params.fence.id, params.fence.value);
+        }
+    }
     flags.raw = 0;
 
     return NvResult::Success;
@@ -491,6 +525,7 @@ Kernel::KEvent* nvhost_gpu::QueryEvent(u32 event_id) {
     case 3:
         return error_notifier_event;
     default:
+        if(nx2_caller){auto*&event=nx2_events[event_id];if(!event)event=events_interface.CreateEvent(fmt::format("GpuChannelNx2Event{}",event_id));LOG_WARNING(Service_NVDRV,"(STUBBED) Switch 2 channel event {}",event_id);return event;}
         LOG_CRITICAL(Service_NVDRV, "Unknown Ctrl GPU Event {}", event_id);
         return nullptr;
     }

@@ -9,6 +9,7 @@
 #include "core/hle/kernel/k_scoped_resource_reservation.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/svc.h"
+#include "core/hle/kernel/svc/nx2_core_affinity.h"
 
 namespace Kernel::Svc {
 namespace {
@@ -32,6 +33,13 @@ Result CreateThread(Core::System& system, Handle* out_handle, u64 entry_point, u
     auto& process = GetCurrentProcess(kernel);
     if (core_id == IdealCoreUseProcessValue) {
         core_id = process.GetIdealCoreId();
+    }
+    if (process.IsSwitch2()) {
+        const auto original_core = core_id;
+        core_id = FoldNx2CoreId(core_id);
+        if (core_id != original_core) {
+            LOG_INFO(Kernel_SVC, "Switch 2 CreateThread core {} -> {}", original_core, core_id);
+        }
     }
 
     // Validate arguments.
@@ -242,6 +250,10 @@ Result GetThreadCoreMask(Core::System& system, s32* out_core_id, u64* out_affini
 
 Result SetThreadCoreMask(Core::System& system, Handle thread_handle, s32 core_id,
                          u64 affinity_mask) {
+    if (GetCurrentProcess(system.Kernel()).IsSwitch2()) {
+        core_id = FoldNx2CoreId(core_id);
+        affinity_mask = FoldNx2CoreMask(affinity_mask);
+    }
     // Determine the core id/affinity mask.
     if (core_id == IdealCoreUseProcessValue) {
         core_id = GetCurrentProcess(system.Kernel()).GetIdealCoreId();

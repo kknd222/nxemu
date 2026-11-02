@@ -639,6 +639,10 @@ void OSManager::ShutdownMainProcess()
     m_coreSystem.ShutdownMainProcess();
 }
 
+bool OSManager::PrepareProgramMemory(bool switch2) {
+    return m_coreSystem.PrepareProgramMemory(switch2);
+}
+
 bool OSManager::SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t aslr_space_start, uint64_t & baseAddress, uint64_t & processID, bool is_hbl)
 {
     if (m_applicationProcess == nullptr)

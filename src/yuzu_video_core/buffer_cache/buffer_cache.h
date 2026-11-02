@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 
 #pragma once
+#include "yuzu_video_core/transfer_metrics.h"
+#include "yuzu_common/readback_segments.h"
 
 #include <algorithm>
 #include <memory>
@@ -277,7 +279,8 @@ bool BufferCache<P>::DMACopy(GPUVAddr src_address, GPUVAddr dest_address, u64 am
     src_buffer.MarkUsage(copy.src_offset, copy.size);
     dest_buffer.MarkUsage(copy.dst_offset, copy.size);
     device_memory.InvalidateNativeReadRegion(*cpu_dest_address, amount);
-    runtime.CopyBuffer(dest_buffer, src_buffer, copies, true);
+    { BufferTransferScope transfer_scope(BufferTransferKind::GuestDeviceCopy);
+        runtime.CopyBuffer(dest_buffer, src_buffer, copies, true); }
     MarkBufferContentChanged(dest_buffer, *cpu_dest_address, amount);
     if (has_new_downloads) {
         memory_tracker.MarkRegionAsGpuModified(*cpu_dest_address, amount);
@@ -686,6 +689,28 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
         async_buffers.emplace_back(std::optional<Async_Buffer>{});
         return;
     }
+    if constexpr (!IS_OPENGL) {
+        if(runtime.SegmentedReadbackEnabled()) {
+            decltype(downloads) segmented;
+            for(const auto& [copy,id]:downloads) {
+                // Keep ordinary/failing transfers intact. Only subdivide a large
+                // range when its first capped segment meets existing eligibility.
+                const u64 cap=Common::ReadbackReference::MaxCopySize;
+                const BufferCopy probe{copy.src_offset,copy.dst_offset,std::min<u64>(copy.size,cap)};
+                if(copy.size>cap && runtime.CanDifferentialReadback(slot_buffers[id],probe)) {
+                    u64 parts=0;
+                    const bool valid=Common::ForEachReadbackSegment(copy.src_offset,copy.dst_offset,
+                        copy.size,cap,[&](const Common::ReadbackSegment& part) {
+                            segmented.push_back({BufferCopy{part.src_offset,part.dst_offset,part.size},id});
+                            ++parts;
+                        });
+                    if(valid) {runtime.NoteReadbackSegments(parts,copy.size);continue;}
+                }
+                segmented.push_back({copy,id});
+            }
+            downloads=std::move(segmented);
+        }
+    }
     auto download_staging = runtime.DownloadStagingBuffer(total_size_bytes, true);
     std::optional<Async_Buffer> flag_staging;
     if constexpr (!IS_OPENGL) {
@@ -732,7 +757,9 @@ void BufferCache<P>::CommitAsyncFlushesHigh() {
         } else {
             if (flag_staging) flag_offsets.push_back(std::numeric_limits<u64>::max());
             if (flag_staging) cpu_copies.emplace_back();
-            runtime.CopyBuffer(download_staging.buffer, buffer, copies, false);
+            if constexpr (!IS_OPENGL) runtime.NoteReadbackFallback(buffer,copy);
+            { BufferTransferScope transfer_scope(BufferTransferKind::AsyncDownload);
+        runtime.CopyBuffer(download_staging.buffer, buffer, copies, false); }
         }
         normalized_copies.push_back(second_copy);
     }
@@ -783,12 +810,17 @@ void BufferCache<P>::PopAsyncBuffers() {
             u8* reference = cpu_copies[copy_index].reference->bytes.get() + cpu_copies[copy_index].offset;
             // Keep the whole GPU snapshot, including cancelled guest bytes. A
             // subsequent unchanged epoch still refers to this exact snapshot.
+            Common::ReadbackRetiredPayload payload;
             for (u64 offset = 0, chunk = 0; offset < copy.size; offset += 65536, ++chunk) {
-                if (flags[flag_offset + chunk] != 0) {
-                    std::memcpy(reference + offset, read_mapped_memory + offset,
-                                std::min<u64>(65536, copy.size - offset));
+                const u64 bytes=std::min<u64>(65536,copy.size-offset);
+                const bool changed=flags[flag_offset+chunk]!=0;
+                payload.AddChunk(bytes,changed);
+                if (changed) {
+                    std::memcpy(reference + offset, read_mapped_memory + offset,bytes);
                 }
             }
+            if constexpr (!IS_OPENGL) runtime.NoteReadbackRetirement(payload.logical_bytes,
+                payload.changed_bytes,payload.chunks,payload.changed_chunks);
             read_mapped_memory = reference;
         }
         // A range cancelled since this download was committed holds newer data in guest memory,
@@ -898,7 +930,8 @@ void BufferCache<P>::BindHostIndexBuffer() {
                 {BufferCopy{.src_offset = upload_staging.offset, .dst_offset = 0, .size = size}}};
             std::memcpy(upload_staging.mapped_span.data(),
                         draw_state.inline_index_draw_indexes.data(), size);
-            runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true);
+            { BufferTransferScope transfer_scope(BufferTransferKind::IndexUpload);
+        runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true); }
         } else {
             buffer.ImmediateUpload(0, draw_state.inline_index_draw_indexes);
         }
@@ -1407,7 +1440,14 @@ void BufferCache<P>::UpdateVertexBuffer(u32 index) {
     }
     const auto& limit = maxwell3d->regs.vertex_stream_limits[index];
     const GPUVAddr gpu_addr_begin = array.Address();
-    const GPUVAddr gpu_addr_end = limit.Address() + 1;
+    const bool native = maxwell3d->IsNativeTuring();
+    const u64 native_size = native ? maxwell3d->regs.NativeVertexStreamSize(index) : 0;
+    if (native && array.enable != 0 && native_size > (std::numeric_limits<u32>::max)()) {
+        LOG_ERROR(HW_GPU, "NX2_VERTEX unsupported stream index={} address={:#x} bytes={:#x}", index, gpu_addr_begin, native_size);
+        channel_state->vertex_buffers[index] = NULL_BINDING;
+        return;
+    }
+    const GPUVAddr gpu_addr_end = native ? gpu_addr_begin + native_size : limit.Address() + 1;
     const std::optional<DAddr> device_addr = gpu_memory->GpuToCpuAddress(gpu_addr_begin);
     const u32 address_size = static_cast<u32>(gpu_addr_end - gpu_addr_begin);
     u32 size = address_size; // TODO: Analyze stride and number of vertices
@@ -1688,7 +1728,8 @@ void BufferCache<P>::JoinOverlap(BufferId new_buffer_id, BufferId overlap_id,
         .size = overlap.SizeBytes(),
     });
     new_buffer.MarkUsage(copies[0].dst_offset, copies[0].size);
-    runtime.CopyBuffer(new_buffer, overlap, copies, true);
+    { BufferTransferScope transfer_scope(BufferTransferKind::MergeDeviceCopy);
+        runtime.CopyBuffer(new_buffer, overlap, copies, true); }
     DeleteBuffer(overlap_id, true);
 }
 
@@ -1862,7 +1903,8 @@ void BufferCache<P>::MappedUploadMemory([[maybe_unused]] Buffer& buffer,
             copy.src_offset += upload_staging.offset;
         }
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
-        runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
+        { BufferTransferScope transfer_scope(BufferTransferKind::MappedUpload);
+        runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder); }
     }
 }
 
@@ -1904,7 +1946,8 @@ void BufferCache<P>::InlineMemoryImplementation(DAddr dest_address, size_t copy_
         u8* const src_pointer = upload_staging.mapped_span.data();
         std::memcpy(src_pointer, inlined_buffer.data(), copy_size);
         const bool can_reorder = runtime.CanReorderUpload(buffer, copies);
-        runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder);
+        { BufferTransferScope transfer_scope(BufferTransferKind::InlineUpload);
+        runtime.CopyBuffer(buffer, upload_staging.buffer, copies, true, can_reorder); }
     } else {
         buffer.ImmediateUpload(buffer.Offset(dest_address), inlined_buffer.first(copy_size));
     }
@@ -1966,7 +2009,8 @@ void BufferCache<P>::DownloadBufferMemory(Buffer& buffer, DAddr device_addr, u64
             copy.dst_offset += download_staging.offset;
             buffer.MarkUsage(copy.src_offset, copy.size);
         }
-        runtime.CopyBuffer(download_staging.buffer, buffer, copies_span, true);
+        { BufferTransferScope transfer_scope(BufferTransferKind::SyncDownload);
+        runtime.CopyBuffer(download_staging.buffer, buffer, copies_span, true); }
         runtime.Finish();
         for (const BufferCopy& copy : copies) {
             const DAddr copy_device_addr = buffer.CpuAddr() + copy.src_offset;
@@ -2362,7 +2406,8 @@ typename BufferCache<P>::SparseBinding BufferCache<P>::SynchronizeSparseBuffer(G
             for (const BufferCopy& copy : copies) {
                 source.MarkUsage(copy.src_offset, copy.size);
             }
-            runtime.CopyBuffer(buffer, source, copies, true);
+            { BufferTransferScope transfer_scope(BufferTransferKind::SparseAssemble);
+        runtime.CopyBuffer(buffer, source, copies, true); }
         }
     }
     return GetSparseBinding(gpu_addr, size);
@@ -2463,7 +2508,8 @@ void BufferCache<P>::CopySparseWrites() {
                 .size = copy_end - copy_begin,
             });
             dest.MarkUsage(copies.front().dst_offset, copies.front().size);
-            runtime.CopyBuffer(dest, slot_buffers[sparse.buffer_id], copies, true);
+            { BufferTransferScope transfer_scope(BufferTransferKind::SparseScatter);
+        runtime.CopyBuffer(dest, slot_buffers[sparse.buffer_id], copies, true); }
             MarkBufferContentChanged(dest, dest.CpuAddr() + copies.front().dst_offset,
                                      copies.front().size);
         }

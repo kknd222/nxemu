@@ -9,6 +9,7 @@
 #include "yuzu_video_core/guest_memory.h"
 #include "yuzu_video_core/continuous_range_cache.h"
 #include "yuzu_video_core/host1x/host1x.h"
+#include "yuzu_video_core/host1x/syncpoint_manager.h"
 #include "yuzu_video_core/invalidation_accumulator.h"
 #include "yuzu_video_core/memory_manager.h"
 #include "yuzu_video_core/rasterizer_interface.h"
@@ -52,6 +53,7 @@ MemoryManager::MemoryManager(MaxwellDeviceMemoryManager& memory_, u64 address_sp
 MemoryManager::MemoryManager(Tegra::Host1x::Host1x & host1x, u64 address_space_bits_, GPUVAddr split_address_, u64 big_page_bits_, u64 page_bits_) :
     MemoryManager(host1x.MemoryManager(), address_space_bits_, split_address_, big_page_bits_, page_bits_)
 {
+    native_host1x = &host1x;
 }
 
 MemoryManager::~MemoryManager() = default;
@@ -419,6 +421,12 @@ std::optional<DAddr> MemoryManager::GpuToCpuAddress(GPUVAddr addr, std::size_t s
 template <typename T>
 T MemoryManager::Read(GPUVAddr addr) const
 {
+    if constexpr (sizeof(T) == sizeof(u32)) {
+        const auto shim = native_syncpoint_shim.load(std::memory_order_acquire);
+        if (native_host1x && shim && addr >= shim && addr - shim < NumShimSyncpoints * sizeof(u32) && Common::IsAligned(addr - shim, sizeof(u32))) {
+            return static_cast<T>(native_host1x->GetSyncpointManager().GetGuestSyncpointValue(static_cast<u32>((addr-shim)/sizeof(u32))));
+        }
+    }
     if (auto page_pointer{GetPointer(addr)}; page_pointer)
     {
         // NOTE: Avoid adding any extra logic to this fast-path block

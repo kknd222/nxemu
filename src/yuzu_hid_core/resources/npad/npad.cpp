@@ -23,6 +23,17 @@
 #include "yuzu_hid_core/resources/npad/npad_vibration.h"
 #include "yuzu_hid_core/resources/shared_memory_format.h"
 
+#include "yuzu_common/debug_document.h"
+#ifdef CreateEvent
+#undef CreateEvent
+#endif
+void Common::HidWriteTrace::Publish() {
+    const auto now=std::chrono::steady_clock::now();
+    if(now-last<std::chrono::milliseconds(500))return;
+    last=now;
+    Common::DebugDocument::Publish("hid-npad-writes",Snapshot(),false);
+}
+
 namespace Service::HID {
 
 NPad::NPad(Core::HID::HIDCore& hid_core_, KernelHelpers::ServiceContext& service_context_)
@@ -542,6 +553,7 @@ void NPad::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
     };
 
     std::scoped_lock lock{*applet_resource_holder.shared_mutex};
+    debug_hid_writes.BeginTick();
     for (std::size_t aruid_index = 0; aruid_index < AruidIndexMax; ++aruid_index) {
         const auto* data = applet_resource_holder.applet_resource->GetAruidDataByIndex(aruid_index);
 
@@ -566,15 +578,18 @@ void NPad::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
             const auto& controller_type = controller.device->GetNpadStyleIndex();
 
             if (!data->flag.enable_pad_input) {
+                debug_hid_writes.Record(aruid_index * MaxSupportedNpadIdTypes + i, aruid, static_cast<u32>(controller.device->GetNpadIdType()), static_cast<u32>(controller_type), 0, 0, false, 1);
                 continue;
             }
 
             if (!controller.is_active) {
+                debug_hid_writes.Record(aruid_index * MaxSupportedNpadIdTypes + i, aruid, static_cast<u32>(controller.device->GetNpadIdType()), static_cast<u32>(controller_type), 0, 0, false, 2);
                 continue;
             }
 
             if (controller_type == NpadStyleIndex::None ||
                 !controller.device->IsConnected()) {
+                debug_hid_writes.Record(aruid_index * MaxSupportedNpadIdTypes + i, aruid, static_cast<u32>(controller.device->GetNpadIdType()), static_cast<u32>(controller_type), 0, 0, false, 3);
                 write_unused_common_states(*npad, nullptr);
                 continue;
             }
@@ -698,12 +713,14 @@ void NPad::OnUpdate(const Core::Timing::CoreTiming& core_timing) {
             libnx_state.sampling_number =
                 npad->system_ext_lifo.ReadCurrentEntry().state.sampling_number + 1;
             npad->system_ext_lifo.WriteNextEntry(libnx_state);
+            debug_hid_writes.Record(aruid_index * MaxSupportedNpadIdTypes + i, aruid, static_cast<u32>(controller.device->GetNpadIdType()), static_cast<u32>(controller_type), static_cast<u64>(pad_state.npad_buttons.raw), libnx_state.sampling_number, true);
 
             write_unused_common_states(*npad, active_lifo);
 
             press_state |= static_cast<u64>(pad_state.npad_buttons.raw);
         }
     }
+    debug_hid_writes.Publish();
 }
 
 Result NPad::SetSupportedNpadStyleSet(u64 aruid, NpadStyleSet supported_style_set) {

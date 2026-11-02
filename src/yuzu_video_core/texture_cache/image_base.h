@@ -14,6 +14,7 @@
 #include "yuzu_video_core/texture_cache/image_info.h"
 #include "yuzu_video_core/texture_cache/image_view_info.h"
 #include "yuzu_video_core/texture_cache/types.h"
+#include "yuzu_video_core/native_dirty_layers.h"
 
 namespace VideoCommon {
 
@@ -113,6 +114,7 @@ struct ImageBase {
     bool published_observed_pages = false;
     /// Modification tick of the last GPU write; alias synchronization does not change it
     u64 gpu_write_tick = 0;
+    NativeDirtyLayers native_dirty_layers;
     /// Attachment barrier tick, plus one, of the last write to the image as a render target
     u64 attachment_write_tick = 0;
     /// Frame in which the image was first bound as a render target

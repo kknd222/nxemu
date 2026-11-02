@@ -57,7 +57,7 @@ public:
                     KernelCapabilityDescriptors capabilities);
 
     bool Is64BitProgram() const;
-    bool IsSwitch2() const { return is_switch2; }
+    bool IsSwitch2() const override { return is_switch2; }
     ProgramAddressSpaceType GetAddressSpaceType() const;
     u8 GetMainThreadPriority() const;
     u8 GetMainThreadCore() const;

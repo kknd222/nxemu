@@ -113,6 +113,7 @@ class ThreadManager final {
 public:
     explicit ThreadManager(Tegra::GPU & gpu_, bool is_async_);
     ~ThreadManager();
+    void Stop();
 
     /// Creates and starts the GPU thread.
     void StartThread(VideoCore::RendererBase& renderer, Core::Frontend::GraphicsContext& context,
@@ -131,6 +132,7 @@ public:
     void FlushAndInvalidateRegion(DAddr addr, u64 size);
 
     void TickGPU();
+    void SynchronizeCommands() { PushCommand(GPUTickCommand{}, true); }
 
     /// Returns true when the GPU thread has executed every command pushed so far
     bool IsIdle() const;

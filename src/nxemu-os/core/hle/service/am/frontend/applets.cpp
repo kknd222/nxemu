@@ -234,7 +234,8 @@ std::shared_ptr<FrontendApplet> FrontendAppletHolder::GetApplet(std::shared_ptr<
     case AppletId::ProfileSelect:
         return std::make_shared<ProfileSelect>(system, applet, mode, *frontend.profile_select);
     case AppletId::SoftwareKeyboard:
-        return std::make_shared<SoftwareKeyboard>(system, applet, mode, *frontend.software_keyboard);
+        return std::make_shared<SoftwareKeyboard>(system, applet, mode, *frontend.software_keyboard,
+            frontendDefaults->software_keyboard.get() == frontend.software_keyboard);
     case AppletId::MiiEdit:
         return std::make_shared<MiiEdit>(system, applet, mode, *frontend.mii_edit);
     case AppletId::Web:

@@ -47,6 +47,7 @@ enum class MemoryAttribute : u32 {
     DeviceShared = (1 << 2),
     Uncached = (1 << 3),
     PermissionLocked = (1 << 4),
+    GpuAccessible = (1 << 5),
 };
 DECLARE_ENUM_FLAG_OPERATORS(MemoryAttribute);
 
@@ -154,6 +155,11 @@ enum class InfoType : u32 {
     IsSvcPermitted = 26,
     IoRegionHint = 27,
     AliasRegionExtraSize = 28,
+    Nx2RegionAddress = 29,
+    Nx2RegionSize = 30,
+    Nx2RemoteMemorySize = 31,
+    Nx2RemoteMemoryUsed = 32,
+    Nx2VammSize = 33,
 
     MesosphereMeta = 65000,
     MesosphereCurrentProcess = 65001,

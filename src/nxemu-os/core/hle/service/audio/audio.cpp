@@ -3,6 +3,7 @@
 
 #include "core/core.h"
 #include "core/hle/service/audio/audio.h"
+#include "core/hle/service/audio/nx2_audio_user_client.h"
 #include "core/hle/service/audio/audio_controller.h"
 #include "core/hle/service/audio/audio_in_manager.h"
 #include "core/hle/service/audio/audio_out_manager.h"
@@ -18,6 +19,7 @@ namespace Service::Audio {
 void LoopProcess(Core::System& system) {
     auto server_manager = std::make_unique<ServerManager>(system);
 
+    server_manager->RegisterNamedService("aud:u", std::make_shared<INx2AudioUserClient>(system));
     server_manager->RegisterNamedService("audctl", std::make_shared<IAudioController>(system));
     server_manager->RegisterNamedService("audin:u", std::make_shared<IAudioInManager>(system));
     server_manager->RegisterNamedService("audout:u", std::make_shared<IAudioOutManager>(system));

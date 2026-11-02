@@ -96,6 +96,10 @@ struct TestMemory : IDeviceMemory, IMemory {
         return bytes.data();
     }
     void EnableDirectMappedAddress() override {}
+    bool NcePrepareCanonicalWrite(uint64_t) override { return false; }
+    void RasterizerMarkRegionReadCached(uint64_t, uint64_t, int32_t) override {}
+    bool NceTrackReads(uint64_t) override { return false; }
+    void RasterizerSetNativeReadAccess(uint64_t, uint64_t, bool) override {}
     u8* GetPointerSilent(u64 addr) override {
         return bytes.data() + addr;
     }

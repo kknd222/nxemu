@@ -170,6 +170,7 @@ private:
     };
     static_assert(sizeof(IoctlGetGpuTime) == 0x10, "IoctlGetGpuTime is incorrect size");
 
+    NvResult Nx2GetEngineInfo(std::span<const u8> input, std::span<u8> output, std::span<u8> inline_output);
     NvResult GetCharacteristics1(IoctlCharacteristics& params);
     NvResult GetCharacteristics3(IoctlCharacteristics& params,
                                  std::span<IoctlGpuCharacteristics> gpu_characteristics);
@@ -189,6 +190,8 @@ private:
 
     EventInterface& events_interface;
     NvCore::Container& core;
+
+    bool nx2_caller{};
 
     // Events
     Kernel::KEvent* error_notifier_event;

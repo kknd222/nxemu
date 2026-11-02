@@ -6,6 +6,7 @@
 // A copy of the code can be obtained from https://github.com/Ryujinx/Ryujinx
 // The sections using code from Ryujinx are marked with a link to the original version
 
+#include "yuzu_video_core/native_gob.h"
 #include <algorithm>
 #include <array>
 #include <chrono>
@@ -441,7 +442,7 @@ template <u32 GOB_EXTENT>
         }
         layers = 1;
     } else {
-        layers = std::max(resources.layers, info.resources.layers + base->layer);
+        layers = std::max(info.resources.layers, resources.layers + base->layer);
     }
     return OverlapResult{
         .gpu_addr = overlap.gpu_addr,
@@ -559,8 +560,18 @@ void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
         AlignLayerSize(CalculateLevelBytes(sizes, num_levels), size, level_info.block,
                        tile_size.height, info.tile_width_spacing);
     const size_t subresource_size = sizes[level];
+    const s32 first_layer = copy.image_subresource.base_layer;
+    const s32 end_layer = first_layer + copy.image_subresource.num_layers;
+    ASSERT(first_layer >= 0 && end_layer <= info.resources.layers);
+    guest_offset += size_t(first_layer) * layer_stride;
 
-    for (s32 layer = 0; layer < info.resources.layers; ++layer) {
+    for (s32 layer = first_layer; layer < end_layer; ++layer) {
+        if (info.native_tiling &&
+            !gpu_memory.GpuToCpuAddress(gpu_addr + guest_offset, subresource_size)) {
+            host_offset += host_bytes_per_layer;
+            guest_offset += layer_stride;
+            continue;
+        }
         const std::span<const u8> src = input.subspan(host_offset);
         {
             Tegra::Memory::GpuGuestMemoryScoped<u8, GuestMemoryFlags::UnsafeReadWrite>
@@ -568,6 +579,9 @@ void SwizzleBlockLinearImage(Tegra::MemoryManager& gpu_memory, GPUVAddr gpu_addr
 
             SwizzleTexture(dst, src, bytes_per_block, num_tiles.width, num_tiles.height,
                            num_tiles.depth, block.height, block.depth);
+            if (info.native_tiling) {
+                ASSERT(Tegra::Texture::NormalizeNativeGobsInPlace(dst));
+            }
         }
 
         host_offset += host_bytes_per_layer;
@@ -874,6 +888,15 @@ boost::container::small_vector<BufferImageCopy, 16> UnswizzleImage(Tegra::Memory
             .image_offset = {0, 0, 0},
             .image_extent = size,
         }};
+    }
+    std::vector<u8> native_normalized;
+    if (info.native_tiling) {
+        native_normalized.resize(input.size());
+        if (!Tegra::Texture::NormalizeNativeGobs(native_normalized, input)) {
+            LOG_ERROR(HW_GPU, "NX2_TEXTURE invalid native GOB input size={}", input.size());
+            return {};
+        }
+        input = native_normalized;
     }
     const LevelInfo level_info = MakeLevelInfo(info);
     const s32 num_layers = info.resources.layers;

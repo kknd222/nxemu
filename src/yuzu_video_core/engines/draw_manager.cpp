@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <cstdlib>
+#include <filesystem>
+#include <fstream>
 #include "yuzu_common/settings.h"
 #include "yuzu_video_core/dirty_flags.h"
 #include "yuzu_video_core/engines/draw_manager.h"
@@ -293,6 +296,47 @@ void DrawManager::ProcessDraw(bool draw_indexed, u32 instance_count) {
                                 n + 1);
         }
 #endif
+        if (maxwell3d->IsNativeTuring()) {
+            if (const char* directory = std::getenv("NXEMU_NATIVE_SHADER_DIAG_DIR")) {
+                static std::atomic<u32> sequence{};
+                const u32 n = sequence.fetch_add(1, std::memory_order_relaxed);
+                if (n < 4 || n == 31 || n == 127 || n == 511 || n == 2047) {
+                    std::error_code ec; const auto root = std::filesystem::u8path(directory);
+                    std::filesystem::create_directories(root, ec);
+                    if (!ec) {
+                        const auto& regs = maxwell3d->regs;
+                        const auto name = fmt::format("draw-{}", n);
+                        std::ofstream raw(root / (name + ".bin"), std::ios::binary);
+                        raw.write(reinterpret_cast<const char*>(&regs), sizeof(regs));
+                        std::ofstream out(root / (name + ".json"));
+                        out << "{\"sequence\":" << n << ",\"indexed\":" << (draw_indexed ? "true" : "false")
+                            << ",\"instances\":" << instance_count << ",\"count\":"
+                            << (draw_indexed ? draw_state.index_buffer.count : draw_state.vertex_buffer.count)
+                            << ",\"rt_count\":" << regs.rt_control.count.Value() << ",\"targets\":[";
+                        for (size_t i = 0; i < regs.rt.size(); ++i) {
+                            const auto& rt = regs.rt[i];
+                            if (i) out << ',';
+                            out << "{\"slot\":" << i << ",\"address\":" << rt.Address() << ",\"width\":" << rt.width
+                                << ",\"height\":" << rt.height << ",\"format\":" << static_cast<u32>(rt.format)
+                                << ",\"mask\":" << regs.color_mask[i].raw << '}';
+                        }
+                        out << "],\"viewport\":[" << regs.viewport_transform[0].scale_x << ','
+                            << regs.viewport_transform[0].scale_y << ',' << regs.viewport_transform[0].translate_x
+                            << ',' << regs.viewport_transform[0].translate_y << "],\"vertices\":[";
+                        bool first = true;
+                        for (size_t i = 0; i < regs.vertex_streams.size(); ++i) {
+                            const auto& stream = regs.vertex_streams[i];
+                            if (!stream.IsEnabled()) continue;
+                            if (!first) out << ','; first = false;
+                            out << "{\"slot\":" << i << ",\"address\":" << stream.Address()
+                                << ",\"bytes\":" << regs.NativeVertexStreamSize(i) << ",\"stride\":" << stream.stride.Value() << '}';
+                        }
+                        out << "]}";
+                        LOG_INFO(HW_GPU, "NX2_DRAW_CAPTURE file={} sequence={}", (root / (name + ".json")).string(), n);
+                    }
+                }
+            }
+        }
         maxwell3d->rasterizer->Draw(draw_indexed, instance_count);
     }
 }

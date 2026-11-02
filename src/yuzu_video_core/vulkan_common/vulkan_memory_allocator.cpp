@@ -310,7 +310,12 @@ vk::Buffer MemoryAllocator::CreateBuffer(const VkBufferCreateInfo& ci, MemoryUsa
     VmaAllocation allocation{};
     VkMemoryPropertyFlags property_flags{};
 
-    vk::Check(vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info));
+    const auto result = vmaCreateBuffer(allocator, &ci, &alloc_ci, &handle, &allocation, &alloc_info);
+    if (result != VK_SUCCESS) {
+        LOG_ERROR(Render_Vulkan, "NX2_VK_BUFFER_FAILURE bytes={:#x} usage={:#x} memory_usage={} result={}",
+                  ci.size, ci.usage, static_cast<u32>(usage), static_cast<s32>(result));
+    }
+    vk::Check(result);
     vmaGetAllocationMemoryProperties(allocator, allocation, &property_flags);
 
     u8* data = reinterpret_cast<u8*>(alloc_info.pMappedData);

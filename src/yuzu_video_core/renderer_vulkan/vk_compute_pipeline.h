@@ -49,6 +49,7 @@ public:
     void Configure(Tegra::Engines::KeplerCompute& kepler_compute, Tegra::MemoryManager& gpu_memory,
                    Scheduler& scheduler, BufferCache& buffer_cache, TextureCache& texture_cache);
     void FinishRuntimeImageWrites(Scheduler& scheduler, TextureCache& texture_cache);
+    bool WaitForNativeBuild();
 
     /// Set once the recipe recorder has seen this pipeline's key in this session.
     bool recipe_recorded{};

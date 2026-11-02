@@ -204,7 +204,7 @@ try :
         turbo_mode.emplace(display.GetInstance(), display.GetDispatch());
         scheduler.RegisterOnSubmit([this] { turbo_mode->QueueSubmitted(); });
     }
-    InitializeWatermark();
+    // Runtime watermark is disabled; game presentation stays unobstructed.
     Report();
 }
 catch (const vk::Exception & exception)
@@ -300,10 +300,7 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     blit_swapchain.DrawToFrame(rasterizer, frame, framebuffers,
                                render_window.GetFramebufferLayout(), swapchain.GetImageCount(),
                                swapchain.GetImageViewFormat());
-    if (wm.show)
-    {
-        RenderWatermark(*frame);
-    }
+    // Do not overlay the NXEmu logo on running game frames.
     scheduler.Flush(*frame->render_ready);
     present_manager.Present(frame);
     g_android_present_count.fetch_add(1, std::memory_order_relaxed);

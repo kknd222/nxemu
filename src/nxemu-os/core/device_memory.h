@@ -23,6 +23,7 @@ class DeviceMemory :
 public:
     explicit DeviceMemory();
     ~DeviceMemory();
+    void ReconfigureForProgram();
 
     DeviceMemory& operator=(const DeviceMemory&) = delete;
     DeviceMemory(const DeviceMemory&) = delete;

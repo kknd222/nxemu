@@ -2,6 +2,11 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
+#include <cstdlib>
+#include <string_view>
+#include <sstream>
+#include "yuzu_video_core/native_debug_document.h"
 #include <array>
 #include <atomic>
 #include <bit>
@@ -443,6 +448,52 @@ bool BufferCacheRuntime::CanDifferentialReadback(const Buffer& buffer,
     return fits;
 }
 
+bool BufferCacheRuntime::SegmentedReadbackEnabled() const {
+    static const bool enabled=[] {
+        const char* option=std::getenv("NXEMU_BUFFER_READBACK_SEGMENTS");
+        return !option || std::string_view(option)=="1";
+    }();
+    return enabled;
+}
+void BufferCacheRuntime::NoteReadbackSegments(u64 segments,u64 bytes) {
+    static const bool enabled=VideoCommon::DebugDocument::Enabled();if(!enabled)return;
+    const auto start=std::chrono::steady_clock::now();
+    try {transfer_metrics.RecordSegments(segments,bytes);}catch(...) {}
+    transfer_metrics.AddDiagnosticTime(static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now()-start).count()));
+}
+void BufferCacheRuntime::NoteReadbackRetirement(u64 logical,u64 changed,u64 chunks,u64 changed_chunks) {
+    static const bool enabled=VideoCommon::DebugDocument::Enabled();if(!enabled)return;
+    const auto start=std::chrono::steady_clock::now();
+    try {transfer_metrics.RecordRetirement(logical,changed,chunks,changed_chunks);}catch(...) {}
+    transfer_metrics.AddDiagnosticTime(static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now()-start).count()));
+}
+
+void BufferCacheRuntime::NoteReadbackFallback(const Buffer& buffer,const VideoCommon::BufferCopy& copy) {
+    static const bool enabled=VideoCommon::DebugDocument::Enabled();
+    if(!enabled)return;
+    const auto start=std::chrono::steady_clock::now();
+    using Reason=VideoCommon::BufferFallbackReason;
+    Reason reason=Reason::EligibleButFallback;
+    // Re-evaluate current constraints only for a REAL direct-copy fallback.
+    // This is observational: eligibility and copy/fence behavior stay unchanged.
+    if(!differential_readback_enabled)reason=Reason::Disabled;
+    else if(copy.size<(1ULL<<20))reason=Reason::TooSmall;
+    else if(copy.size>Common::ReadbackReference::MaxCopySize)reason=Reason::CopyTooLarge;
+    else if(((copy.src_offset|copy.dst_offset|copy.size)&3)!=0)reason=Reason::Unaligned;
+    else if(copy.size+device.GetStorageBufferAlignment()>device.GetMaxStorageBufferRange())reason=Reason::StorageRange;
+    else if(buffer.SizeBytes()>(128ULL<<20))reason=Reason::BufferTooLarge;
+    else if(!buffer.readback_shadow) {
+        const auto used=readback_shadow_budget->used.load(std::memory_order_relaxed);
+        if(used>readback_shadow_budget->capacity || buffer.SizeBytes()>readback_shadow_budget->capacity-used)
+            reason=Reason::Budget;
+    }
+    try {transfer_metrics.RecordFallback(reason,copy.size,buffer.SizeBytes());}catch(...) {}
+    transfer_metrics.AddDiagnosticTime(static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now()-start).count()));
+}
+
 void BufferCacheRuntime::InvalidateReadbackReference(Buffer& buffer, u64 offset, u64 size) {
     if (buffer.readback_shadow) buffer.readback_shadow->reference.Invalidate(offset, size);
 }
@@ -486,6 +537,7 @@ bool BufferCacheRuntime::DifferentialReadback(Buffer& buffer, const StagingBuffe
                                  copy.size, flags.offset + flag_offset,
                                  flags.offset + flags.mapped_span.size(), valid);
         reference.Scheduled(copy.src_offset, copy.size);
+        RecordTransferMetrics(VideoCommon::BufferTransferKind::DifferentialLogical, 1, copy.size);
         return true;
     } catch (const vk::Exception& exception) {
         LOG_WARNING(Render_Vulkan, "Differential GPU readback disabled: {}", exception.what());
@@ -522,7 +574,58 @@ u32 BufferCacheRuntime::GetStorageBufferAlignment() const {
     return static_cast<u32>(device.GetStorageBufferAlignment());
 }
 
+void BufferCacheRuntime::PublishTransferMetrics() {
+    static const bool enabled=VideoCommon::DebugDocument::Enabled();
+    if(!enabled)return;
+    const auto start=std::chrono::steady_clock::now();
+    try {
+        const auto ms=std::chrono::duration_cast<std::chrono::milliseconds>(start.time_since_epoch()).count();
+        if(transfer_metrics.Due(static_cast<u64>(ms))) {
+        const auto data=transfer_metrics.Snapshot();
+        std::ostringstream out;
+        out << "{\"scope\":\"vulkan_buffer_cache_queued_not_gpu_completed_not_pcie\","
+            << "\"sampling_interval_ms\":500,\"publication_count\":" << data.publication_count
+            << ",\"diagnostic_cpu_ns\":" << data.diagnostic_cpu_ns
+            << ",\"differential_bytes_semantics\":\"logical_range_not_actual_host_write\",\"kinds\":{";
+        for(unsigned i=0;i<data.kinds.size();++i) {
+            if(i)out << ',';
+            const auto& t=data.kinds[i];
+            out << '"' << VideoCommon::BufferTransferNames[i] << "\":{\"calls\":" << t.calls
+                << ",\"regions\":" << t.regions << ",\"bytes\":" << t.bytes
+                << ",\"max_call_bytes\":" << t.max_call_bytes << '}';
+        }
+        out << "},\"fallback_constraints_at_direct_copy\":{";
+        for(unsigned i=0;i<data.fallbacks.size();++i) {
+            if(i)out << ',';const auto& t=data.fallbacks[i];
+            out << '"' << VideoCommon::BufferFallbackNames[i] << "\":{\"calls\":" << t.calls
+                << ",\"bytes\":" << t.bytes << ",\"max_copy_bytes\":" << t.max_copy_bytes
+                << ",\"max_buffer_bytes\":" << t.max_buffer_bytes << '}';
+        }
+        const auto& r=data.retirement;const auto& seg=data.segmented_plans;
+        out << "},\"segmented_readback_enabled\":" << (SegmentedReadbackEnabled()?"true":"false")
+            << ",\"segmented_plans\":{\"calls\":" << seg.calls << ",\"segments\":" << seg.segments
+            << ",\"logical_bytes\":" << seg.logical_bytes << "},\"retired_payload\":{\"scope\":\"fifo_retired_nonzero_flag_chunks_not_pcie\",\"calls\":" << r.calls
+            << ",\"logical_bytes\":" << r.logical_bytes << ",\"changed_bytes\":" << r.changed_bytes
+            << ",\"unchanged_bytes\":" << r.logical_bytes-r.changed_bytes << ",\"chunks\":" << r.chunks
+            << ",\"changed_chunks\":" << r.changed_chunks << ",\"flag_bytes\":" << r.chunks*sizeof(u32) << "}}";
+        VideoCommon::DebugDocument::Publish("buffer-transfers",out.str());
+        }
+    } catch(...) { /* Diagnostic failure must not alter buffer synchronization. */ }
+    transfer_metrics.AddDiagnosticTime(static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now()-start).count()));
+}
+void BufferCacheRuntime::RecordTransferMetrics(VideoCommon::BufferTransferKind kind,u64 regions,u64 bytes) {
+    static const bool enabled=VideoCommon::DebugDocument::Enabled();
+    if(!enabled)return;
+    const auto start=std::chrono::steady_clock::now();
+    try { transfer_metrics.Record(kind,regions,bytes); } catch(...) {}
+    transfer_metrics.AddDiagnosticTime(static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+        std::chrono::steady_clock::now()-start).count()));
+    PublishTransferMetrics();
+}
+
 void BufferCacheRuntime::TickFrame(Common::SlotVector<Buffer>& slot_buffers) noexcept {
+    PublishTransferMetrics();
     for (auto it = slot_buffers.begin(); it != slot_buffers.end(); it++) {
         it->ResetUsageTracking();
     }
@@ -570,11 +673,15 @@ void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
     // Measuring a popular game, this number never exceeds the specified size once data is warmed up
     boost::container::small_vector<VkBufferCopy, 8> vk_copies(copies.size());
     std::ranges::transform(copies, vk_copies.begin(), MakeBufferCopy);
+    u64 transfer_bytes=0;
+    for(const auto& copy:copies)transfer_bytes+=copy.size;
+
     if (src_buffer == staging_pool.StreamBuf() && can_reorder_upload) {
         scheduler.RecordWithUploadBuffer([src_buffer, dst_buffer, vk_copies](
                                              vk::CommandBuffer, vk::CommandBuffer upload_cmdbuf) {
             upload_cmdbuf.CopyBuffer(src_buffer, dst_buffer, vk_copies);
         });
+        RecordTransferMetrics(VideoCommon::current_buffer_transfer_kind,copies.size(),transfer_bytes);
         return;
     }
 
@@ -591,6 +698,7 @@ void BufferCacheRuntime::CopyBuffer(VkBuffer dst_buffer, VkBuffer src_buffer,
                                    VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, WRITE_BARRIER);
         }
     });
+    RecordTransferMetrics(VideoCommon::current_buffer_transfer_kind,copies.size(),transfer_bytes);
 }
 
 void BufferCacheRuntime::PreCopyBarrier() {

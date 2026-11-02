@@ -33,6 +33,7 @@ DmaPusher::~DmaPusher() = default;
 
 void DmaPusher::DispatchCalls()
 {
+    gpu.DebugRecord(RenderDebugCounter::DmaBatches);
 #if defined(__ANDROID__) && defined(NXEMU_ANDROID_FULL_DIAG)
     __android_log_print(ANDROID_LOG_INFO, "NxEmuHleDiag",
                         "Video.DmaPusher.DispatchCalls queued=%zu", dma_pushbuffer.size());
@@ -249,7 +250,8 @@ void DmaPusher::ProcessCommands(std::span<const CommandHeader> commands)
                 index += max_write;
                 continue;
             }
-            if (dma_state.method >= non_puller_methods)
+            if (dma_state.method >= non_puller_methods &&
+                subchannels[dma_state.subchannel] != nullptr)
             {
                 auto * const subchannel = subchannels[dma_state.subchannel];
                 while (index < commands.size() && dma_state.method_count != 0)
@@ -350,6 +352,16 @@ void DmaPusher::CallMethod(u32 argument) const
     else
     {
         auto subchannel = subchannels[dma_state.subchannel];
+        // As on hardware/reference, methods before SetObject have no recipient.
+        if (subchannel == nullptr) {
+            gpu.DebugRecord(RenderDebugCounter::UnboundMethods);
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOG_WARNING(HW_GPU, "Unbound subchannel {} method {:#x} dropped",
+                            dma_state.subchannel, dma_state.method);
+            }
+            return;
+        }
         if (!subchannel->execution_mask[dma_state.method]) [[likely]]
         {
             subchannel->method_sink.emplace_back(dma_state.method, argument);
@@ -373,6 +385,16 @@ void DmaPusher::CallMultiMethod(const u32 * base_start, u32 num_methods) const
     else
     {
         auto subchannel = subchannels[dma_state.subchannel];
+        // As on hardware/reference, methods before SetObject have no recipient.
+        if (subchannel == nullptr) {
+            gpu.DebugRecord(RenderDebugCounter::UnboundMethods, num_methods);
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 16) {
+                LOG_WARNING(HW_GPU, "Unbound subchannel {} method {:#x} dropped",
+                            dma_state.subchannel, dma_state.method);
+            }
+            return;
+        }
         if (!subchannel->method_sink.empty())
         {
             subchannel->ConsumeSink();

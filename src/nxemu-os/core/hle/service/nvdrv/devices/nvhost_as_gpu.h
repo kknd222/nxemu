@@ -140,6 +140,15 @@ private:
     static_assert(sizeof(IoctlGetVaRegions) == 16 + sizeof(VaRegion) * 2,
                   "IoctlGetVaRegions is incorrect size");
 
+    struct IoctlNx2SyncpointShimInfo { u64_le address; u32_le stride; u32_le count; };
+    static_assert(sizeof(IoctlNx2SyncpointShimInfo) == 16);
+    NvResult Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& params);
+    bool Nx2Map(u64 gpu,u64 cpu,u64 size);
+    bool Nx2ModifyKind(u64 gpu,u64 cpu,u64 size,u8 kind);
+    bool Nx2Unmap(u64 gpu,u64 size);
+    NvCore::SessionId nx2_session{};
+    std::map<std::pair<u64,u64>,u64> nx2_device_ranges;
+    bool nx2_caller{};
     NvResult AllocAsEx(IoctlAllocAsEx& params);
     NvResult AllocateSpace(IoctlAllocSpace& params);
     NvResult Remap(std::span<IoctlRemapEntry> params);

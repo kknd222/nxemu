@@ -4274,6 +4274,14 @@ static void Call32(Core::System& system, u32 imm, std::span<uint64_t, 8> args) {
 }
 
 static void Call64(Core::System& system, u32 imm, std::span<uint64_t, 8> args) {
+    // Switch 2 extension outside the generated Switch 1 table.
+    if (imm == 0x80) {
+        const auto result = SetGpuMemoryAttribute(system, GetArg64(args, 0), GetArg64(args, 1),
+                                                 static_cast<u32>(GetArg64(args, 2)),
+                                                 static_cast<u32>(GetArg64(args, 3)));
+        SetArg64(args, 0, Convert<uint64_t>(result));
+        return;
+    }
     switch (static_cast<SvcId>(imm)) {
     case SvcId::SetHeapSize:
         return SvcWrap_SetHeapSize64(system, args);
@@ -4535,6 +4543,16 @@ void Call(Core::System& system, u32 imm) {
 
     uint64_t args[8];
     kernel.CurrentPhysicalCore().SaveSvcArguments(process, args);
+    const std::array<uint64_t, 8> nx2_input{args[0], args[1], args[2], args[3],
+                                          args[4], args[5], args[6], args[7]};
+    if (process.IsSwitch2() && imm == 0x18) {
+        static std::atomic<u32> reported{};
+        if (reported.fetch_add(1) < 120) {
+            const u32 first_handle = args[2] > 0 && args[2] <= 64 ? process.GetMemory().Read32(args[1]) : 0;
+            LOG_INFO(Kernel_SVC, "NX2_WAIT_HANDLE first={:#x}", first_handle);
+            LOG_INFO(Kernel_SVC, "NX2_WAIT_TRACE tid={} svc={:#x} x0={:#x} x1={:#x} x2={:#x} x3={:#x}", thread.GetThreadId(), imm, args[0], args[1], args[2], args[3]);
+        }
+    }
     const bool log_svc = ShouldLogSvc(imm);
     if (log_svc) {
         const auto ctx = thread.GetContext();
@@ -4552,6 +4570,13 @@ void Call(Core::System& system, u32 imm) {
     }
 
     kernel.CurrentPhysicalCore().LoadSvcArguments(process, args);
+    if (process.IsSwitch2() && (args[0] == ResultInvalidHandle.raw ||
+                               args[0] == ResultInvalidSize.raw)) {
+        LOG_ERROR(Kernel_SVC,
+                  "Switch 2 SVC error result={:#x}: svc={:#x} name={} input={:#x},{:#x},{:#x},{:#x},{:#x},{:#x}",
+                  args[0], imm, SvcName(imm), nx2_input[0], nx2_input[1], nx2_input[2],
+                  nx2_input[3], nx2_input[4], nx2_input[5]);
+    }
     if (log_svc) {
         const auto ctx = thread.GetContext();
         Service::NxemuAndroidDiagnostics::RecordEvent(

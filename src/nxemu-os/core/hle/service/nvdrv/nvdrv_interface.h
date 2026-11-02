@@ -22,6 +22,8 @@ public:
     explicit NVDRV(Core::System& system_, std::shared_ptr<Module> nvdrv_, const char* name);
     ~NVDRV() override;
 
+    void InitializeForProcess(Kernel::KProcess* process);
+
     std::shared_ptr<Module> GetModule() const {
         return nvdrv;
     }

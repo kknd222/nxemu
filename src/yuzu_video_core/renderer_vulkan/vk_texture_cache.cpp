@@ -7,6 +7,9 @@
 #include <memory>
 #include <span>
 #include <vector>
+#include <chrono>
+#include <sstream>
+#include "yuzu_video_core/native_debug_document.h"
 #include <boost/container/small_vector.hpp>
 
 #if defined(ANDROID) || defined(__ANDROID__)
@@ -53,6 +56,44 @@ using VideoCore::Surface::IsPixelFormatInteger;
 using VideoCore::Surface::SurfaceType;
 
 namespace {
+void WriteReadbackTotals(std::ostream& out,const VideoCommon::ReadbackTotals& t) {
+    out << "{\"calls\":" << t.calls << ",\"regions\":" << t.regions
+        << ",\"host_bytes_known\":" << t.host_bytes << ",\"device_bytes_known\":" << t.device_bytes
+        << ",\"unknown_destination_bytes_known\":" << t.unknown_destination_bytes
+        << ",\"copy_buffer_span_bytes_sum\":" << t.buffer_span_bytes
+        << ",\"host_unknown_regions\":" << t.host_unknown_regions
+        << ",\"device_unknown_regions\":" << t.device_unknown_regions
+        << ",\"unknown_destination_regions\":" << t.unknown_destination_regions
+        << ",\"host_bytes_complete\":" << (t.host_unknown_regions==0 && t.unknown_destination_regions==0 ? "true":"false")
+        << ",\"rescaled_calls\":" << t.rescaled_calls << ",\"native_calls\":" << t.native_calls << '}';
+}
+void PublishReadbackMetrics(const VideoCommon::ReadbackMetrics& metrics) {
+    auto data=metrics.Snapshot();
+    std::ostringstream out;
+    out << "{\"scope\":\"vulkan_image_to_buffer_queued_not_gpu_completed\",\"sampling_interval_ms\":500,\"totals\":";
+    WriteReadbackTotals(out,data.totals);out << ",\"reasons\":{";
+    for(unsigned i=0;i<data.reasons.size();++i) {
+        if(i)out << ',';out << '"' << VideoCommon::ReadbackReasonNames[i] << "\":";
+        WriteReadbackTotals(out,data.reasons[i]);
+    }
+    std::sort(data.images.begin(),data.images.end(),[](const auto& a,const auto& b) {
+        return a.totals.host_bytes>b.totals.host_bytes;
+    });
+    out << "},\"top_images\":[";bool first=true;unsigned shown=0;
+    for(const auto& image:data.images) {
+        if(!image.used || shown>=8)continue;
+        if(!first)out << ',';first=false;++shown;
+        out << "{\"gpu_address\":" << image.address << ",\"format\":" << image.format
+            << ",\"width\":" << image.width << ",\"height\":" << image.height
+            << ",\"layers\":" << image.layers << ",\"last_write_tick\":" << image.last_write_tick
+            << ",\"same_write_tick_calls\":" << image.same_tick_calls
+            << ",\"same_write_tick_host_bytes_known\":" << image.same_tick_host_bytes << ",\"totals\":";
+        WriteReadbackTotals(out,image.totals);out << '}';
+    }
+    out << "],\"image_tracking_capacity\":64,\"untracked_image_calls\":" << data.untracked_image_calls
+        << ",\"same_write_tick_is_not_proof_of_redundancy\":true}";
+    VideoCommon::DebugDocument::Publish("readback-transfers",out.str(),false);
+}
 bool ReadAndroidBoolProperty(const char* name, bool default_value) {
 #if defined(ANDROID) || defined(__ANDROID__)
     char value[PROP_VALUE_MAX]{};
@@ -1828,6 +1869,7 @@ void Image::DownloadMemory(VkBuffer buffer, size_t offset,
 
 void Image::DownloadMemory(std::span<VkBuffer> buffers_span, std::span<size_t> offsets_span,
                            std::span<const VideoCommon::BufferImageCopy> copies) {
+    static const bool readback_diagnostics=VideoCommon::DebugDocument::Enabled();
     const bool is_rescaled = True(flags & ImageFlagBits::Rescaled);
     if (is_rescaled) {
         ScaleDown();
@@ -1897,6 +1939,46 @@ void Image::DownloadMemory(std::span<VkBuffer> buffers_span, std::span<size_t> o
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
                                0, memory_write_barrier, nullptr, image_write_barrier);
     });
+    if(readback_diagnostics) {
+        // Measure the regions actually queued above, not staging allocation size.
+        // Converted and depth/stencil formats are explicitly unknown rather than
+        // guessed from guest bytes-per-pixel. This is not a GPU-completion fence.
+        try {
+            VideoCommon::ReadbackTransferSample sample;
+            sample.image_address=gpu_addr;sample.write_tick=gpu_write_tick;
+            sample.width=info.size.width;sample.height=info.size.height;sample.layers=info.resources.layers;
+            sample.format=static_cast<u64>(info.format);sample.buffers=buffers_span.size();
+            sample.native=info.native_tiling;sample.rescaled=is_rescaled;
+            const auto context=VideoCommon::current_readback_context;sample.reason=context.reason;
+            const bool known_format=aspect_mask==VK_IMAGE_ASPECT_COLOR_BIT &&
+                False(flags & ImageFlagBits::Converted) && static_cast<size_t>(info.format)<VideoCore::Surface::MaxPixelFormat;
+            for(size_t i=0;i<vk_copies.size();++i) {
+                const bool host=context.destination==VideoCommon::ReadbackDestination::Host ||
+                    (context.destination==VideoCommon::ReadbackDestination::HostLast && i+1==vk_copies.size());
+                const bool device=context.destination==VideoCommon::ReadbackDestination::Device ||
+                    (context.destination==VideoCommon::ReadbackDestination::HostLast && i+1<vk_copies.size());
+                for(const auto& copy:vk_copies[i]) {
+                    ++sample.regions;
+                    const auto bytes=known_format ? VideoCommon::ReadbackRegionBytes(
+                        copy.imageExtent.width,copy.imageExtent.height,copy.imageExtent.depth,
+                        copy.imageSubresource.layerCount,VideoCore::Surface::DefaultBlockWidth(info.format),
+                        VideoCore::Surface::DefaultBlockHeight(info.format),BytesPerBlock(info.format)) : std::nullopt;
+                    if(bytes) {
+                        if(host)sample.host_bytes+=*bytes;else if(device)sample.device_bytes+=*bytes;
+                        else {sample.unknown_destination_bytes+=*bytes;++sample.unknown_destination_regions;}
+                    } else {
+                        if(host)++sample.host_unknown_regions;else if(device)++sample.device_unknown_regions;
+                        else ++sample.unknown_destination_regions;
+                    }
+                }
+                for(const auto& copy:copies)sample.buffer_span_bytes+=copy.buffer_size;
+            }
+            const auto now=std::chrono::duration_cast<std::chrono::milliseconds>(
+                std::chrono::steady_clock::now().time_since_epoch()).count();
+            if(runtime->readback_metrics.Record(sample,static_cast<u64>(now)))
+                PublishReadbackMetrics(runtime->readback_metrics);
+        } catch(...) { /* Diagnostic sampling never changes copy/retirement behavior. */ }
+    }
     if (is_rescaled) {
         ScaleUp(true);
     }

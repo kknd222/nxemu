@@ -1,3 +1,4 @@
+#include "yuzu_video_core/textures/decoders.h"
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -5,6 +6,8 @@
 #include <algorithm>
 #include <array>
 #include <bit>
+#include <chrono>
+#include "yuzu_video_core/native_debug_document.h"
 #include <memory>
 #include <mutex>
 
@@ -294,6 +297,7 @@ RasterizerVulkan::~RasterizerVulkan() {
 
 template <typename Func>
 void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
+    gpu.DebugRecord(Tegra::RenderDebugCounter::DrawRequests);
     SCOPE_EXIT {
         gpu.TickWork();
     };
@@ -341,6 +345,7 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     UpdateDynamicStates();
 
     HandleTransformFeedback();
+    gpu.DebugRecord(Tegra::RenderDebugCounter::DrawPipelineReady);
     draw_func(pipeline);
     buffer_cache.CopySparseWrites();
 
@@ -598,6 +603,7 @@ void RasterizerVulkan::DrawTexture() {
 }
 
 void RasterizerVulkan::Clear(u32 layer_count) {
+    gpu.DebugRecord(Tegra::RenderDebugCounter::ClearRequests);
     FlushWork();
     gpu_memory->FlushCaching();
 
@@ -783,7 +789,14 @@ void RasterizerVulkan::Clear(u32 layer_count) {
     }
 }
 
+bool RasterizerVulkan::DispatchNativeCompute() {
+    DispatchCompute();
+    return native_compute_submitted;
+}
+
 void RasterizerVulkan::DispatchCompute() {
+    native_compute_submitted = false;
+    gpu.DebugRecord(Tegra::RenderDebugCounter::ComputeRequests);
     FlushWork();
     gpu_memory->FlushCaching();
 
@@ -791,7 +804,9 @@ void RasterizerVulkan::DispatchCompute() {
     if (!pipeline) {
         return;
     }
+    if (kepler_compute->IsNativeTuring() && !pipeline->WaitForNativeBuild()) return;
     std::scoped_lock lock{texture_cache.mutex, buffer_cache.mutex};
+    gpu.DebugRecord(Tegra::RenderDebugCounter::ComputePipelineReady);
     pipeline->Configure(*kepler_compute, *gpu_memory, scheduler, buffer_cache, texture_cache);
     if (pipeline->WritesImages()) {
         image_write_stages |= VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
@@ -822,6 +837,7 @@ void RasterizerVulkan::DispatchCompute() {
             Scheduler::ComputeMemoryBarrier(cmdbuf);
         });
         pipeline->FinishRuntimeImageWrites(scheduler, texture_cache);
+        native_compute_submitted = true;
         return;
     }
     const std::array<u32, 3> dim{qmd.grid_dim_x, qmd.grid_dim_y, qmd.grid_dim_z};
@@ -834,6 +850,7 @@ void RasterizerVulkan::DispatchCompute() {
         Scheduler::ComputeMemoryBarrier(cmdbuf);
     });
     pipeline->FinishRuntimeImageWrites(scheduler, texture_cache);
+    native_compute_submitted = true;
 }
 
 void RasterizerVulkan::ResetCounter(VideoCommon::QueryType type) {
@@ -1052,6 +1069,10 @@ void RasterizerVulkan::SignalMemoryOperationFence(std::function<void()>&& func) 
     fence_manager.SignalMemoryOperationFence(std::move(func));
 }
 
+void RasterizerVulkan::ShutdownAsyncReadbacks() {
+    fence_manager.Shutdown();
+}
+
 void RasterizerVulkan::WaitForFence() {
     fence_manager.WaitForFence();
 }
@@ -1253,11 +1274,51 @@ std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(
         return {};
     }
 #endif
-    std::scoped_lock lock{texture_cache.mutex};
+    const auto debug_begin = std::chrono::steady_clock::now();
+    bool debug_accelerated{};
+    SCOPE_EXIT {
+        if (config.native_tiling && VideoCommon::DebugDocument::Enabled()) {
+            std::ostringstream doc;
+            doc << "{\"address\":" << framebuffer_addr << ",\"accelerated\":" << (debug_accelerated ? "true" : "false")
+                << ",\"width\":" << config.width << ",\"height\":" << config.height << ",\"stride\":" << pixel_stride
+                << ",\"lookup_flush_us\":" << std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-debug_begin).count()
+                << ",\"accuracy\":" << static_cast<u32>(videoSettings.gpu_accuracy)
+                << ",\"resolution\":" << static_cast<u32>(videoSettings.resolution_setup)
+                << ",\"async_gpu\":" << (videoSettings.use_asynchronous_gpu_emulation ? "true" : "false")
+                << ",\"async_shaders\":" << (videoSettings.use_asynchronous_shaders ? "true" : "false")
+                << ",\"reactive_flushing\":" << (videoSettings.use_reactive_flushing ? "true" : "false")
+                << ",\"astc_recompression\":" << static_cast<u32>(videoSettings.astc_recompression) << "}";
+            VideoCommon::DebugDocument::Publish("display", doc.str());
+        }
+    };
+    std::unique_lock lock{texture_cache.mutex};
     const auto [image_view, scaled] =
         texture_cache.TryFindFramebufferImageView(config, framebuffer_addr);
     if (!image_view) {
+        lock.unlock();
+        if (config.native_tiling) {
+            const auto size = Tegra::Texture::CalculateSize(true, 4, config.stride, config.height, 1,
+                                                           config.block_height_log2, 0);
+            gpu.DebugRecord(Tegra::RenderDebugCounter::DisplayFallback);
+            gpu.DebugRecord(Tegra::RenderDebugCounter::DisplayFallbackBytes, size);
+            const auto fallback_start = std::chrono::steady_clock::now();
+            FlushRegionImpl(framebuffer_addr, size, VideoCommon::CacheType::All, false);
+            gpu.DebugRecord(Tegra::RenderDebugCounter::DisplayFallbackUs,
+                std::chrono::duration_cast<std::chrono::microseconds>(
+                    std::chrono::steady_clock::now() - fallback_start).count());
+            static u32 fallback_count{};
+            if (fallback_count++ < 8)
+                LOG_INFO(HW_GPU, "NX2_DISPLAY accelerated=false address={:#x} bytes={} path=cpu_readback", framebuffer_addr, size);
+        }
         return {};
+    }
+    debug_accelerated = true;
+    if (config.native_tiling) {
+        gpu.DebugRecord(Tegra::RenderDebugCounter::DisplayAccelerated);
+        static u32 accelerated_count{};
+        if (accelerated_count++ < 8)
+            LOG_INFO(HW_GPU, "NX2_DISPLAY accelerated=true address={:#x} size={}x{} path=texture_cache",
+                     framebuffer_addr, image_view->size.width, image_view->size.height);
     }
     query_cache.NotifySegment(false);
 

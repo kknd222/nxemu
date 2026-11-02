@@ -11,6 +11,7 @@
 #include "yuzu_common/nvdata.h"
 #include "yuzu_video_core/cdma_pusher.h"
 #include "yuzu_video_core/framebuffer_config.h"
+#include "yuzu_video_core/render_debug_counters.h"
 #include <nxemu-module-spec/operating_system.h>
 #include <nxemu-module-spec/video.h>
 
@@ -169,6 +170,10 @@ public:
 
     /// Tick pending requests within the GPU.
     void TickWork();
+    void SynchronizeCommands();
+    u64 CompletedComposites() const;
+    void DebugRecord(RenderDebugCounter counter, u64 count = 1) { debugCounters.Record(counter, count); }
+    u64 DebugRead(RenderDebugCounter counter) const { return debugCounters.Read(counter); }
 
     /// Gets a mutable reference to the Host1x interface
     [[nodiscard]] Host1x::Host1x& Host1x();
@@ -232,6 +237,7 @@ public:
 
     /// Performs any additional necessary steps to shutdown GPU emulation.
     void NotifyShutdown();
+    void FinalizeShutdown();
 
     /// Returns true while the emulated system is powered on.
     [[nodiscard]] bool IsPoweredOn() const;
@@ -279,6 +285,7 @@ public:
     void RegisterHostThread();
 
 private:
+    RenderDebugCounters debugCounters;
     struct Impl;
     mutable std::unique_ptr<Impl> impl;
 };

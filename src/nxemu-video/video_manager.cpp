@@ -152,6 +152,7 @@ struct VideoManager::Impl
         {
             return;
         }
+        std::scoped_lock shutdown_lock{m_shutdownMutex};
         // The loader captures this and may still access the GPU, window and Host1x.
         if (m_init.valid())
         {
@@ -160,6 +161,7 @@ struct VideoManager::Impl
         if (m_gpuCore)
         {
             m_gpuCore->WaitForComposite();
+            m_gpuCore->FinalizeShutdown();
         }
     }
 
@@ -207,6 +209,16 @@ struct VideoManager::Impl
         FFmpeg::WarmHardwareDecoderDevices();
         m_memoryManagerRegistry.Clear();
         g_settings->SetBool(NXCoreSetting::DisplayedFrames, false);
+
+        // PrepareRom can replace the OS backing (NS1 4GiB -> NS2 12GiB).
+        // Initialize() ran before that choice. No guest NVDRV session/GPU work
+        // has started yet; refresh the entire Host1x before capturing GPU refs.
+        m_host1x->MemoryManager().PublishBackingState("pre_gpu");
+        if (!m_host1x->MemoryManager().BackingMatches()) {
+            LOG_WARNING(HW_GPU, "Refreshing Host1x after program backing changed");
+            m_host1x = std::make_unique<Tegra::Host1x::Host1x>(m_modules.OperatingSystem().DeviceMemory());
+        }
+        m_host1x->MemoryManager().PublishBackingState("gpu_ready");
 
         Layout::FramebufferLayout layout;
         if (m_emuWindow)
@@ -308,6 +320,7 @@ struct VideoManager::Impl
     Tegra::MemoryManagerRegistry m_memoryManagerRegistry;
     std::future<void> m_init;
     std::stop_source m_initStop;
+    std::mutex m_shutdownMutex;
 };
 
 VideoManager::VideoManager(IRenderWindow & window, ISystemModules & modules) :
@@ -333,6 +346,11 @@ bool VideoManager::Initialize()
     return impl->Initialize();
 }
 
+void VideoManager::QuiesceGuestMemory()
+{
+    impl->StopInitialization();
+}
+
 void VideoManager::Shutdown()
 {
     impl->Shutdown();
@@ -340,7 +358,7 @@ void VideoManager::Shutdown()
 
 uint32_t VideoManager::AllocAsEx(uint64_t addressSpaceBits, uint64_t splitAddress, uint64_t bigPageBits, uint64_t pageBits)
 {
-    std::shared_ptr<Tegra::MemoryManager> memory = std::make_shared<Tegra::MemoryManager>(impl->m_host1x->MemoryManager(), addressSpaceBits, splitAddress, bigPageBits, pageBits);
+    std::shared_ptr<Tegra::MemoryManager> memory = std::make_shared<Tegra::MemoryManager>(*impl->m_host1x, addressSpaceBits, splitAddress, bigPageBits, pageBits);
     impl->m_gpuCore->InitAddressSpace(*memory);
 
     return impl->m_memoryManagerRegistry.AddMemoryManager(memory);
@@ -423,8 +441,12 @@ void VideoManager::Host1xGMMUUnmap(uint64_t address, uint64_t size)
 
 void VideoManager::Host1xMemoryMap(uint64_t address, uint64_t virtualAddress, uint64_t size, uint64_t asid, bool track)
 {
+    m_debugMapCalls.fetch_add(1, std::memory_order_relaxed);
+    m_debugMappingBytes.fetch_add(size, std::memory_order_relaxed);
+    SCOPE_EXIT {m_debugMappingBytes.fetch_sub(size, std::memory_order_relaxed);};
     std::scoped_lock memory_lock{impl->m_host1x->MemoryMutex()};
     impl->m_host1x->MemoryManager().Map(address, virtualAddress, size, Core::Asid{asid}, track);
+    m_debugMappedBytes.fetch_add(size, std::memory_order_relaxed);
 }
 
 void VideoManager::Host1xMemoryUnmap(uint64_t address, uint64_t size)
@@ -461,6 +483,7 @@ void VideoManager::Host1xUnregisterProcess(uint64_t asid)
 
 void VideoManager::RequestComposite(VideoFramebufferConfig * layers, uint32_t layerCount, VideoNvFence * fences, uint32_t fenceCount)
 {
+    m_debugPresents.fetch_add(1, std::memory_order_relaxed);
     NxemuVideoDiag(
         "Video.RequestComposite",
         std::string{"layers="} + std::to_string(layerCount) + " fences=" +
@@ -493,6 +516,8 @@ void VideoManager::RequestComposite(VideoFramebufferConfig * layers, uint32_t la
             .transform_flags = (Service::android::BufferTransformFlags)layers[i].transformFlags,
             .crop_rect = Common::Rectangle<int>{layers[i].cropLeft, layers[i].cropTop, layers[i].cropRight, layers[i].cropBottom },
             .blending = (Tegra::BlendMode)layers[i].blending,
+            .native_tiling = layers[i].nativeTiling,
+            .block_height_log2 = layers[i].blockHeightLog2,
         });
     }
     for (uint32_t i = 0; i < fenceCount; i++)
@@ -596,6 +621,7 @@ IChannelState * VideoManager::AllocateChannel()
 
 void VideoManager::PushGPUEntries(int32_t bindId, const uint64_t * commandList, uint32_t commandListSize, const uint32_t * prefetchCommandlist, uint32_t prefetchCommandlistSize)
 {
+    m_debugSubmissions.fetch_add(1, std::memory_order_relaxed);
     NxemuVideoDiag(
         "Video.PushGPUEntries",
         std::string{"bind="} + std::to_string(bindId) + " entries=" +
@@ -787,4 +813,47 @@ void VideoManager::InvalidateMemory(const uint8_t * pointer, uint64_t size)
     impl->m_host1x->MemoryManager().ApplyOpOnPointer(pointer, scratch, [&](DAddr address) {
         impl->m_gpuCore->InvalidateRegion(address, size);
     });
+}
+
+void VideoManager::SynchronizeGpuCommands() { impl->m_gpuCore->SynchronizeCommands(); }
+
+bool VideoManager::AddNativeSemaphoreRegion(uint32_t gmmu, uint64_t address) {
+ auto memory=impl->m_memoryManagerRegistry.GetMemoryManager(gmmu);
+ if(!memory)return false;
+ memory->AddNativeSemaphoreRegion(address);
+ return true;
+}
+
+bool VideoManager::SetNativeSyncpointShim(uint32_t gmmu, uint64_t address) {
+ auto memory=impl->m_memoryManagerRegistry.GetMemoryManager(gmmu);
+ if(!memory)return false;
+ memory->SetNativeSyncpointShim(address);
+ return true;
+}
+
+VideoDebugSnapshot VideoManager::DebugSnapshot() {
+    VideoDebugSnapshot s;
+    s.map_calls = m_debugMapCalls.load(std::memory_order_relaxed);
+    s.mapped_bytes = m_debugMappedBytes.load(std::memory_order_relaxed);
+    s.mapping_bytes = m_debugMappingBytes.load(std::memory_order_relaxed);
+    s.command_submissions = m_debugSubmissions.load(std::memory_order_relaxed);
+    s.present_requests = m_debugPresents.load(std::memory_order_relaxed);
+    s.composites_completed = impl && impl->m_gpuCore ? impl->m_gpuCore->CompletedComposites() : 0;
+    if (impl && impl->m_gpuCore) {
+        using C = Tegra::RenderDebugCounter;
+        const auto& gpu = *impl->m_gpuCore;
+        s.unbound_methods = gpu.DebugRead(C::UnboundMethods);
+        s.dma_batches = gpu.DebugRead(C::DmaBatches);
+        s.draw_requests = gpu.DebugRead(C::DrawRequests);
+        s.draw_pipeline_ready = gpu.DebugRead(C::DrawPipelineReady);
+        s.compute_requests = gpu.DebugRead(C::ComputeRequests);
+        s.compute_pipeline_ready = gpu.DebugRead(C::ComputePipelineReady);
+        s.clear_requests = gpu.DebugRead(C::ClearRequests);
+        s.shaders_building = ShadersBuilding();
+        s.display_accelerated = gpu.DebugRead(C::DisplayAccelerated);
+        s.display_fallback = gpu.DebugRead(C::DisplayFallback);
+        s.display_fallback_us = gpu.DebugRead(C::DisplayFallbackUs);
+        s.display_fallback_bytes = gpu.DebugRead(C::DisplayFallbackBytes);
+    }
+    return s;
 }

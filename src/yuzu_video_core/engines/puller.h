@@ -22,7 +22,10 @@ class DmaPusher;
 
 enum class EngineID {
     FERMI_TWOD_A = 0x902D, // 2D Engine
+    AMPERE_A = 0xC797,   // Native 3D, uses Turing MME and Ampere shaders
     MAXWELL_B = 0xB197,    // 3D Engine
+    AMPERE_COMPUTE_B = 0xC7C0, // Native compute, compatible Kepler method dispatch
+    AMPERE_DMA_COPY_B = 0xC7B5, // Native copy, compatible Maxwell DMA method dispatch
     KEPLER_COMPUTE_B = 0xB1C0,
     KEPLER_INLINE_TO_MEMORY_B = 0xA140,
     MAXWELL_DMA_COPY_A = 0xB0B5,
@@ -140,11 +143,13 @@ private:
     void ProcessFenceActionMethod();
     void ProcessSemaphoreAcquire();
     void ProcessSemaphoreRelease();
+    void ProcessSemaphoreExecute(u32 argument);
     void ProcessSemaphoreTriggerMethod();
     [[nodiscard]] bool ExecuteMethodOnEngine(u32 method);
 
     /// Mapping of command subchannels to their bound engine ids
     std::array<EngineID, 8> bound_engines{};
+    bool native_ampere{};
 
     enum class GpuSemaphoreOperation {
         AcquireEqual = 0x1,

@@ -48,6 +48,8 @@ struct OSSettings
     s32 region_setting;
     TimeZone time_zone_index;
     MemoryLayout memory_layout_mode;
+    // Per-session, not registered/persisted as a user setting.
+    bool current_program_is_switch2{};
     bool custom_rtc_enabled;
     s64 custom_rtc;
     s64 custom_rtc_offset;

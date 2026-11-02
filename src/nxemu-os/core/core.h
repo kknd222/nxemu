@@ -155,6 +155,7 @@ public:
     System(System &&) = delete;
     System & operator=(System &&) = delete;
 
+    bool PrepareProgramMemory(bool switch2);
     void InitializeKernel(uint64_t titleID, bool is_64_bit = true);
 
     /**
@@ -181,6 +182,7 @@ public:
 
     /// Shutdown the main emulated process.
     void ShutdownMainProcess();
+    void QuiesceGpuBeforeProcessClose();
 
     /// Check if the core is shutting down.
     [[nodiscard]] bool IsShuttingDown() const;

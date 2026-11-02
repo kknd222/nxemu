@@ -6,6 +6,7 @@
 #include "applets/software_keyboard.h"
 #include "yuzu_common/logging/log.h"
 #include "yuzu_common/string_util.h"
+#include "yuzu_common/debug_document.h"
 
 void DefaultSoftwareKeyboardApplet::Close() {}
 
@@ -44,9 +45,10 @@ void DefaultSoftwareKeyboardApplet::InitializeKeyboard(
 
 void DefaultSoftwareKeyboardApplet::ShowNormalKeyboard() const
 {
-    LOG_INFO(Service_AM, "SwkbdTrace ShowNormalKeyboard auto-submit name='nxemu'");
+    const auto configured_name = Common::DebugDocument::Environment("NXEMU_SOFTWARE_KEYBOARD_NAME");
+    LOG_INFO(Service_AM, "SwkbdTrace ShowNormalKeyboard auto-submit configured={}", !configured_name.empty());
 
-    SubmitNormalText(u"nxemu");
+    SubmitNormalText(configured_name.empty() ? u"nxemu" : Common::UTF8ToUTF16(configured_name));
 }
 
 void DefaultSoftwareKeyboardApplet::ShowTextCheckDialog(uint32_t text_check_result_raw, const uint16_t * message_utf16, uint32_t message_utf16_unit_count) const

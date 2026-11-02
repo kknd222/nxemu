@@ -15,6 +15,8 @@
 #include "yuzu_video_core/renderer_vulkan/present/util.h"
 #include "yuzu_video_core/renderer_vulkan/vk_blit_screen.h"
 #include "yuzu_video_core/textures/decoders.h"
+#include "yuzu_video_core/native_gob.h"
+#include "yuzu_video_core/native_debug_document.h"
 
 namespace Vulkan {
 
@@ -69,6 +71,8 @@ void Layer::ConfigureDraw(PresentPushConstants* out_push_constants,
                           VkSampler sampler, size_t image_index,
                           const Tegra::FramebufferConfig& framebuffer,
                           const Layout::FramebufferLayout& layout) {
+    const auto debug_started = std::chrono::steady_clock::now();
+    std::uint64_t debug_raw_us{};
     const auto texture_info = rasterizer.AccelerateDisplay(
         framebuffer, framebuffer.address + framebuffer.offset, framebuffer.stride);
     const u32 texture_width = texture_info ? texture_info->width : framebuffer.width;
@@ -88,7 +92,17 @@ void Layer::ConfigureDraw(PresentPushConstants* out_push_constants,
     };
 
     if (!use_accelerated) {
+        const auto raw_start = std::chrono::steady_clock::now();
         UpdateRawImage(framebuffer, image_index);
+        debug_raw_us = std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-raw_start).count();
+    }
+    if (framebuffer.native_tiling && VideoCommon::DebugDocument::Enabled()) {
+        std::ostringstream doc;
+        doc << "{\"address\":" << framebuffer.address + framebuffer.offset << ",\"image_index\":" << image_index
+            << ",\"accelerated\":" << (use_accelerated ? "true" : "false") << ",\"width\":" << texture_width
+            << ",\"height\":" << texture_height << ",\"raw_update_us\":" << debug_raw_us
+            << ",\"configure_source_us\":" << std::chrono::duration_cast<std::chrono::microseconds>(std::chrono::steady_clock::now()-debug_started).count() << "}";
+        VideoCommon::DebugDocument::Publish("present", doc.str());
     }
 
     VkImage source_image = texture_info ? texture_info->image : *raw_images[image_index];
@@ -269,15 +283,29 @@ void Layer::UpdateRawImage(const Tegra::FramebufferConfig& framebuffer, size_t i
     const u8* const host_ptr = device_memory.GetPointer<u8>(framebuffer_addr);
 
     // TODO(Rodrigo): Read this from HLE
-    constexpr u32 block_height_log2 = 4;
+    const u32 block_height_log2 = framebuffer.native_tiling ? framebuffer.block_height_log2 : 4;
     const u32 bytes_per_pixel = GetBytesPerPixel(framebuffer);
     const u64 linear_size{GetSizeInBytes(framebuffer)};
     const u64 tiled_size{Tegra::Texture::CalculateSize(
         true, bytes_per_pixel, framebuffer.stride, framebuffer.height, 1, block_height_log2, 0)};
     if (host_ptr) {
-        Tegra::Texture::UnswizzleTexture(
-            mapped_span.subspan(image_offset, linear_size), std::span(host_ptr, tiled_size),
-            bytes_per_pixel, framebuffer.width, framebuffer.height, 1, block_height_log2, 0);
+        std::span<const u8> tiled{host_ptr, tiled_size};
+        std::vector<u8> normalized;
+        if (framebuffer.native_tiling) {
+            normalized.resize(tiled_size);
+            if (!Tegra::Texture::NormalizeNativeGobs(normalized, tiled)) return;
+            tiled = normalized;
+        }
+        if (framebuffer.native_tiling) {
+            Tegra::Texture::UnswizzleTextureWithStride(
+                mapped_span.subspan(image_offset, linear_size), tiled,
+                bytes_per_pixel, framebuffer.width, framebuffer.height, 1, block_height_log2, 0,
+                framebuffer.stride * bytes_per_pixel);
+        } else {
+            Tegra::Texture::UnswizzleTexture(
+                mapped_span.subspan(image_offset, linear_size), tiled,
+                bytes_per_pixel, framebuffer.width, framebuffer.height, 1, block_height_log2, 0);
+        }
     }
 
     const VkBufferImageCopy copy{

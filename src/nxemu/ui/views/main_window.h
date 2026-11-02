@@ -54,6 +54,9 @@ public:
     void Update();
     bool Still() const;
     const PixelRect * GameArea() const;
+    // Observe the UI's existing sample; never reset OS performance counters twice.
+    const PerfStatsResults & DebugPerformanceStats() const { return m_debugPerfStats; }
+    uint64_t DebugPerformanceSample() const { return m_debugPerfSample; }
 
 private:
     MainWindow(const MainWindow &) = delete;
@@ -288,6 +291,8 @@ private:
     unsigned m_hotkeyRevision = 0;
     uint64_t m_lastMeasure = 0;
     std::string m_speedText;
+    PerfStatsResults m_debugPerfStats{};
+    uint64_t m_debugPerfSample{};
     int m_hiddenFrame = 0;
     uint64_t m_mouseMovedAt = 0;
     bool m_mouseHidden = false;

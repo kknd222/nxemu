@@ -14,6 +14,7 @@ class IApplicationFunctions;
 class ICommonStateGetter;
 class IDebugFunctions;
 class IDisplayController;
+class IGraphicsScaleController;
 class ILibraryAppletCreator;
 class IProcessWindingController;
 class ISelfController;
@@ -26,6 +27,7 @@ public:
     ~IApplicationProxy();
 
 private:
+    void GetNx2Interface(HLERequestContext& ctx);
     Result GetAudioController(Out<SharedPointer<IAudioController>> out_audio_controller);
     Result GetDisplayController(Out<SharedPointer<IDisplayController>> out_display_controller);
     Result GetProcessWindingController(
@@ -38,6 +40,8 @@ private:
         Out<SharedPointer<ILibraryAppletCreator>> out_library_applet_creator);
     Result GetApplicationFunctions(
         Out<SharedPointer<IApplicationFunctions>> out_application_functions);
+    Result GetGraphicsScaleController(
+        Out<SharedPointer<IGraphicsScaleController>> out_controller);
 
 private:
     Kernel::KProcess* const m_process;

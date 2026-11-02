@@ -2,6 +2,7 @@
 #include <nxemu-module-spec/cpu.h>
 #include <nxemu-module-spec/video.h>
 #include <memory>
+#include <atomic>
 
 namespace Tegra {
 class MemoryManager;
@@ -20,6 +21,7 @@ public:
     // IVideo
     bool Initialize() override;
     void Shutdown() override;
+    void QuiesceGuestMemory() override;
     uint32_t AllocAsEx(uint64_t addressSpaceBits, uint64_t splitAddress, uint64_t bigPageBits, uint64_t pageBits) override;
     uint64_t MapBufferEx(uint32_t gmmu, uint64_t gpuAddr, uint64_t deviceAddr, uint64_t size, uint16_t kind, bool isBigPages) override;
     uint64_t MapSparse(uint32_t gmmu, uint64_t gpuAddr, uint64_t size, bool isBigPages) override;
@@ -66,7 +68,13 @@ public:
     bool ProcessShaderProfile(const ShaderProfileTask& task,IShaderProfileProgress& progress,
         ShaderProfileResult& result,char* error,uint32_t error_size) override;
 
+    bool SetNativeSyncpointShim(uint32_t gmmu, uint64_t address) override;
+    bool AddNativeSemaphoreRegion(uint32_t gmmu, uint64_t address) override;
+    void SynchronizeGpuCommands() override;
+    VideoDebugSnapshot DebugSnapshot() override;
 private:
+    std::atomic<uint64_t> m_debugMapCalls{}, m_debugMappedBytes{}, m_debugMappingBytes{};
+    std::atomic<uint64_t> m_debugSubmissions{}, m_debugPresents{};
     VideoManager() = delete;
     VideoManager(const VideoManager&) = delete;
     VideoManager& operator=(const VideoManager&) = delete;

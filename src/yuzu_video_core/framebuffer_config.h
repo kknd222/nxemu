@@ -23,6 +23,8 @@ struct FramebufferConfig {
     Service::android::BufferTransformFlags transform_flags{};
     Common::Rectangle<int> crop_rect{};
     BlendMode blending{};
+    bool native_tiling{};
+    u32 block_height_log2{4};
 };
 
 Common::Rectangle<f32> NormalizeCrop(const FramebufferConfig& framebuffer, u32 texture_width,

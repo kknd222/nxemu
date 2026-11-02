@@ -10,6 +10,9 @@
 #include "yuzu_common/logging/log.h"
 #include "yuzu_common/yuzu_assert.h"
 #include "core/core.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/hle/service/nvdrv/core/heap_mapper.h"
+#include "core/hle/service/nvdrv/devices/nx2_gpu_memory_registry.h"
 #include "core/hle/service/nvdrv/core/container.h"
 #include "core/hle/service/nvdrv/core/nvmap.h"
 #include "core/hle/service/nvdrv/devices/ioctl_serialization.h"
@@ -26,7 +29,7 @@ nvhost_as_gpu::nvhost_as_gpu(Core::System& system_, Module& module_, NvCore::Con
 {
 }
 
-nvhost_as_gpu::~nvhost_as_gpu() = default;
+nvhost_as_gpu::~nvhost_as_gpu() {if(nx2_caller)Nx2GpuMemoryRegistry::Get().RemoveListener(this);}
 
 NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> input, std::span<u8> output)
 {
@@ -47,6 +50,9 @@ NvResult nvhost_as_gpu::Ioctl1(DeviceFD fd, Ioctl command, std::span<const u8> i
             return WrapFixed(this, &nvhost_as_gpu::GetVARegions1, input, output);
         case 0x9:
             return WrapFixed(this, &nvhost_as_gpu::AllocAsEx, input, output);
+        case 0xb:
+            if (nx2_caller) return WrapFixed(this, &nvhost_as_gpu::Nx2GetSyncpointShimInfo, input, output);
+            break;
         case 0x14:
             return WrapVariable(this, &nvhost_as_gpu::Remap, input, output);
         default:
@@ -86,7 +92,11 @@ NvResult nvhost_as_gpu::Ioctl3(DeviceFD fd, Ioctl command, std::span<const u8> i
     return NvResult::NotImplemented;
 }
 
-void nvhost_as_gpu::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {}
+void nvhost_as_gpu::OnOpen(NvCore::SessionId session_id, DeviceFD fd) {
+ nx2_session=session_id;
+ const auto session=container.GetSessionReference(session_id);
+ nx2_caller=session && session->process && session->process->IsSwitch2();
+}
 void nvhost_as_gpu::OnClose(DeviceFD fd) {
     std::scoped_lock lock(mutex);
     // Closing a descriptor does not retire its GMMU or drain work on a bound channel.
@@ -109,13 +119,49 @@ void nvhost_as_gpu::OnClose(DeviceFD fd) {
     }
 }
 
+bool nvhost_as_gpu::Nx2Map(u64 gpu,u64 cpu,u64 size){
+ std::scoped_lock lock(mutex);auto session=container.GetSessionReference(nx2_session);
+ if(!vm.initialised || !gmmu || !session || size==0 || !session->process->GetMemory().IsValidVirtualAddressRange(cpu,size))return false;
+ auto&video=system.GetVideo();u64 device{};
+ if(auto it=nx2_device_ranges.find({cpu,size});it!=nx2_device_ranges.end())device=it->second;
+ else if(session->has_preallocated_area && session->mapper && session->mapper->IsInBounds(cpu,size))device=session->mapper->Map(cpu,size);
+ else{device=video.Host1xMemoryAllocate(Common::AlignUp(size,0x20000));if(!device)return false;video.Host1xMemoryMap(device,cpu,size,session->asid.id,true);}
+ nx2_device_ranges[{cpu,size}]=device;
+ Nx2GpuMemoryRegistry::Get().RecordDeviceRange(cpu,size,device);
+ video.MapBufferEx(gmmu,gpu,device,size,0,false);
+ if(size==0x2000) video.AddNativeSemaphoreRegion(gmmu,gpu);
+ LOG_INFO(Service_NVDRV,"Switch 2 GPU map {:#x}+{:#x} -> CPU {:#x}",gpu,size,cpu);return true;
+}
+
+bool nvhost_as_gpu::Nx2ModifyKind(u64 gpu,u64 cpu,u64 size,u8 kind){
+ std::scoped_lock lock(mutex);
+ const auto device=Nx2GpuMemoryRegistry::Get().DeviceAddressOf(cpu);
+ if(!device || !vm.initialised || !gmmu)return false;
+ system.GetVideo().MapBufferEx(gmmu,gpu,*device,size,kind,false);
+ return true;
+}
+bool nvhost_as_gpu::Nx2Unmap(u64 gpu,u64 size){
+ std::scoped_lock lock(mutex);if(!vm.initialised || !gmmu)return false;
+ system.GetVideo().Unmap(gmmu,gpu,size);return true;
+}
+
+NvResult nvhost_as_gpu::Nx2GetSyncpointShimInfo(IoctlNx2SyncpointShimInfo& params) {
+ std::scoped_lock lock(mutex);
+ if (!vm.initialised || !gmmu) return NvResult::NotSupported;
+ const u64 address=vm.va_range_end-VM::YUZU_PAGESIZE;
+ if(!system.GetVideo().SetNativeSyncpointShim(gmmu,address)) return NvResult::NotSupported;
+ params.address=address;params.stride=4;params.count=192;
+ LOG_INFO(Service_NVDRV,"Switch 2 syncpoint shim at {:#x} (192 syncpoints)",address);
+ return NvResult::Success;
+}
+
 NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
     LOG_DEBUG(Service_NVDRV, "called, big_page_size=0x{:X}", params.big_page_size);
     NxemuAndroidDiagnostics::RecordEvent(
         "NVDRV.nvhost_as_gpu.AllocAsEx",
         "big_page_size=" + std::to_string(params.big_page_size));
 
-    std::scoped_lock lock(mutex);
+    std::unique_lock lock(mutex);
 
     if (vm.initialised) {
         ASSERT_MSG(false, "Cannot initialise an address space twice!");
@@ -144,6 +190,10 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
         vm.va_range_start = params.va_range_start;
         vm.va_range_split = params.va_range_split;
         vm.va_range_end = params.va_range_end;
+        if (nx2_caller && vm.va_range_split == 0) {
+            vm.va_range_split = vm.va_range_end;
+            vm.va_range_end += 4ULL << 30;
+        }
     }
 
     const u64 max_big_page_bits = Common::Log2Ceil64(vm.va_range_end);
@@ -159,6 +209,11 @@ NvResult nvhost_as_gpu::AllocAsEx(IoctlAllocAsEx& params) {
     IVideo & video = system.GetVideo();
     gmmu = video.AllocAsEx(max_big_page_bits, vm.va_range_split, vm.big_page_size_bits, VM::PAGE_SIZE_BITS);
     vm.initialised = true;
+    lock.unlock();
+    if(nx2_caller){
+        Nx2GpuMemoryRegistry::Get().AddListener(this,[this](u64 gpu,u64 cpu,u64 size){return Nx2Map(gpu,cpu,size);});
+        Nx2GpuMemoryRegistry::Get().AddOperations(this,[this](u64 gpu,u64 cpu,u64 size,u8 kind){return Nx2ModifyKind(gpu,cpu,size,kind);},[this](u64 gpu,u64 size){return Nx2Unmap(gpu,size);});
+    }
 
 
     return NvResult::Success;

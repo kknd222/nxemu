@@ -2354,6 +2354,8 @@ void MainWindow::MeasureGame()
         m_longestMeasured = m_performance->Shown();
         os.MeasureGameFrames(m_longestMeasured);
         const PerfStatsResults stats = os.GetAndResetPerfStats();
+        m_debugPerfStats = stats;
+        ++m_debugPerfSample;
         if (measured && m_longestMeasured && !os.IsEmulationPaused())
         {
             m_performance->Add(stats, m_session.Modules().Video().ShadersBuilding(), !SettingsStore::GetInstance().GetBool(NXOsSetting::UseSpeedLimit));

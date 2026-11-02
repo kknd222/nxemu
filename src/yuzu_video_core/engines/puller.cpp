@@ -30,21 +30,42 @@ void Puller::ProcessBindMethod(const MethodCall& method_call) {
     // Bind the current subchannel to the desired engine id.
     LOG_DEBUG(HW_GPU, "Binding subchannel {} to engine {}", method_call.subchannel,
               method_call.argument);
-    const auto engine_id = static_cast<EngineID>(method_call.argument);
+    // GF100 bind payload permits class plus documented engine-selection bits.
+    u32 engine = method_call.argument;
+    if ((engine & ~0xffffU) != 0 && (engine & ~0x1fffffU) == 0) {
+        engine &= 0xffffU;
+    }
+    const auto engine_id = static_cast<EngineID>(engine);
+    if (engine_id == EngineID::AMPERE_A || engine_id == EngineID::AMPERE_COMPUTE_B ||
+        engine_id == EngineID::AMPERE_DMA_COPY_B) {
+        native_ampere = true;
+        LOG_INFO(HW_GPU, "Native Ampere class {:#x} on subchannel {}", engine,
+                 method_call.subchannel);
+    }
+    // Like the reference, class zero on native channels is an unbind notification.
+    if (engine == 0 && (native_ampere || memory_manager.HasNativeSyncpointShim())) {
+        return;
+    }
     bound_engines[method_call.subchannel] = engine_id;
     switch (engine_id) {
     case EngineID::FERMI_TWOD_A:
         dma_pusher.BindSubchannel(channel_state.fermi_2d.get(), method_call.subchannel,
                                   EngineTypes::Fermi2D);
         break;
+    case EngineID::AMPERE_A:
     case EngineID::MAXWELL_B:
+        channel_state.maxwell_3d->SetNativeTuring(engine_id == EngineID::AMPERE_A);
         dma_pusher.BindSubchannel(channel_state.maxwell_3d.get(), method_call.subchannel,
                                   EngineTypes::Maxwell3D);
         break;
+    case EngineID::AMPERE_COMPUTE_B:
     case EngineID::KEPLER_COMPUTE_B:
+        channel_state.kepler_compute->SetNativeTuring(
+            engine_id == EngineID::AMPERE_COMPUTE_B, channel_state.maxwell_3d.get());
         dma_pusher.BindSubchannel(channel_state.kepler_compute.get(), method_call.subchannel,
                                   EngineTypes::KeplerCompute);
         break;
+    case EngineID::AMPERE_DMA_COPY_B:
     case EngineID::MAXWELL_DMA_COPY_A:
         dma_pusher.BindSubchannel(channel_state.maxwell_dma.get(), method_call.subchannel,
                                   EngineTypes::MaxwellDMA);
@@ -88,8 +109,14 @@ void Puller::ProcessSemaphoreTriggerMethod() {
     if (op == GpuSemaphoreOperation::WriteLong) {
         const GPUVAddr sequence_address{regs.semaphore_address.SemaphoreAddress()};
         const u32 payload = regs.semaphore_sequence;
+        const auto properties = native_ampere && (regs.semaphore_trigger & (1U << 24)) != 0
+                                    ? VideoCommon::QueryPropertiesFlags::IsAFence
+                                    : VideoCommon::QueryPropertiesFlags::HasTimeout;
         rasterizer->Query(sequence_address, VideoCommon::QueryType::Payload,
-                          VideoCommon::QueryPropertiesFlags::HasTimeout, payload, 0);
+                          properties, payload, 0);
+        if (const auto mirror = memory_manager.NativeSemaphoreMirror(sequence_address); mirror != 0) {
+            rasterizer->Query(mirror, VideoCommon::QueryType::Payload, properties, payload, 0);
+        }
     } else {
         do {
             const u32 word{memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress())};
@@ -142,10 +169,50 @@ void Puller::ProcessSemaphoreAcquire() {
     }
 }
 
+// Ampere host SEM_ADDR_LO/HI and SEM_PAYLOAD_LO/HI live at 0x17..0x1a.
+void Puller::ProcessSemaphoreExecute(u32 argument) {
+    const GPUVAddr address = (GPUVAddr{regs.reg_array[0x18] & 0x1ffffffU} << 32) |
+                            (regs.reg_array[0x17] & ~3U);
+    const u32 payload = regs.reg_array[0x19];
+    const u32 operation = argument & 7;
+    if (operation == 1) {
+        rasterizer->Query(address, VideoCommon::QueryType::Payload,
+                          VideoCommon::QueryPropertiesFlags::IsAFence, payload, 0);
+        if (const auto mirror = memory_manager.NativeSemaphoreMirror(address); mirror != 0) {
+            rasterizer->Query(mirror, VideoCommon::QueryType::Payload,
+                              VideoCommon::QueryPropertiesFlags::IsAFence, payload, 0);
+        }
+        return;
+    }
+    // Match the installed reference: flush and inspect; do not block the GPU thread.
+    rasterizer->ReleaseFences();
+    const u32 word = memory_manager.Read<u32>(address);
+    const bool ready = operation == 0 ? word == payload
+                       : operation == 2 ? word >= payload
+                       : operation == 3 ? static_cast<s32>(word - payload) >= 0
+                       : operation == 4 ? (word & payload) != 0
+                       : operation == 5 ? (word & payload) == 0 : true;
+    if (!ready) {
+        static std::atomic<u32> reported{};
+        if (reported.fetch_add(1, std::memory_order_relaxed) < 8) {
+            LOG_WARNING(HW_GPU, "Native SEM_EXECUTE op {} at {:#x}: {:#x} vs {:#x} not met",
+                        operation, address, word, payload);
+        }
+    }
+}
+
 /// Calls a GPU puller method.
 void Puller::CallPullerMethod(const MethodCall& method_call) {
+    native_ampere = native_ampere || memory_manager.HasNativeSyncpointShim();
     regs.reg_array[method_call.method] = method_call.argument;
     const auto method = static_cast<BufferMethods>(method_call.method);
+    if (native_ampere) {
+        static std::atomic<u32> trace{};
+        if (trace.fetch_add(1, std::memory_order_relaxed) < 256) {
+            LOG_INFO(HW_GPU, "NX2_PULLER method={:#x} arg={:#x} sub={} channel={}",
+                     method_call.method, method_call.argument, method_call.subchannel, channel_state.bind_id);
+        }
+    }
 
     switch (method) {
     case BufferMethods::BindObject: {
@@ -191,11 +258,17 @@ void Puller::CallPullerMethod(const MethodCall& method_call) {
         break;
     }
     case BufferMethods::SemaphoreAcquire: {
-        ProcessSemaphoreAcquire();
+        if (!native_ampere) {
+            ProcessSemaphoreAcquire();
+        }
         break;
     }
     case BufferMethods::SemaphoreRelease: {
-        ProcessSemaphoreRelease();
+        if (native_ampere) {
+            ProcessSemaphoreExecute(method_call.argument);
+        } else {
+            ProcessSemaphoreRelease();
+        }
         break;
     }
     case BufferMethods::Yield: {
@@ -218,14 +291,17 @@ void Puller::CallEngineMethod(const MethodCall& method_call) {
         channel_state.fermi_2d->CallMethod(method_call.method, method_call.argument,
                                            method_call.IsLastCall());
         break;
+    case EngineID::AMPERE_A:
     case EngineID::MAXWELL_B:
         channel_state.maxwell_3d->CallMethod(method_call.method, method_call.argument,
                                              method_call.IsLastCall());
         break;
+    case EngineID::AMPERE_COMPUTE_B:
     case EngineID::KEPLER_COMPUTE_B:
         channel_state.kepler_compute->CallMethod(method_call.method, method_call.argument,
                                                  method_call.IsLastCall());
         break;
+    case EngineID::AMPERE_DMA_COPY_B:
     case EngineID::MAXWELL_DMA_COPY_A:
         channel_state.maxwell_dma->CallMethod(method_call.method, method_call.argument,
                                               method_call.IsLastCall());
@@ -249,12 +325,15 @@ void Puller::CallEngineMultiMethod(u32 method, u32 subchannel, const u32* base_s
     case EngineID::FERMI_TWOD_A:
         channel_state.fermi_2d->CallMultiMethod(method, base_start, amount, methods_pending);
         break;
+    case EngineID::AMPERE_A:
     case EngineID::MAXWELL_B:
         channel_state.maxwell_3d->CallMultiMethod(method, base_start, amount, methods_pending);
         break;
+    case EngineID::AMPERE_COMPUTE_B:
     case EngineID::KEPLER_COMPUTE_B:
         channel_state.kepler_compute->CallMultiMethod(method, base_start, amount, methods_pending);
         break;
+    case EngineID::AMPERE_DMA_COPY_B:
     case EngineID::MAXWELL_DMA_COPY_A:
         channel_state.maxwell_dma->CallMultiMethod(method, base_start, amount, methods_pending);
         break;

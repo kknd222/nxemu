@@ -7,6 +7,7 @@
 #include "yuzu_common/error.h"
 #include "yuzu_common/logging/log.h"
 #include "yuzu_common/thread.h"
+#include "yuzu_common/debug_document.h"
 #ifdef __APPLE__
 #include <mach/mach.h>
 #include <pthread/qos.h>
@@ -111,6 +112,9 @@ void SetCurrentThreadPriority(ThreadPriority new_priority) {
 // Sets the debugger-visible name of the current thread.
 void SetCurrentThreadName(const char* name) {
     SetThreadDescription(GetCurrentThread(), UTF8ToUTF16W(name).data());
+    if (DebugDocument::Enabled())
+        DebugDocument::Publish("thread-" + std::to_string(GetCurrentThreadId()),
+            "{\"name\":" + DebugDocument::Quote(name ? name : "") + "}", false);
 }
 
 #else // !MSVC_VER, so must be POSIX threads

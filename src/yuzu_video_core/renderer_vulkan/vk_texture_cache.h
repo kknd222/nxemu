@@ -10,6 +10,7 @@
 #include <vector>
 
 #include "yuzu_video_core/texture_cache/texture_cache_base.h"
+#include "yuzu_video_core/readback_metrics.h"
 
 #include "yuzu_shader_recompiler/shader_info.h"
 #include "yuzu_video_core/renderer_vulkan/vk_compute_pass.h"
@@ -126,6 +127,7 @@ public:
     u64 AttachmentBarrierTick() const noexcept;
 
     const Device& device;
+    VideoCommon::ReadbackMetrics readback_metrics;
     Scheduler& scheduler;
     MemoryAllocator& memory_allocator;
     StagingBufferPool& staging_buffer_pool;

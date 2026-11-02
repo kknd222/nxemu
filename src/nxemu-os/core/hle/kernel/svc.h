@@ -21,6 +21,8 @@ namespace Kernel::Svc {
 Result SetHeapSize(Core::System& system, uint64_t* out_address, uint64_t size);
 Result SetMemoryPermission(Core::System& system, uint64_t address, uint64_t size, MemoryPermission perm);
 Result SetMemoryAttribute(Core::System& system, uint64_t address, uint64_t size, uint32_t mask, uint32_t attr);
+// Native extension; svc_generator.py is absent from this modular source tree.
+Result SetGpuMemoryAttribute(Core::System& system, uint64_t address, uint64_t size, uint32_t mask, uint32_t attr);
 Result MapMemory(Core::System& system, uint64_t dst_address, uint64_t src_address, uint64_t size);
 Result UnmapMemory(Core::System& system, uint64_t dst_address, uint64_t src_address, uint64_t size);
 Result QueryMemory(Core::System& system, uint64_t out_memory_info, PageInfo* out_page_info, uint64_t address);

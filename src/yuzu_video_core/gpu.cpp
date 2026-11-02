@@ -582,6 +582,7 @@ struct GPU::Impl :
         }
         composite_requests.Composite([this](const auto& layers) {
             renderer->Composite(layers);
+            debug_completed_composites.fetch_add(1, std::memory_order_relaxed);
         });
     }
 
@@ -612,7 +613,6 @@ struct GPU::Impl :
 
     std::mutex cdma_mutex;
     std::map<u32, std::shared_ptr<AsyncCdma>> cdma_pushers;
-    std::unique_ptr<VideoCore::RendererBase> renderer;
     VideoCore::RasterizerInterface * rasterizer = nullptr;
     const bool use_nvdec;
 
@@ -621,6 +621,7 @@ struct GPU::Impl :
     std::unique_ptr<VideoCore::ShaderNotify> shader_notify;
     /// When true, we are about to shut down emulation session, so terminate outstanding tasks
     std::atomic_bool shutting_down{};
+    std::atomic<u64> debug_completed_composites{};
 
     std::array<std::atomic<u32>, Service::Nvidia::MaxSyncPoints> syncpoints{};
 
@@ -647,6 +648,10 @@ struct GPU::Impl :
     s32 bound_channel{-1};
 
     VideoCommon::CompositeRequestQueue composite_requests;
+
+    // Destroy the renderer after the GPU worker joins but before channel engines,
+    // scheduler and context. Vulkan Finish closes queries using the bound 3D engine.
+    std::unique_ptr<VideoCore::RendererBase> renderer;
 
     // Join the worker before destroying its scheduler, context, or pending requests.
     VideoCommon::GPUThread::ThreadManager gpu_thread;
@@ -718,6 +723,8 @@ void GPU::WaitForSyncOperation(uint64_t fence)
 {
     return impl->WaitForSyncOperation(fence);
 }
+
+void GPU::SynchronizeCommands() { impl->gpu_thread.SynchronizeCommands(); }
 
 void GPU::TickWork()
 {
@@ -836,6 +843,14 @@ void GPU::Start()
     impl->Start();
 }
 
+void GPU::FinalizeShutdown() {
+    impl->NotifyShutdown();
+    impl->gpu_thread.Stop();
+    if (impl->renderer) {
+        impl->renderer->ReadRasterizer()->ShutdownAsyncReadbacks();
+    }
+}
+
 void GPU::NotifyShutdown()
 {
     impl->NotifyShutdown();
@@ -915,3 +930,5 @@ void GPU::RegisterHostThread()
     impl->RegisterHostThread();
 }
 } // namespace Tegra
+
+u64 Tegra::GPU::CompletedComposites() const { return impl->debug_completed_composites.load(std::memory_order_relaxed); }

@@ -134,6 +134,8 @@ struct VideoFramebufferConfig
     int32_t cropRight;
     int32_t cropBottom;
     uint32_t blending;
+    bool nativeTiling{};
+    uint32_t blockHeightLog2{4};
 };
 
 struct VideoNvFence
@@ -230,10 +232,24 @@ nxinterface IShaderProfileProgress
     virtual bool ProfileProgress(const char * phase, uint64_t completed, uint64_t total) = 0;
 };
 
+// Versioned POD diagnostic snapshot; counters are observational, not proof of gameplay.
+struct VideoDebugSnapshot {
+    uint32_t version{3};
+    uint32_t size{sizeof(VideoDebugSnapshot)};
+    uint64_t map_calls{}, mapped_bytes{}, mapping_bytes{}, command_submissions{};
+    uint64_t present_requests{}, composites_completed{};
+    uint64_t unbound_methods{}, dma_batches{}, draw_requests{}, draw_pipeline_ready{};
+    uint64_t compute_requests{}, compute_pipeline_ready{}, clear_requests{};
+    uint32_t shaders_building{};
+    uint64_t display_accelerated{}, display_fallback{}, display_fallback_us{}, display_fallback_bytes{};
+};
+
 nxinterface IVideo
 {
     virtual bool Initialize() = 0;
     virtual void Shutdown() = 0;
+    // Retire GPU publishers before the OS releases any guest process memory.
+    virtual void QuiesceGuestMemory() = 0;
     virtual uint32_t AllocAsEx(uint64_t addressSpaceBits, uint64_t splitAddress, uint64_t bigPageBits, uint64_t pageBits) = 0;
     virtual uint64_t MapBufferEx(uint32_t gmmu, uint64_t gpuAddr, uint64_t deviceAddr, uint64_t size, uint16_t kind, bool isBigPages) = 0;
     virtual uint64_t MapSparse(uint32_t gmmu, uint64_t gpuAddr, uint64_t size, bool isBigPages) = 0;
@@ -282,6 +298,10 @@ nxinterface IVideo
     // Synchronous offline task. The caller keeps this module alive until return.
     virtual bool ProcessShaderProfile(const ShaderProfileTask & task, IShaderProfileProgress & progress,
                                       ShaderProfileResult & result, char * error, uint32_t error_size) = 0;
+    virtual bool SetNativeSyncpointShim(uint32_t gmmu, uint64_t address) = 0;
+    virtual bool AddNativeSemaphoreRegion(uint32_t gmmu, uint64_t address) = 0;
+    virtual void SynchronizeGpuCommands() = 0;
+    virtual VideoDebugSnapshot DebugSnapshot() = 0;
 };
 
 EXPORT IVideo * CALL CreateVideo(IRenderWindow & renderWindow, ISystemModules & modules);

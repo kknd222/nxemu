@@ -76,13 +76,14 @@ void SetReplyBase(std::vector<u8> & reply, SwkbdState state, SwkbdReplyType repl
 
 } // Anonymous namespace
 
-SoftwareKeyboard::SoftwareKeyboard(Core::System & system_, std::shared_ptr<Applet> applet_, LibraryAppletMode applet_mode_, ISoftwareKeyboardApplet & frontend_) :
+SoftwareKeyboard::SoftwareKeyboard(Core::System & system_, std::shared_ptr<Applet> applet_, LibraryAppletMode applet_mode_, ISoftwareKeyboardApplet & frontend_, bool default_auto_frontend_) :
     FrontendApplet{system_, applet_, applet_mode_},
+    debug_auto_frontend{default_auto_frontend_},
     frontend{frontend_}
 {
 }
 
-SoftwareKeyboard::~SoftwareKeyboard() = default;
+SoftwareKeyboard::~SoftwareKeyboard() { debug_keyboard.Event("destroyed", true); }
 
 void SoftwareKeyboard::Initialize()
 {
@@ -106,6 +107,9 @@ void SoftwareKeyboard::Initialize()
         ASSERT_MSG(false, "Invalid LibraryAppletMode={}", applet_mode);
         break;
     }
+    debug_keyboard.Begin(is_background, debug_auto_frontend,
+                         is_background ? 0 : swkbd_config_common.min_text_length,
+                         is_background ? 0 : swkbd_config_common.max_text_length);
 }
 
 Result SoftwareKeyboard::GetStatus() const
@@ -149,8 +153,10 @@ void SoftwareKeyboard::SubmitTextNormal(SwkbdResult result, std::u16string submi
 {
     if (complete)
     {
+        debug_keyboard.Event("normal_callback_ignored", true, false, false, 0, 0, false, true);
         return;
     }
+    debug_keyboard.Event("normal_callback", false, false, true, static_cast<uint32_t>(submitted_text.size()), static_cast<uint32_t>(result), confirmed);
 
     if (swkbd_config_common.use_text_check && result == SwkbdResult::Ok)
     {
@@ -167,10 +173,13 @@ void SoftwareKeyboard::SubmitTextNormal(SwkbdResult result, std::u16string submi
     {
         SubmitNormalOutputAndExit(result, submitted_text);
     }
+    debug_keyboard.Event("normal_callback_returned", complete);
 }
 
 void SoftwareKeyboard::SubmitTextInline(SwkbdReplyType reply_type, std::u16string submitted_text, s32 cursor_position)
 {
+    debug_keyboard.Event("inline_callback", complete, false, true,
+                         static_cast<uint32_t>(submitted_text.size()), static_cast<uint32_t>(reply_type), false, complete);
     if (complete)
     {
         return;
@@ -683,7 +692,9 @@ void SoftwareKeyboard::InitializeFrontendInlineKeyboardNew()
 
 void SoftwareKeyboard::ShowNormalKeyboard()
 {
+    debug_keyboard.Event("normal_shown", complete, true);
     frontend.ShowNormalKeyboard();
+    debug_keyboard.Event("normal_show_returned", complete);
 }
 
 void SoftwareKeyboard::ShowTextCheckDialog(SwkbdTextCheckResult text_check_result,
@@ -801,6 +812,7 @@ void SoftwareKeyboard::InlineTextChanged()
 
 void SoftwareKeyboard::ExitKeyboard()
 {
+    debug_keyboard.Event("exit_requested", true);
     complete = true;
     status = ResultSuccess;
 

@@ -16,6 +16,13 @@ DeviceMemory::DeviceMemory()
     : buffer{Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize(),
              VirtualReserveSize} {}
 
+void DeviceMemory::ReconfigureForProgram() {
+    const auto size = Kernel::Board::Nintendo::Nx::KSystemControl::Init::GetIntendedMemorySize();
+    if (buffer.BackingSize() != size) {
+        // Keep the IDeviceMemory object stable for other modules. Called before kernel/fastmem.
+        buffer = Common::HostMemory{size, VirtualReserveSize};
+    }
+}
 DeviceMemory::~DeviceMemory() = default;
 
 } // namespace Core

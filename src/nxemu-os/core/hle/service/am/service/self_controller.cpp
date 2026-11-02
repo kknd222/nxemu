@@ -13,6 +13,7 @@
 #include "core/hle/service/lbl/lbl.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/vi/vi_results.h"
+#include "core/hle/service/nx2_gsv.h"
 
 namespace Service::AM {
 
@@ -72,6 +73,7 @@ ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> 
         {230, D<&ISelfController::Unknown230>, "Unknown230"},
         {240, D<&ISelfController::Unknown240>, "Unknown240"},
         {1000, nullptr, "GetDebugStorageChannel"},
+        {2000, &ISelfController::GetGraphicsSystemSession, "GetGraphicsSystemSession"},
     };
     // clang-format on
 
@@ -85,6 +87,11 @@ ISelfController::ISelfController(Core::System& system_, std::shared_ptr<Applet> 
 ISelfController::~ISelfController() {
     std::scoped_lock lk{m_applet->lock};
     m_applet->display_layer_manager.Finalize();
+}
+
+void ISelfController::GetGraphicsSystemSession(HLERequestContext& ctx) {
+    LOG_INFO(Service_AM, "Returning raw Switch 2 graphics system session");
+    ReturnRawSession(system, ctx, std::make_shared<INx2GraphicsSystemSession>(system));
 }
 
 Result ISelfController::Exit() {

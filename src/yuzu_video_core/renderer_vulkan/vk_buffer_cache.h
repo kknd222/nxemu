@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
+#include "yuzu_video_core/transfer_metrics.h"
 
 #include "yuzu_video_core/buffer_cache/buffer_cache_base.h"
 #include "yuzu_common/readback_reference.h"
@@ -129,6 +130,10 @@ public:
     void PostCopyBarrier();
 
     bool CanDifferentialReadback(const Buffer& buffer, const VideoCommon::BufferCopy& copy) const;
+    bool SegmentedReadbackEnabled() const;
+    void NoteReadbackSegments(u64 segments,u64 bytes);
+    void NoteReadbackRetirement(u64 logical,u64 changed,u64 chunks,u64 changed_chunks);
+    void NoteReadbackFallback(const Buffer& buffer, const VideoCommon::BufferCopy& copy);
     bool DifferentialReadback(Buffer& buffer, const StagingBufferRef& data,
                               const StagingBufferRef& flags, const VideoCommon::BufferCopy& copy,
                               u64 flag_offset);
@@ -222,6 +227,10 @@ private:
     void BindBuffer(VkBuffer buffer, u32 offset, u32 size) {
         guest_descriptor_queue.AddBuffer(buffer, offset, size);
     }
+
+    void PublishTransferMetrics();
+    void RecordTransferMetrics(VideoCommon::BufferTransferKind kind, u64 regions, u64 bytes);
+    VideoCommon::BufferTransferMetrics transfer_metrics;
 
     void ReserveNullBuffer();
     vk::Buffer CreateNullBuffer();

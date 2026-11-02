@@ -106,6 +106,7 @@ public:
     void DrawTexture() override;
     void Clear(u32 layer_count) override;
     void DispatchCompute() override;
+    bool DispatchNativeCompute() override;
     void ResetCounter(VideoCommon::QueryType type) override;
     void Query(GPUVAddr gpu_addr, VideoCommon::QueryType type,
                VideoCommon::QueryPropertiesFlags flags, u32 payload, u32 subreport) override;
@@ -131,6 +132,7 @@ public:
     void SignalFence(std::function<void()>&& func) override;
     void SignalMemoryOperationFence(std::function<void()>&& func) override;
     void WaitForFence() override;
+    void ShutdownAsyncReadbacks() override;
     void SyncOperation(std::function<void()>&& func) override;
     void SignalSyncPoint(u32 value) override;
     void SignalReference() override;
@@ -163,6 +165,7 @@ public:
                                                             u32 pixel_stride);
 
 private:
+    bool native_compute_submitted{};
     static constexpr size_t MAX_TEXTURES = 192;
     static constexpr size_t MAX_IMAGES = 48;
     static constexpr size_t MAX_IMAGE_VIEWS = MAX_TEXTURES + MAX_IMAGES;

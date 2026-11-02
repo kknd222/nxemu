@@ -3,6 +3,7 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <map>
 #include <mutex>
@@ -44,6 +45,22 @@ public:
                            u64 address_space_bits_ = 40, GPUVAddr split_address = 1ULL << 34,
                            u64 big_page_bits_ = 16, u64 page_bits_ = 12);
     ~MemoryManager();
+
+    void SetNativeSyncpointShim(GPUVAddr address) { native_syncpoint_shim.store(address, std::memory_order_release); }
+    bool HasNativeSyncpointShim() const { return native_syncpoint_shim.load(std::memory_order_acquire) != 0; }
+    void AddNativeSemaphoreRegion(GPUVAddr address) {
+        std::scoped_lock lock(native_semaphore_mutex);
+        if (std::find(native_semaphore_regions.begin(), native_semaphore_regions.end(), address) ==
+            native_semaphore_regions.end()) native_semaphore_regions.push_back(address);
+    }
+    GPUVAddr NativeSemaphoreMirror(GPUVAddr address) const {
+        std::scoped_lock lock(native_semaphore_mutex);
+        for (const auto start : native_semaphore_regions) {
+            if (address >= start + 0x1000 && address < start + 0x2000) return address - 0x1000;
+        }
+        return 0;
+    }
+    static constexpr u32 NumShimSyncpoints = 192;
 
     size_t GetID() const {
         return unique_identifier;
@@ -202,6 +219,10 @@ private:
             std::pair<std::conditional_t<is_gpu_address, GPUVAddr, DAddr>, std::size_t>, 32>&
             result) const;
 
+    std::atomic<GPUVAddr> native_syncpoint_shim{};
+    mutable std::mutex native_semaphore_mutex;
+    std::vector<GPUVAddr> native_semaphore_regions;
+    Tegra::Host1x::Host1x* native_host1x{};
     MaxwellDeviceMemoryManager& memory;
 
     const u64 address_space_bits;

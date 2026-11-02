@@ -46,6 +46,11 @@ void UnswizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes
                       u32 width, u32 height, u32 depth, u32 block_height, u32 block_depth,
                       u32 stride_alignment = 1);
 
+// Explicit byte pitch supplied by native display image metadata.
+void UnswizzleTextureWithStride(std::span<u8> output, std::span<const u8> input,
+                                u32 bytes_per_pixel, u32 width, u32 height, u32 depth,
+                                u32 block_height, u32 block_depth, u32 stride_bytes);
+
 /// Swizzles linear memory into a block linear texture.
 void SwizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,
                     u32 height, u32 depth, u32 block_height, u32 block_depth,

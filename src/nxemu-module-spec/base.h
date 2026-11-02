@@ -28,10 +28,10 @@ enum
     // This integration preserves local virtual methods in addition to upstream
     // interfaces. Reserve the high bit so official DLLs cannot be mixed with
     // local module vtables, even when their upstream base version is identical.
-    MODULE_LOADER_SPECS_VERSION = 0x813A,
-    MODULE_VIDEO_SPECS_VERSION = 0x8129,
+    MODULE_LOADER_SPECS_VERSION = 0x813B,
+    MODULE_VIDEO_SPECS_VERSION = 0x812C,
     MODULE_CPU_SPECS_VERSION = 0x8121,
-    MODULE_OPERATING_SYSTEM_SPECS_VERSION = 0x812A,
+    MODULE_OPERATING_SYSTEM_SPECS_VERSION = 0x812B,
 };
 
 enum MODULE_TYPE : uint16_t
@@ -284,6 +284,7 @@ enum class PoolPartition : uint32_t
 nxinterface IProgramMetadata
 {
     virtual bool Is64BitProgram() const = 0;
+    virtual bool IsSwitch2() const = 0;
     virtual ProgramAddressSpaceType GetAddressSpaceType() const = 0;
     virtual uint8_t GetMainThreadPriority() const = 0;
     virtual uint8_t GetMainThreadCore() const = 0;

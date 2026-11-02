@@ -54,6 +54,8 @@ public:
     bool ReleasePending() const { return m_releasePending; }
     bool IsPaused();
     Phase CurrentPhase() const;
+    uint64_t DebugModuleGeneration() const { return m_moduleGeneration; }
+    const std::string& DebugGamePath() const { return m_debugGamePath; }
 
     void Update(bool releaseStoppedResources = true);
     void HandleKey(const SDL_KeyboardEvent & event);
@@ -120,6 +122,7 @@ private:
     std::deque<ProgramEvent> m_programEvents;
     std::unique_ptr<CallbackContext> m_callbackContext;
     PendingLaunch m_pendingLaunch;
+    std::string m_debugGamePath;
     bool m_launchCancelled = false;
     uint64_t m_moduleGeneration = 0;
     int32_t m_currentProgramIndex = 0;

@@ -2,6 +2,10 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
+#include "yuzu_video_core/native_alias_snapshot.h"
+#include "yuzu_video_core/backing_identity.h"
+#include "yuzu_video_core/native_debug_document.h"
+#include <sstream>
 
 #include <set>
 #include <array>
@@ -43,6 +47,27 @@ public:
 
     void BindInterface(DeviceInterface* device_inter);
 
+    VideoCommon::BackingIdentity CapturedBacking() const {
+        return {physical_base, captured_backing_size};
+    }
+    VideoCommon::BackingIdentity CurrentBacking() const {
+        return {reinterpret_cast<uintptr_t>(source_backing.BackingBasePointer()),
+                source_backing.BackingSize()};
+    }
+    bool BackingMatches() const { return CapturedBacking().Matches(CurrentBacking()); }
+    void PublishBackingState(const char* stage) const {
+        if (!VideoCommon::DebugDocument::Enabled()) return;
+        const auto captured = CapturedBacking();
+        const auto current = CurrentBacking();
+        std::ostringstream doc;
+        doc << "{\"stage\":" << VideoCommon::DebugDocument::Quote(stage)
+            << ",\"captured_base\":" << captured.base << ",\"captured_size\":" << captured.size
+            << ",\"current_base\":" << current.base << ",\"current_size\":" << current.size
+            << ",\"physical_page_capacity\":" << compressed_device_addr.size()
+            << ",\"matches\":" << (captured.Matches(current) ? "true" : "false") << '}';
+        VideoCommon::DebugDocument::Publish("device-backing", doc.str());
+    }
+
     DAddr Allocate(size_t size);
     void AllocateFixed(DAddr start, size_t size);
     void Free(DAddr start, size_t size);
@@ -67,16 +92,25 @@ public:
     template <typename Func>
     void ApplyOpOnPAddr(PAddr address, Common::ScratchBuffer<u32>& buffer, Func&& operation) {
         DAddr subbits = static_cast<DAddr>(address & page_mask);
+        if ((address >> page_bits) >= compressed_device_addr.size()) {
+            ReportInvalidPhysicalAlias(address, address >> page_bits, compressed_device_addr.size());
+            return;
+        }
         const u32 base = compressed_device_addr[(address >> page_bits)];
         if ((base >> MULTI_FLAG_BITS) == 0) [[likely]] {
+            if (base == 0) return;
+            if (base >= (device_as_size >> page_bits)) {
+                ReportInvalidPhysicalAlias(address, base, device_as_size >> page_bits);
+                return;
+            }
             const DAddr d_address = (static_cast<DAddr>(base) << page_bits) + subbits;
             operation(d_address);
             return;
         }
         InnerGatherDeviceAddresses(buffer, address);
-        for (u32 value : buffer) {
-            operation((static_cast<DAddr>(value) << page_bits) + subbits);
-        }
+        VideoCommon::ForEachStablePhysicalAlias(buffer, device_as_size >> page_bits,
+            [&](u32 value) { operation((static_cast<DAddr>(value) << page_bits) + subbits); },
+            [&](u32 value) { ReportInvalidPhysicalAlias(address, value, device_as_size >> page_bits); });
     }
 
     template <typename Func>
@@ -131,6 +165,24 @@ public:
     static constexpr size_t AS_BITS = Traits::device_virtual_bits;
 
 private:
+    void ReportInvalidPhysicalAlias(PAddr physical, u64 page, u64 limit) const {
+        thread_local VideoCommon::PhysicalAliasDiagnosticGate gate;
+        const auto now = std::chrono::duration_cast<std::chrono::milliseconds>(
+            std::chrono::steady_clock::now().time_since_epoch()).count();
+        if (!gate.Observe(static_cast<u64>(now))) return;
+        if (!VideoCommon::DebugDocument::Enabled()) return;
+        std::ostringstream doc;
+        doc << "{\"physical_address\":" << physical << ",\"rejected_page\":" << page
+            << ",\"page_limit\":" << limit << ",\"physical_base\":" << physical_base
+            << ",\"captured_backing_size\":" << captured_backing_size
+            << ",\"current_backing_base\":" << CurrentBacking().base
+            << ",\"current_backing_size\":" << CurrentBacking().size
+            << ",\"backing_matches\":" << (BackingMatches() ? "true" : "false")
+            << ",\"rejected_count\":" << gate.rejected_count
+            << ",\"published_count\":" << gate.published_count
+            << ",\"sampling_interval_ms\":250,\"reason\":\"outside_address_table\"}";
+        VideoCommon::DebugDocument::Publish("physical-alias", doc.str());
+    }
     static constexpr size_t device_virtual_bits = Traits::device_virtual_bits;
     static constexpr size_t device_as_size = 1ULL << device_virtual_bits;
     static constexpr size_t page_bits = 12;
@@ -163,7 +215,9 @@ private:
 
     std::unique_ptr<DeviceMemoryManagerAllocator<Traits>> impl;
 
+    const IDeviceMemory& source_backing;
     const uintptr_t physical_base;
+    const uint64_t captured_backing_size;
     DeviceInterface* device_inter;
     Common::VirtualBuffer<u32> compressed_physical_ptr;
     Common::VirtualBuffer<u32> compressed_device_addr;

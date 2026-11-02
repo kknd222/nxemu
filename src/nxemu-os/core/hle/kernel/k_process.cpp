@@ -1431,6 +1431,10 @@ Result KProcess::LoadFromMetadata(const IProgramMetadata & metadata, std::size_t
     // Assign remaining properties.
     m_is_hbl = is_hbl;
     m_ideal_core_id = metadata.GetMainThreadCore();
+    m_is_switch2 = metadata.IsSwitch2();
+    if (m_is_switch2) {
+        m_max_process_memory = m_page_table.GetHeapRegionSize() + m_page_table.GetAliasRegionSize();
+    }
 
     // Set up emulation context.
     this->InitializeInterfaces();

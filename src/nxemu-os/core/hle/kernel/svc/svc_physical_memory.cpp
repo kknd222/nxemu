@@ -3,6 +3,7 @@
 
 #include "core/core.h"
 #include "core/hle/kernel/k_process.h"
+#include "core/hle/kernel/k_system_control.h"
 #include "core/hle/kernel/svc.h"
 #include "core/hle/service/nxemu_android_diagnostics.h"
 #include <fmt/format.h>
@@ -15,13 +16,23 @@ Result SetHeapSize(Core::System& system, u64* out_address, u64 size) {
 
     // Validate size.
     R_UNLESS(Common::IsAligned(size, HeapSizeAlignment), ResultInvalidSize);
-    R_UNLESS(size < MainMemorySizeMax, ResultInvalidSize);
+    const auto& process = GetCurrentProcess(system.Kernel());
+    const u64 max_heap_size = process.IsSwitch2()
+        ? (std::max)(MainMemorySizeMax, KSystemControl::Init::GetIntendedMemorySize())
+        : MainMemorySizeMax;
+    R_UNLESS(size < max_heap_size, ResultInvalidSize);
 
     // Set the heap size.
     KProcessAddress address{};
-    R_TRY(GetCurrentProcess(system.Kernel())
+    const auto heap_result = GetCurrentProcess(system.Kernel())
               .GetKPageTable()
-              .SetHeapSize(std::addressof(address), size));
+              .SetHeapSize(std::addressof(address), size);
+    if (process.IsSwitch2()) {
+        LOG_INFO(Kernel_SVC, "Switch 2 heap size={:#x} limit={:#x} result={:#x} base={:#x} mapped={}",
+                 size, max_heap_size, heap_result.raw, address.GetValue(),
+                 GetCurrentProcess(system.Kernel()).GetMemory().IsValidVirtualAddressRange(address.GetValue(), 1));
+    }
+    R_TRY(heap_result);
 
     // We succeeded.
     *out_address = address.GetValue();

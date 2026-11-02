@@ -17,6 +17,7 @@ VideoSettings videoSettings{};
 #include "yuzu_video_core/engines/sw_blitter/blitter.h"
 #include "yuzu_video_core/engines/dma_remap.h"
 #include "yuzu_video_core/textures/decoders.h"
+#include "yuzu_video_core/native_gob.h"
 
 using Tegra::Engines::DmaImageCopySize;
 using Tegra::Engines::Fast2DCopySize;
@@ -706,6 +707,25 @@ void Benchmark(CopyFixture& f) {
                     before.median / after.median);
     }
 }
+void NativeGobRoundtripTests() {
+    for (u32 width : {1U, 16U, 65U, 640U}) for (u32 height : {1U, 7U, 8U, 129U, 480U})
+        for (u32 block : {0U, 1U, 4U, 5U}) {
+            const u32 stridePixels = (width + 15) & ~15U;
+            const auto size = Tegra::Texture::CalculateSize(true, 4, stridePixels, height, 1, block, 0);
+            std::vector<u8> linear(width * height * 4), tiled(size), native(size), restored(size);
+            for (size_t i = 0; i < linear.size(); ++i) linear[i] = static_cast<u8>((i * 37 + i / 97) & 255);
+            Tegra::Texture::SwizzleTexture(tiled, linear, 4, width, height, 1, block, 0, 4);
+            Check(Tegra::Texture::NormalizeNativeGobs(native, tiled), "canonical to native GOB");
+            Check(Tegra::Texture::NormalizeNativeGobs(restored, native), "native to canonical GOB");
+            Check(restored == tiled, "native GOB involution with pitch padding");
+            std::vector<u8> guarded(linear.size() + 64, 0xCC);
+            Tegra::Texture::UnswizzleTextureWithStride(std::span<u8>{guarded}.subspan(32, linear.size()),
+                restored, 4, width, height, 1, block, 0, stridePixels * 4);
+            Check(std::equal(linear.begin(), linear.end(), guarded.begin() + 32), "native frame explicit pitch roundtrip");
+            Check(std::all_of(guarded.begin(), guarded.begin() + 32, [](u8 v){return v == 0xCC;}) &&
+                  std::all_of(guarded.end() - 32, guarded.end(), [](u8 v){return v == 0xCC;}), "native frame output bounds");
+        }
+}
 int main(int argc, char** argv) {
     std::fill(std::begin(Common::Log::g_classLevel), std::end(Common::Log::g_classLevel),
               LogLevel::Warning);
@@ -713,6 +733,7 @@ int main(int argc, char** argv) {
     if (argc > 1 && std::string_view(argv[1]) == "--benchmark")
         Benchmark(fixture);
     else {
+        NativeGobRoundtripTests();
         LayoutTests(fixture);
         MappingTests(fixture);
         DmaTests();

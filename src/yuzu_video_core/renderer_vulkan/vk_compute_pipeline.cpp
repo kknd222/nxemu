@@ -115,6 +115,13 @@ ComputePipeline::ComputePipeline(const Device& device_, vk::PipelineCache& pipel
     }
 }
 
+bool ComputePipeline::WaitForNativeBuild() {
+    if (build_queue) build_queue->RunNow(queued_build);
+    std::unique_lock lock{build_mutex};
+    build_condvar.wait(lock, [this] { return is_built.load(std::memory_order_acquire); });
+    return !HasBuildFailed();
+}
+
 void ComputePipeline::Configure(Tegra::Engines::KeplerCompute& kepler_compute,
                                 Tegra::MemoryManager& gpu_memory, Scheduler& scheduler,
                                 BufferCache& buffer_cache, TextureCache& texture_cache) {

@@ -10,10 +10,12 @@
 #include "core/hle/ipc.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/global_scheduler_context.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/nxemu_android_diagnostics.h"
 #include "core/hle/service/service.h"
+#include "core/hle/service/nx2_stub_interface.h"
 #include "core/hle/service/sm/sm.h"
 
 namespace Service {
@@ -81,7 +83,10 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx, c
     // command (for example IFileSystem::GetFileTimeStampRaw from some NSPs) aborts the whole APK
     // before diagnostics can be copied. Treat unknown service commands as auto-stub warnings when
     // auto-stub is enabled, and only assert in strict mode.
-    if (!Settings::values.use_auto_stub)
+    const auto* caller = ctx.GetThread().GetOwnerKProcess();
+    const bool auto_stub = ShouldAutoStubNx2(Settings::values.use_auto_stub.GetValue(),
+                                           caller != nullptr && caller->IsSwitch2(), service_name);
+    if (!auto_stub)
     {
         UNIMPLEMENTED_MSG("Unknown / unimplemented {}", fmt::to_string(buf));
     }
@@ -93,12 +98,16 @@ void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx, c
         "IPC.Unimplemented",
         fmt::format("service={} cmd={} name={} type={} auto_stub={}", service_name,
                     ctx.GetCommand(), function_name, static_cast<u32>(ctx.GetCommandType()),
-                    Settings::values.use_auto_stub.GetValue()));
-    if (Settings::values.use_auto_stub)
+                    auto_stub));
+    if (auto_stub)
     {
         LOG_WARNING(Service, "Using auto stub fallback!");
         IPC::ResponseBuilder rb{ctx, 2};
-        rb.Push(ResultSuccess);
+        if (ctx.IsTipc()) {
+            rb.PushRaw<u32>(ResultSuccess.raw);
+        } else {
+            rb.Push(ResultSuccess);
+        }
     }
 }
 

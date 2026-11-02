@@ -49,6 +49,11 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
     case InfoType::IsApplication:
     case InfoType::FreeThreadCount:
     case InfoType::AliasRegionExtraSize:
+    case InfoType::Nx2RegionAddress:
+    case InfoType::Nx2RegionSize:
+    case InfoType::Nx2RemoteMemorySize:
+    case InfoType::Nx2RemoteMemoryUsed:
+    case InfoType::Nx2VammSize:
     {
         R_UNLESS(info_sub_id == 0, ResultInvalidEnumValue);
 
@@ -144,6 +149,24 @@ Result GetInfo(Core::System& system, u64* result, InfoType info_id_type, Handle 
             } else {
                 *result = 0;
             }
+            R_SUCCEED();
+        case InfoType::Nx2RegionAddress:
+        case InfoType::Nx2RegionSize: {
+            R_UNLESS(process->IsSwitch2(), ResultInvalidEnumValue);
+            auto& pt = process->GetKPageTable();
+            const u64 half = pt.GetAliasRegionSize() / 2;
+            *result = info_id_type == InfoType::Nx2RegionAddress
+                        ? pt.GetAliasRegionStart().GetValue() + half : half;
+            R_SUCCEED();
+        }
+        case InfoType::Nx2RemoteMemorySize:
+        case InfoType::Nx2RemoteMemoryUsed:
+            R_UNLESS(process->IsSwitch2(), ResultInvalidEnumValue);
+            *result = 0; // No separate graphics-server arena is backed at this checkpoint.
+            R_SUCCEED();
+        case InfoType::Nx2VammSize:
+            R_UNLESS(process->IsSwitch2(), ResultInvalidEnumValue);
+            *result = PageSize;
             R_SUCCEED();
         case InfoType::AliasRegionExtraSize:
             *result = 0;

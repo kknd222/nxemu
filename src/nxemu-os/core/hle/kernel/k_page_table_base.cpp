@@ -9,6 +9,7 @@
 #include "yuzu_common/settings.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_address_space_info.h"
+#include "os_settings.h"
 #include "core/hle/kernel/k_page_table_base.h"
 #include "core/hle/kernel/k_scoped_resource_reservation.h"
 #include "core/hle/kernel/k_system_resource.h"
@@ -256,6 +257,12 @@ Result KPageTableBase::InitializeForProcess(Svc::CreateProcessFlag as_type, bool
         return KAddressSpaceInfo::GetAddressSpaceStart(m_address_space_width, type);
     };
     auto GetSpaceSize = [&](KAddressSpaceInfo::Type type) {
+        // Eglantine reserves a 16 GiB heap region for 39-bit Switch2 programs.
+        // Keep the original Switch1 layout, including ARM/NCE configurations.
+        if (osSettings.current_program_is_switch2 && m_address_space_width == 39 &&
+            type == KAddressSpaceInfo::Type::Heap) {
+            return size_t{16ULL << 30};
+        }
         return KAddressSpaceInfo::GetAddressSpaceSize(m_address_space_width, type);
     };
 

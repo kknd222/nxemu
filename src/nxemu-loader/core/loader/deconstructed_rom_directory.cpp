@@ -60,10 +60,10 @@ extern "C" const char * NxemuGetLastNceLoaderDiagnostics()
 
 namespace Loader {
 
-AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile file_, bool override_update_) : 
-    AppLoader(std::move(file_)), 
-    override_update(override_update_), 
-    is_hbl(false) 
+AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualFile file_, bool override_update_) :
+    AppLoader(std::move(file_)),
+    override_update(override_update_),
+    is_hbl(false)
 {
     const auto file_dir = file->GetContainingDirectory();
     romfs = FindLooseRomFS(file_dir);
@@ -75,7 +75,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
         const auto res = metadata.Load(npdm);
         if (res == LoaderResultStatus::Success)
         {
-            title_id = metadata.GetTitleID();        
+            title_id = metadata.GetTitleID();
         }
     }
 
@@ -100,7 +100,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
                 return f->GetExtension() == "png" || f->GetExtension() == "jpg" || f->GetExtension() == "bmp" || f->GetExtension() == "jpeg";
             });
         if (icon_iter != files.end())
-        {        
+        {
             icon_data = (*icon_iter)->ReadAllBytes();
         }
     }
@@ -113,7 +113,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
         const auto nacp_iter = std::find_if(files.begin(), files.end(), [](const FileSys::VirtualFile& f) { return f->GetExtension() == "nacp"; });
         if (nacp_iter != files.end())
         {
-            nacp_file = *nacp_iter;        
+            nacp_file = *nacp_iter;
         }
     }
 
@@ -127,7 +127,7 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys::VirtualDir directory, bool override_update_, bool is_hbl_) :
     AppLoader(directory->GetFile("main")),
     dir(std::move(directory)),
-    override_update(override_update_), 
+    override_update(override_update_),
     is_hbl(is_hbl_)
 {
     romfs = FindLooseRomFS(dir);
@@ -135,7 +135,12 @@ AppLoader_DeconstructedRomDirectory::AppLoader_DeconstructedRomDirectory(FileSys
 
 LoaderFileType AppLoader_DeconstructedRomDirectory::IdentifyType(const FileSys::VirtualFile & dir_file)
 {
-    if (FileSys::IsDirectoryExeFS(dir_file->GetContainingDirectory()))
+    if (!dir_file || dir_file->GetName() != "main" ||
+        AppLoader_NSO::IdentifyType(dir_file) != LoaderFileType::NSO) {
+        return LoaderFileType::Error;
+    }
+    const auto directory = dir_file->GetContainingDirectory();
+    if (directory && FileSys::IsDirectoryExeFS(directory))
     {
         return LoaderFileType::DeconstructedRomDirectory;
     }
@@ -203,6 +208,11 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     g_settings->SetBool(NXCoreSetting::Is64BitProgram, metadata.Is64BitProgram());
 
     IOperatingSystem & operatingSystem = systemModules.OperatingSystem();
+
+    // Must precede NCE address-window capture and kernel/device-memory initialization.
+    if (!operatingSystem.PrepareProgramMemory(metadata.IsSwitch2())) {
+        return {LoaderResultStatus::ErrorNotInitialized, {}};
+    }
 
     // Enable direct memory mapping in case of NCE.
     uint64_t fastmem_base = 0;
@@ -336,7 +346,7 @@ LoaderResultStatus AppLoader_DeconstructedRomDirectory::ReadRomFS(FileSys::Virtu
 
 LoaderResultStatus AppLoader_DeconstructedRomDirectory::ReadIcon(uint8_t * buffer, uint32_t * bufferSize)
 {
-    if (icon_data.empty()) 
+    if (icon_data.empty())
     {
         return LoaderResultStatus::ErrorNoIcon;
     }
@@ -366,7 +376,7 @@ LoaderResultStatus AppLoader_DeconstructedRomDirectory::ReadProgramId(uint64_t& 
 
 LoaderResultStatus AppLoader_DeconstructedRomDirectory::ReadTitle(char * buffer, uint32_t * bufferSize)
 {
-    if (name.empty()) 
+    if (name.empty())
     {
         return LoaderResultStatus::ErrorNoControl;
     }

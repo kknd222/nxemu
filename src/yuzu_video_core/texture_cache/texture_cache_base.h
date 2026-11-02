@@ -297,7 +297,8 @@ public:
     void CreateChannel(Tegra::Control::ChannelState& channel) final override;
 
     /// Prepare an image to be used
-    void PrepareImage(ImageId image_id, bool is_modification, bool invalidate);
+    void PrepareImage(ImageId image_id, bool is_modification, bool invalidate,
+                      const SubresourceRange* write_range = nullptr);
 
     std::recursive_mutex mutex;
 
@@ -447,7 +448,8 @@ private:
     void RemoveFramebuffers(std::span<const ImageViewId> removed_views);
 
     /// Mark an image as modified from the GPU
-    void MarkModification(ImageBase& image, ImageId image_id) noexcept;
+    void MarkModification(ImageBase& image, ImageId image_id,
+                          const SubresourceRange* write_range = nullptr) noexcept;
     void UpdateNativeReadTracking(ImageBase& image, ImageId image_id);
     void NotifyNativeImageModification(ImageBase& image, ImageId image_id);
 
@@ -550,6 +552,8 @@ private:
         Common::SlotId object_id;
         u64 observation_serial{};
         bool observed_partial{};
+        // A packed snapshot of mapped native layers; keep it through publication.
+        std::vector<BufferImageCopy> native_sparse_copies;
         size_t observed_address_space{};
         // Staging bytes reserved at commit; the image slot may be reused before the pop.
         size_t staging_bytes{};

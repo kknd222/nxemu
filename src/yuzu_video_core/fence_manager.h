@@ -49,6 +49,17 @@ class FenceManager {
     static constexpr bool can_async_check = Traits::HAS_ASYNC_CHECK;
 
 public:
+    void Shutdown() {
+        if constexpr (can_async_check) {
+            if (!fence_thread.joinable()) return;
+            // The GPU producer has joined. Retire all already queued publications and waiters.
+            WaitPendingFences(true);
+            fence_thread.request_stop();
+            cv.notify_all();
+            fence_thread.join();
+        }
+    }
+
     /// Notify the fence manager about a new frame
     void TickFrame() {
         std::unique_lock lock(ring_guard);
@@ -137,6 +148,8 @@ protected:
 
     virtual ~FenceManager() {
         if constexpr (can_async_check) {
+            // Shutdown may already have joined while guest memory was alive.
+            if (!fence_thread.joinable()) return;
             fence_thread.request_stop();
             cv.notify_all();
             fence_thread.join();

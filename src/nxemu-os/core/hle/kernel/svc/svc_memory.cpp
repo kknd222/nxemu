@@ -128,6 +128,21 @@ Result SetMemoryAttribute(Core::System& system, u64 address, u64 size, u32 mask,
                                            static_cast<KMemoryAttribute>(attr)));
 }
 
+Result SetGpuMemoryAttribute(Core::System& system, u64 address, u64 size, u32 mask, u32 attr) {
+    auto& process = GetCurrentProcess(system.Kernel());
+    R_UNLESS(process.IsSwitch2(), ResultInvalidEnumValue);
+    R_UNLESS(Common::IsAligned(address, PageSize), ResultInvalidAddress);
+    R_UNLESS(size > 0 && Common::IsAligned(size, PageSize), ResultInvalidSize);
+    R_UNLESS(address < address + size, ResultInvalidCurrentMemory);
+    constexpr u32 Supported = static_cast<u32>(MemoryAttribute::GpuAccessible);
+    R_UNLESS((attr & ~mask) == 0 && ((mask | attr) & ~Supported) == 0, ResultInvalidCombination);
+    auto& page_table = process.GetKPageTable();
+    R_UNLESS(page_table.Contains(address, size), ResultInvalidCurrentMemory);
+    // Persist the attribute in memory blocks; this does not itself map GPU virtual memory.
+    R_RETURN(page_table.SetMemoryAttribute(address, size, static_cast<KMemoryAttribute>(mask),
+                                          static_cast<KMemoryAttribute>(attr)));
+}
+
 /// Maps a memory range into a different range.
 Result MapMemory(Core::System& system, u64 dst_addr, u64 src_addr, u64 size) {
     LOG_TRACE(Kernel_SVC, "called, dst_addr=0x{:X}, src_addr=0x{:X}, size=0x{:X}", dst_addr,

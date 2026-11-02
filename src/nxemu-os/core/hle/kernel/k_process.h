@@ -102,6 +102,7 @@ private:
     bool m_is_application{};
     bool m_is_default_application_system_resource{};
     bool m_is_hbl{};
+    bool m_is_switch2{};
     uint64_t m_main_thread_argument0{};
     uint64_t m_main_thread_argument1{};
     KProcessAddress m_main_thread_handle_write_address{};
@@ -255,6 +256,8 @@ public:
     {
         return m_entropy[i];
     }
+
+    bool IsSwitch2() const { return m_is_switch2; }
 
     bool IsApplication() const override
     {

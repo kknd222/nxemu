@@ -217,6 +217,9 @@ bool Maxwell3D::IsMethodExecutable(u32 method)
     }
 }
 
+void Maxwell3D::SetNativeTuring(bool enabled) { macro_engine->SetNativeTuring(enabled); }
+bool Maxwell3D::IsNativeTuring() const { return macro_engine->IsNativeTuring(); }
+
 void Maxwell3D::ProcessMacro(u32 method, const u32 * base_start, u32 amount, bool is_last_call)
 {
     if (executing_macro == 0)
@@ -286,7 +289,8 @@ u32 Maxwell3D::GetMaxCurrentVertices()
         const auto & limit = regs.vertex_stream_limits[index];
         const GPUVAddr gpu_addr_begin = array.Address();
         const GPUVAddr gpu_addr_end = limit.Address() + 1;
-        const u32 address_size = static_cast<u32>(gpu_addr_end - gpu_addr_begin);
+        const u64 stream_size = IsNativeTuring() ? regs.NativeVertexStreamSize(index) : gpu_addr_end - gpu_addr_begin;
+        const u32 address_size = static_cast<u32>((std::min<u64>)(stream_size, (std::numeric_limits<u32>::max)()));
         num_vertices = std::max(
             num_vertices, address_size / std::max(attribute.SizeInBytes(), array.stride.Value()));
         break;

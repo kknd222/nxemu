@@ -18,6 +18,16 @@ namespace Dynarmic::A64 {
 struct TranslatorVisitor final {
     using instruction_return_type = bool;
 
+    // Eglantine ARMv8.1+ translator entry points.
+    bool AtomicMemOp(Imm<2> size, bool A, bool R, Reg Rs, Imm<4> op, Reg Rn, Reg Rt);
+    bool LDAPR_sz(Imm<2> size, Reg Rn, Reg Rt);
+    bool CompareAndSwap(Imm<2> size, bool L, Reg Rs, bool o0, Reg Rn, Reg Rt);
+    bool CompareAndSwapPair(bool sz, bool L, Reg Rs, bool o0, Reg Rn, Reg Rt);
+    bool PACAUT_reg(bool Z, Imm<3> op, Reg Rn, Reg Rd);
+    bool BRA_BLRA(bool Z, bool L, bool M, Reg Rn, Reg Rm);
+    bool STG_family(Imm<2> opc, Imm<9> imm9, Imm<2> mode, Reg Rn, Reg Rt);
+    bool STGP(Imm<2> mode, Imm<7> imm7, Reg Rt2, Reg Rn, Reg Rt);
+
     explicit TranslatorVisitor(IR::Block& block, LocationDescriptor descriptor, TranslationOptions options)
             : ir(block, descriptor), options(std::move(options)) {}
 

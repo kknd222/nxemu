@@ -212,6 +212,7 @@ bool EmulatorSession::LoadProgram(const std::string & path, int32_t programIndex
         }
     }
     ReleaseModules();
+    m_debugGamePath = path;
     m_pendingLaunch = PendingLaunch{path, programId, programIndex, previousProgramIndex, launchType, userChannel, started};
     m_launchCancelled = false;
     m_notification.BindWindow(m_window);

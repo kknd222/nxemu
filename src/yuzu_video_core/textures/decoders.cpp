@@ -226,6 +226,16 @@ void UnswizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes
                    stride);
 }
 
+void UnswizzleTextureWithStride(std::span<u8> output, std::span<const u8> input,
+                                u32 bytes_per_pixel, u32 width, u32 height, u32 depth,
+                                u32 block_height, u32 block_depth, u32 stride_bytes) {
+    const u32 new_bpp = std::min(4U, static_cast<u32>(std::countr_zero(width * bytes_per_pixel)));
+    width = (width * bytes_per_pixel) >> new_bpp;
+    bytes_per_pixel = 1U << new_bpp;
+    Swizzle<false>(output, input, bytes_per_pixel, width, height, depth, block_height, block_depth,
+                   stride_bytes);
+}
+
 void SwizzleTexture(std::span<u8> output, std::span<const u8> input, u32 bytes_per_pixel, u32 width,
                     u32 height, u32 depth, u32 block_height, u32 block_depth,
                     u32 stride_alignment) {

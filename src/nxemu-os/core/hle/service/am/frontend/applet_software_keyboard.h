@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #pragma once
+#include "yuzu_common/software_keyboard_trace.h"
 
 #include "core/hle/result.h"
 #include "core/hle/service/am/frontend/applet_software_keyboard_types.h"
@@ -21,7 +22,7 @@ class SoftwareKeyboard final :
     public FrontendApplet
 {
 public:
-    explicit SoftwareKeyboard(Core::System & system_, std::shared_ptr<Applet> applet_, LibraryAppletMode applet_mode_, ISoftwareKeyboardApplet & frontend_);
+    explicit SoftwareKeyboard(Core::System & system_, std::shared_ptr<Applet> applet_, LibraryAppletMode applet_mode_, ISoftwareKeyboardApplet & frontend_, bool default_auto_frontend_ = false);
     ~SoftwareKeyboard() override;
 
     void Initialize() override;
@@ -150,6 +151,8 @@ private:
     void ReplyChangedStringUtf8V2();
     void ReplyMovedCursorUtf8V2();
 
+    Common::SoftwareKeyboardTrace debug_keyboard;
+    bool debug_auto_frontend{};
     ISoftwareKeyboardApplet & frontend;
 
     SwkbdAppletVersion swkbd_applet_version;

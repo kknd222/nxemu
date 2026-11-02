@@ -6,6 +6,8 @@
 
 #include <fmt/format.h>
 #include "core/core.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/hle/service/nvdrv/devices/nx2_stub_device.h"
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/nvdrv/core/container.h"
@@ -106,6 +108,11 @@ Module::Module(Core::System& system, Kernel::KEvent* deferral_event_)
         auto device = std::make_shared<Devices::nvhost_vic>(system, container);
         return open_files.emplace(fd, std::move(device)).first;
     };
+    builders["/dev/nvhost-tsg-gpu"] = [this,&system](DeviceFD fd) {
+        auto device=std::make_shared<Devices::nx2_stub_device>(system,"/dev/nvhost-tsg-gpu");
+        return open_files.emplace(fd,std::move(device)).first;
+    };
+
 }
 
 Module::~Module() {
@@ -137,6 +144,10 @@ NvResult Module::VerifyFD(DeviceFD fd) const {
 }
 
 DeviceFD Module::Open(const std::string& device_name, NvCore::SessionId session_id) {
+    if(device_name == "/dev/nvhost-tsg-gpu") {
+        const auto session=container.GetSessionReference(session_id);
+        if(!session || !session->process || !session->process->IsSwitch2())return INVALID_NVDRV_FD;
+    }
     auto it = builders.find(device_name);
     if (it == builders.end()) {
         LOG_ERROR(Service_NVDRV, "Trying to open unknown device {}", device_name);

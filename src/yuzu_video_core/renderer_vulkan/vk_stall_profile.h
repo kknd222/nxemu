@@ -7,6 +7,8 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstdint>
+#include "yuzu_video_core/native_debug_document.h"
+#include <sstream>
 
 namespace Vulkan {
 // Opt-in wall-clock attribution for occasional frame stalls. No clock reads when off.
@@ -28,11 +30,11 @@ public:
 private:
     using Clock = std::chrono::steady_clock;
     static bool Enabled() {
-        static const bool enabled = std::getenv("NXEMU_NCE_READBACK_PROFILE") != nullptr;
+        static const bool enabled = std::getenv("NXEMU_NCE_READBACK_PROFILE") != nullptr || VideoCommon::DebugDocument::Enabled();
         return enabled;
     }
     static bool SummaryEnabled() {
-        static const bool enabled = std::getenv("NXEMU_NCE_STALL_SUMMARY") != nullptr;
+        static const bool enabled = std::getenv("NXEMU_NCE_STALL_SUMMARY") != nullptr || VideoCommon::DebugDocument::Enabled();
         return enabled;
     }
     struct Bucket {
@@ -63,6 +65,8 @@ private:
         }
         const double interval = std::chrono::duration<double>(end - summary.reported).count();
         if (interval < 5.0) return;
+        std::ostringstream document; document << "{\"thread_bucket\":" << summary.thread << ",\"interval_s\":" << interval << ",\"buckets\":[";
+        bool first_bucket = true;
         for (auto& bucket : summary.buckets) {
             if (!bucket.calls) continue;
             const auto rank = bucket.calls - bucket.calls / 20;
@@ -72,6 +76,11 @@ private:
                 accumulated += bucket.histogram[percentile];
                 if (accumulated >= rank) break;
             }
+            if (!first_bucket) document << ',';
+            first_bucket = false;
+            document << "{\"kind\":" << VideoCommon::DebugDocument::Quote(bucket.name) << ",\"calls\":" << bucket.calls
+                     << ",\"total_ms\":" << bucket.total_ms << ",\"mean_ms\":" << bucket.total_ms / double(bucket.calls)
+                     << ",\"max_ms\":" << bucket.max_ms << ",\"p95_upper_ms\":" << double(std::uint64_t{1} << percentile)/1000.0 << "}";
             std::fprintf(stderr,
                 "[NCE-STALL-SUMMARY] thread=%llu kind=%s interval=%.6f calls=%llu total_ms=%.3f mean_ms=%.6f p95_upper_ms=%.3f max_ms=%.3f end_s=%.6f\n",
                 (unsigned long long)summary.thread, bucket.name, interval,
@@ -80,6 +89,8 @@ private:
                 std::chrono::duration<double>(end.time_since_epoch()).count());
             bucket = {};
         }
+        document << "]}";
+        VideoCommon::DebugDocument::Publish("stall-" + std::to_string(summary.thread), document.str(), false);
         summary.reported = end;
     }
     const char* kind;

@@ -1,3 +1,4 @@
+#include "nxemu-module-spec/video.h"
 // SPDX-FileCopyrightText: 2014 Citra Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -374,6 +375,15 @@ const CpuManager & System::GetCpuManager() const
     return impl->cpu_manager;
 }
 
+bool System::PrepareProgramMemory(bool switch2) {
+    if (impl->is_powered_on) return true; // A child applet shares its parent's backing.
+    osSettings.current_program_is_switch2 = switch2;
+    impl->device_memory->ReconfigureForProgram();
+    LOG_INFO(Core, "Console generation Switch {}, backing size {:#x}", switch2 ? 2 : 1,
+             impl->device_memory->BackingSize());
+    return true;
+}
+
 void System::InitializeKernel(uint64_t titleID, bool is_64_bit)
 {
     impl->InitializeKernel(*this, titleID, is_64_bit);
@@ -411,6 +421,11 @@ bool System::IsShuttingDown() const
 void System::SetShuttingDown(bool shutting_down)
 {
     impl->SetShuttingDown(shutting_down);
+}
+
+void System::QuiesceGpuBeforeProcessClose()
+{
+    impl->modules.Video().QuiesceGuestMemory();
 }
 
 void System::ShutdownMainProcess()

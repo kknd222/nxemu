@@ -11,6 +11,8 @@
 #include "yuzu_common/common_funcs.h"
 #include "yuzu_common/common_types.h"
 #include "yuzu_video_core/engines/engine_interface.h"
+#include "yuzu_video_core/macro_turing.h"
+#include "yuzu_video_core/native_qmd.h"
 #include "yuzu_video_core/engines/engine_upload.h"
 #include "yuzu_video_core/textures/texture.h"
 
@@ -40,6 +42,8 @@ namespace Tegra::Engines {
 #define LAUNCH_REG_INDEX(field_name)                                                               \
     (offsetof(Tegra::Engines::KeplerCompute::LaunchParams, field_name) / sizeof(u32))
 
+class Maxwell3D;
+
 class KeplerCompute final : public EngineInterface {
 public:
     explicit KeplerCompute(MemoryManager& memory_manager);
@@ -47,6 +51,9 @@ public:
 
     /// Binds a rasterizer to this engine.
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
+
+    void SetNativeTuring(bool enabled, Maxwell3D* graphics);
+    bool IsNativeTuring() const { return native_mode; }
 
     static constexpr std::size_t NumConstBuffers = 8;
 
@@ -210,6 +217,21 @@ public:
     }
 
 private:
+    bool ProcessNativeMethod(u32 method, u32 argument, bool is_last_call);
+    void CaptureNativeCompute(u32 method, u32 argument);
+    bool DispatchNativeCompute(const NativeQmdScheduler::Descriptor& qmd);
+    bool native_mode{};
+    Maxwell3D* native_graphics{};
+    bool native_compute_uploaded{};
+    u32 native_write_offset{}, native_bind_pointer{};
+    std::array<u32, 0xe00> native_registers{};
+    std::array<u32, 0x3000> native_code{};
+    std::array<u32, 0x80> native_positions{};
+    TuringMacroInterpreter native_interpreter;
+    NativeQmdScheduler native_qmd;
+    std::optional<u32> native_executing_macro;
+    std::vector<u32> native_parameters;
+    u64 native_calls{}, native_failures{}, native_qmd_requests{};
     void ProcessLaunch();
 
     void ConsumeSinkImpl() override;

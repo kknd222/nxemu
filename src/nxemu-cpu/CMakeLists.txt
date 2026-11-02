@@ -36,6 +36,9 @@ if (CXX_CLANG)
 endif()
 
 add_library(nxemu-cpu SHARED
+    dynarmic/frontend/A64/translate/impl/load_store_atomic.cpp
+    dynarmic/frontend/A64/translate/impl/pointer_authentication.cpp
+    dynarmic/frontend/A64/translate/impl/memory_tagging.cpp
     arm_dynarmic.cpp
     arm_dynarmic.h
     arm_dynarmic_32.cpp

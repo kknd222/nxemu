@@ -278,29 +278,27 @@ void PhysicalCore::RunThread(Kernel::KThread * thread)
 
         // Determine why we stopped.
         //
-        // NCE returns CpuHaltReason values as a bit field.  In particular the Android
-        // SVC trampoline ORs SupervisorCall with any pending asynchronous esr_el1 bits
-        // (for example BreakLoop from SignalInterrupt).  Treating halt reasons as exact
-        // enum values makes combined states easy to miss and can leave a guest thread
-        // parked after an SVC/fence transition.  Match Eden/yuzu's PhysicalCore logic
-        // and test the individual bits instead.
-        const auto HasHalt = [](CpuHaltReason value, CpuHaltReason flag) {
-            using U = std::underlying_type_t<CpuHaltReason>;
-            return (static_cast<U>(value) & static_cast<U>(flag)) != 0;
-        };
+        // The backend translates its Dynarmic bit field into a sequential
+        // CpuHaltReason enum, including explicit combined values. Do not bit-test
+        // this enum: SupervisorCall (4) would match InstructionBreakpoint (6),
+        // rewind to an uninitialized breakpoint context and suspend the guest.
         const bool step_completed =
-            HasHalt(hr, CpuHaltReason::StepThread) &&
+            hr == CpuHaltReason::StepThread &&
             thread->GetStepState() == StepState::StepPerformed;
         const bool supervisor_call =
-            !step_completed && HasHalt(hr, CpuHaltReason::SupervisorCall);
+            !step_completed && (hr == CpuHaltReason::SupervisorCall ||
+                                hr == CpuHaltReason::SupervisorCallBreakLoop);
         const bool prefetch_abort =
-            !step_completed && HasHalt(hr, CpuHaltReason::PrefetchAbort);
+            !step_completed && (hr == CpuHaltReason::PrefetchAbort ||
+                                hr == CpuHaltReason::PrefetchAbortBreakLoop);
         const bool breakpoint =
-            !step_completed && HasHalt(hr, CpuHaltReason::InstructionBreakpoint);
+            !step_completed && hr == CpuHaltReason::InstructionBreakpoint;
         const bool data_abort =
-            !step_completed && HasHalt(hr, CpuHaltReason::DataAbort);
+            !step_completed && hr == CpuHaltReason::DataAbort;
         const bool interrupt =
-            !step_completed && HasHalt(hr, CpuHaltReason::BreakLoop);
+            !step_completed && (hr == CpuHaltReason::BreakLoop ||
+                                hr == CpuHaltReason::SupervisorCallBreakLoop ||
+                                hr == CpuHaltReason::PrefetchAbortBreakLoop);
 
         // Since scheduling may occur here, we cannot use any cached
         // state after returning from calls we make.

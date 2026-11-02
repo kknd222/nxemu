@@ -138,7 +138,7 @@ RendererOpenGL::RendererOpenGL(Core::Frontend::EmuWindow & emu_window_, Tegra::M
     glBindRenderbuffer(GL_RENDERBUFFER, capture_renderbuffer.handle);
     glRenderbufferStorage(GL_RENDERBUFFER, GL_SRGB8, VideoCore::Capture::LinearWidth, VideoCore::Capture::LinearHeight);
 
-    InitializeWatermark();
+    // Runtime watermark is disabled; game presentation stays unobstructed.
 }
 
 RendererOpenGL::~RendererOpenGL()
@@ -158,10 +158,7 @@ void RendererOpenGL::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     state_tracker.BindFramebuffer(0);
     blit_screen->DrawScreen(framebuffers, emu_window.GetFramebufferLayout(), false);
-    if (watermark_show)
-    {
-        RenderWatermark();
-    }
+    // Do not overlay the NXEmu logo on running game frames.
 
     ++m_current_frame;
 

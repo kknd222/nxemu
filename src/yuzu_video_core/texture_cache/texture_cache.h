@@ -3,6 +3,13 @@
 
 #pragma once
 
+#include "yuzu_video_core/native_gob.h"
+#include "yuzu_video_core/native_sparse_readback.h"
+#include "yuzu_video_core/readback_metrics.h"
+#include "yuzu_video_core/native_texture_view.h"
+#include "yuzu_video_core/native_display_layer.h"
+#include "yuzu_video_core/native_debug_document.h"
+#include "yuzu_common/scope_exit.h"
 #include <chrono>
 #include <unordered_set>
 #include <bit>
@@ -108,6 +115,7 @@ void TextureCache<P>::DrainGCReadbacks() {
 
 template <class P>
 bool TextureCache<P>::QueueGCReadback(ImageId id) {
+    const ReadbackReasonScope readback_scope(ReadbackReason::GarbageCollection);
     if constexpr (!SUPPORTS_ASYNC_GC) {
         return false;
     } else {
@@ -244,6 +252,7 @@ void TextureCache<P>::CancelGCReadback(ImageId id) {
 
 template <class P>
 void TextureCache<P>::RunGarbageCollector() {
+    const ReadbackReasonScope readback_scope(ReadbackReason::GarbageCollection);
     using Clock = std::chrono::steady_clock;
     using namespace std::chrono_literals;
 
@@ -947,6 +956,7 @@ void TextureCache<P>::WriteMemory(DAddr cpu_addr, size_t size) {
 
 template <class P>
 void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size, bool native_read) {
+    const ReadbackReasonScope readback_scope(native_read ? ReadbackReason::NativeCpuSynchronous : ReadbackReason::CpuSynchronous);
     static const bool release_native = std::getenv("NXEMU_NCE_RELEASE_READBACK") != nullptr;
     boost::container::small_vector<ImageId, 16> images;
     ForEachImageInRegion(cpu_addr, size, [&images, native_read](ImageId image_id, ImageBase& image) {
@@ -969,7 +979,12 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size, bool native_re
     // A 16 KiB native fault can overlap many tiny images; waiting once per image
     // serializes CPU and GPU even though every copy belongs to the same read request.
     static const bool batch_native = std::getenv("NXEMU_NCE_BATCH_READBACK") != nullptr;
-    if (native_read && batch_native) {
+    const bool native_display_batch = !native_read && images.size() > 1 &&
+        std::ranges::all_of(images, [this](ImageId id) { return slot_images[id].info.native_tiling; });
+    if ((native_read && batch_native) || native_display_batch) {
+        static u32 batch_trace{};
+        if (native_display_batch && batch_trace++ < 16)
+            LOG_INFO(HW_GPU, "NX2_READBACK_BATCH images={} path=native_display", images.size());
         constexpr size_t MAX_BATCH_BYTES = 64_MiB;
         constexpr size_t MAX_BATCH_IMAGES = 64;
         boost::container::small_vector<std::pair<ImageId, AsyncBuffer>, 4> downloads;
@@ -1023,6 +1038,7 @@ void TextureCache<P>::DownloadMemory(DAddr cpu_addr, size_t size, bool native_re
 template <class P>
 std::optional<RasterizerDownloadArea> TextureCache<P>::GetFlushArea(DAddr cpu_addr,
                                                                                u64 size) {
+    const ReadbackReasonScope readback_scope(ReadbackReason::FlushOverlap);
     constexpr bool observed = OBSERVED_READBACK;
     if (observed && size != 0) {
         const auto end = Common::AlignUp(cpu_addr + size, ReadbackPageTracker::PAGE_SIZE);
@@ -1077,6 +1093,7 @@ void TextureCache<P>::UnmapMemory(DAddr cpu_addr, size_t size) {
 template <class P>
 void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t size,
                                     bool preserve_contents) {
+    const ReadbackReasonScope readback_scope(ReadbackReason::UnmapPreserve);
     boost::container::small_vector<ImageId, 16> deleted_images;
     ForEachImageInRegionGPU(as_id, gpu_addr, size,
                             [&](ImageId id, Image&) { deleted_images.push_back(id); });
@@ -1139,6 +1156,7 @@ void TextureCache<P>::UnmapGPUMemory(size_t as_id, GPUVAddr gpu_addr, size_t siz
             continue;
         }
         image.flags |= ImageFlagBits::Remapped;
+        image.native_dirty_layers.MarkAll();
     }
 }
 
@@ -1249,24 +1267,6 @@ template <class P>
 std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImageView(
     const Tegra::FramebufferConfig& config, DAddr cpu_addr) {
     // TODO: Properly implement this
-    const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
-    if (it == page_table.end()) {
-        return {};
-    }
-    const auto& image_map_ids = it->second;
-    boost::container::small_vector<ImageId, 4> valid_image_ids;
-    for (const ImageMapId map_id : image_map_ids) {
-        const ImageMapView& map = slot_map_views[map_id];
-        const ImageBase& image = slot_images[map.image_id];
-        if (image.cpu_addr != cpu_addr) {
-            continue;
-        }
-        if (image.image_view_ids.empty()) {
-            continue;
-        }
-        valid_image_ids.push_back(map.image_id);
-    }
-
     const auto view_format = [&]() {
         switch (config.pixel_format) {
         case Service::android::PixelFormat::Rgb565:
@@ -1278,8 +1278,136 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
         }
     }();
 
+    std::string debug_candidates;
+    u64 debug_selected{}; size_t debug_valid{};
+    std::unordered_map<u32,u32> display_layers;
+    static auto debug_next = std::chrono::steady_clock::time_point{};
+    const auto debug_now = std::chrono::steady_clock::now();
+    const bool debug_capture = config.native_tiling && DebugDocument::Enabled() && debug_now >= debug_next;
+    if (debug_capture) debug_next = debug_now + std::chrono::milliseconds(100);
+    SCOPE_EXIT {
+        if (debug_capture) {
+            std::ostringstream doc;
+            doc << "{\"lookup_address\":" << cpu_addr << ",\"display_width\":" << config.width
+                << ",\"display_height\":" << config.height << ",\"stride\":" << config.stride
+                << ",\"selected_image_base\":" << debug_selected << ",\"valid_candidates\":" << debug_valid
+                << ",\"cached_images\":" << slot_images.size() << ",\"cached_views\":" << slot_image_views.size()
+                << ",\"cache_accounting_bytes\":" << total_used_memory << ",\"expected_memory\":" << expected_memory
+                << ",\"critical_memory\":" << critical_memory << ",\"candidates\":[" << debug_candidates << "]}";
+            DebugDocument::Publish("texture-cache", doc.str());
+        }
+    };
+    static u32 miss_trace{};
+    const bool trace_miss = config.native_tiling && miss_trace < 24;
+    const auto it = page_table.find(cpu_addr >> YUZU_PAGEBITS);
+    if (it == page_table.end()) {
+        if (trace_miss) {
+            ++miss_trace;
+            LOG_INFO(HW_GPU, "NX2_DISPLAY_MISS address={:#x} reason=no_cached_page", cpu_addr);
+        }
+        return {};
+    }
+    const auto& image_map_ids = it->second;
+    boost::container::small_vector<ImageId, 4> valid_image_ids;
+    for (const ImageMapId map_id : image_map_ids) {
+        const ImageMapView& map = slot_map_views[map_id];
+        const ImageBase& image = slot_images[map.image_id];
+        Tegra::MemoryManager* const image_memory = ImageGpuMemory(image);
+        u32 display_layer{};
+        bool valid_base = image.cpu_addr == cpu_addr && !config.native_tiling;
+        const char* debug_reason = valid_base ? "exact_base" : "different_base";
+        std::optional<u64> debug_mapped;
+        std::optional<u32> debug_layer;
+        if (config.native_tiling) {
+            const NativeDisplayLayerLayout layout{image.cpu_addr, image.guest_size_bytes, image.info.layer_stride,
+                static_cast<u32>(image.info.resources.layers), static_cast<u32>(image.info.resources.levels),
+                image.info.size.width, image.info.size.height, image.info.block.height, image.info.num_samples,
+                image.info.native_tiling, image.info.type == ImageType::e2D, image.info.block.depth == 0,
+                VideoCore::Surface::IsViewCompatible(image.info.format, view_format, false, true)};
+            const auto map_layer = [&](u64 offset, u64 size) -> std::optional<u64> {
+                if (!image_memory || !image_memory->IsContinuousRange(image.gpu_addr + offset, size))
+                    return std::nullopt;
+                return image_memory->GpuToCpuAddress(image.gpu_addr + offset);
+            };
+            const auto layer = NativeDisplayMappedLayer(layout, cpu_addr, config.width, config.height,
+                config.stride, config.block_height_log2, map_layer);
+            debug_layer = layer;
+            debug_reason = layer ? "validated_gpu_layer" : "mapped_layer_not_found";
+            if (layer) {
+                debug_mapped = cpu_addr;
+                valid_base = true;
+                display_layer = *layer;
+                static u32 layer_trace{};
+                if (layer_trace++ < 16)
+                    LOG_INFO(HW_GPU, "NX2_DISPLAY_LAYER address={:#x} owner={:#x} layer={} layers={}",
+                             cpu_addr, image.cpu_addr, display_layer, image.info.resources.layers);
+            }
+        }
+        if (debug_capture && debug_candidates.size() < 16384) {
+            std::ostringstream item;
+            if (!debug_candidates.empty()) item << ',';
+            item << "{\"slot\":" << map.image_id.index << ",\"cpu_base\":" << image.cpu_addr
+                 << ",\"cpu_end\":" << image.cpu_addr_end << ",\"gpu_base\":" << image.gpu_addr
+                 << ",\"guest_bytes\":" << image.guest_size_bytes << ",\"linear_bytes\":" << image.unswizzled_size_bytes
+                 << ",\"width\":" << image.info.size.width << ",\"height\":" << image.info.size.height
+                 << ",\"depth\":" << image.info.size.depth << ",\"layers\":" << image.info.resources.layers
+                 << ",\"levels\":" << image.info.resources.levels << ",\"layer_stride\":" << image.info.layer_stride
+                 << ",\"block_height\":" << image.info.block.height << ",\"format\":" << static_cast<u32>(image.info.format)
+                 << ",\"native_tiling\":" << (image.info.native_tiling ? "true" : "false")
+                 << ",\"views\":" << image.image_view_ids.size() << ",\"flags\":" << static_cast<u32>(image.flags)
+                 << ",\"modification_tick\":" << image.modification_tick << ",\"published_tick\":" << image.published_tick
+                 << ",\"gpu_write_tick\":" << image.gpu_write_tick << ",\"map_bytes\":" << map.size
+                 << ",\"base_validation\":" << DebugDocument::Quote(debug_reason)
+                 << ",\"has_views\":" << (image.image_view_ids.empty() ? "false" : "true")
+                 << ",\"image_page_table\":" << image.gpu_page_table_index
+                 << ",\"current_page_table\":" << channel_state->gpu_page_table_index
+                 << ",\"owner_memory_available\":" << (image_memory ? "true" : "false")
+                 << ",\"proposed_layer\":" << (debug_layer ? std::to_string(*debug_layer) : "null")
+                 << ",\"proposed_gpu_cpu_mapping\":" << (debug_mapped ? std::to_string(*debug_mapped) : "null")
+                 << ",\"gpu_layer_map\":[";
+            // Bounded read-only address translations; never read guest bodies or submit GPU work.
+            const auto count = image.info.native_tiling && image.info.layer_stride ?
+                std::min<u32>(static_cast<u32>(image.info.resources.layers), 4) : 0;
+            for (u32 layer = 0; layer < count; ++layer) {
+                const auto offset = u64{layer} * image.info.layer_stride;
+                if (offset >= image.guest_size_bytes) break;
+                const auto mapped = image_memory ? image_memory->GpuToCpuAddress(image.gpu_addr + offset, image.info.layer_stride) : std::nullopt;
+                if (layer) item << ',';
+                item << "{\"layer\":" << layer << ",\"gpu_address\":" << image.gpu_addr + offset
+                     << ",\"cpu_address\":" << (mapped ? std::to_string(*mapped) : "null") << '}';
+            }
+            item << "]}";
+            debug_candidates += item.str();
+        }
+        if (!valid_base || image.image_view_ids.empty()) {
+            if (trace_miss && miss_trace++ < 24)
+                LOG_INFO(HW_GPU, "NX2_DISPLAY_MISS address={:#x} candidate={:#x} size={}x{} views={} flags={:#x} reason={}",
+                         cpu_addr, image.cpu_addr, image.info.size.width, image.info.size.height,
+                         image.image_view_ids.size(), static_cast<u32>(image.flags),
+                         image.cpu_addr != cpu_addr ? "different_base" : "no_view");
+            continue;
+        }
+        if (config.native_tiling) {
+            const bool compatible = VideoCore::Surface::IsViewCompatible(image.info.format, view_format, false, true);
+            static u32 alias_trace{};
+            if (alias_trace++ < 16)
+                LOG_INFO(HW_GPU, "NX2_DISPLAY_ALIAS address={:#x} image={}x{} display={}x{} format={} view={} compatible={}",
+                         cpu_addr, image.info.size.width, image.info.size.height, config.width, config.height,
+                         image.info.format, view_format, compatible);
+            // The presentation shader crops aligned/padded GPU surfaces to the requested display.
+            // Match the reference's color-view compatibility, not exact allocation dimensions.
+            if (!compatible || image.info.size.width < config.width || image.info.size.height < config.height) continue;
+        }
+        valid_image_ids.push_back(map.image_id);
+        display_layers[map.image_id.index] = display_layer;
+        ++debug_valid;
+    }
+
     const auto GetImageViewForFramebuffer = [&](ImageId image_id) {
+        debug_selected = cpu_addr;
         ImageViewInfo info{ImageViewType::e2D, view_format};
+        info.range.base.layer = static_cast<s32>(display_layers[image_id.index]);
+        info.range.extent.layers = 1;
         if (config.blending == Tegra::BlendMode::Opaque) {
             info.x_source = static_cast<u8>(SwizzleSource::R);
             info.y_source = static_cast<u8>(SwizzleSource::G);
@@ -1347,6 +1475,7 @@ void TextureCache<P>::DeduplicateDownloads() {
 template <class P>
 bool TextureCache<P>::TryDownloadObservedImage(Image& image, AsyncBuffer& map,
                                               PendingDownload& download) {
+    const ReadbackReasonScope readback_scope(ReadbackReason::ObservedPartial);
     constexpr bool enabled = OBSERVED_READBACK;
     const auto& info = image.info;
     if (!enabled || info.type != ImageType::e2D || info.resources.levels != 1 ||
@@ -1433,8 +1562,68 @@ void TextureCache<P>::CommitAsyncFlushes() {
         bool any_none_dma = false;
         for (PendingDownload& download_info : download_ids) {
             if (download_info.is_swizzle) {
-                download_info.staging_bytes =
-                    Common::AlignUp(slot_images[download_info.object_id].unswizzled_size_bytes, 64);
+                auto& image = slot_images[download_info.object_id];
+                size_t staging_size = image.unswizzled_size_bytes;
+                static const bool native_sparse_readback = [] {
+                    const char* value = std::getenv("NXEMU_NATIVE_SPARSE_READBACK");
+                    return !value || value[0] != '0';
+                }();
+                const auto& info = image.info;
+                if (native_sparse_readback && info.native_tiling && info.type == ImageType::e2D &&
+                    info.resources.layers > 1 && info.resources.layers <= 4096 &&
+                    info.resources.levels == 1 && info.size.depth == 1 &&
+                    info.num_samples == 1 && info.layer_stride != 0) {
+                    if (auto* owner = ImageGpuMemory(image)) {
+                        const auto full = FullDownloadCopies(info).front();
+                        static const bool dirty_readback = [] {
+                            const char* value = std::getenv("NXEMU_NATIVE_DIRTY_READBACK");
+                            return !value || value[0] != '0';
+                        }();
+                        const auto is_mapped = [&](s32 layer) {
+                            return owner->GpuToCpuAddress(image.gpu_addr + u64(layer) * info.layer_stride,
+                                                          info.layer_stride).has_value();
+                        };
+                        auto plan = PlanNativeSparseReadback(full, [&](s32 layer) {
+                            return is_mapped(layer) &&
+                                   (!dirty_readback || image.native_dirty_layers.Includes(layer));
+                        });
+                        // A redundant preemptive request with no new writes still uses the
+                        // established mapped-layer path, never an uninitialized full-array copy.
+                        if (plan.empty()) plan = PlanNativeSparseReadback(full, is_mapped);
+                        if (!plan.empty()) {
+                            staging_size = plan.back().buffer_offset + plan.back().buffer_size;
+                            download_info.native_sparse_copies = std::move(plan);
+                            if (DebugDocument::Enabled()) {
+                                std::ostringstream doc;
+                                doc << "{\"image_gpu_address\":" << image.gpu_addr
+                                    << ",\"source_layers\":" << info.resources.layers
+                                    << ",\"full_download_bytes\":" << image.unswizzled_size_bytes
+                                    << ",\"packed_download_bytes\":" << staging_size
+                                    << ",\"dirty_layer_filter\":" << (dirty_readback ? "true" : "false")
+                                    << ",\"unknown_write_coverage\":" << (image.native_dirty_layers.IsFull() ? "true" : "false")
+                                    << ",\"whole_writes\":" << image.native_dirty_layers.WholeWrites()
+                                    << ",\"ranged_writes\":" << image.native_dirty_layers.RangedWrites()
+                                    << ",\"copied_layer_runs\":[";
+                                bool first = true;
+                                for (const auto& copy : download_info.native_sparse_copies) {
+                                    if (!first) doc << ',';
+                                    first = false;
+                                    doc << "{\"base_layer\":" << copy.image_subresource.base_layer
+                                        << ",\"num_layers\":" << copy.image_subresource.num_layers
+                                        << ",\"buffer_offset\":" << copy.buffer_offset
+                                        << ",\"buffer_size\":" << copy.buffer_size << '}';
+                                }
+                                doc << "]}";
+                                DebugDocument::Publish("native-readback", doc.str(), false);
+                            }
+                            // Earlier snapshots retire in fence order. This plan covers every
+                            // mapped layer written since that earlier snapshot; future writes
+                            // must build a new coverage set without mutating this download.
+                            image.native_dirty_layers.SnapshotQueued(info.resources.layers);
+                        }
+                    }
+                }
+                download_info.staging_bytes = Common::AlignUp(staging_size, 64);
                 total_size_bytes += download_info.staging_bytes;
                 any_none_dma = true;
                 download_info.async_buffer_id = last_async_buffer_id;
@@ -1446,7 +1635,11 @@ void TextureCache<P>::CommitAsyncFlushes() {
             for (PendingDownload& download_info : download_ids) {
                 if (download_info.is_swizzle) {
                     Image& image = slot_images[download_info.object_id];
-                    if (!TryDownloadObservedImage(image, download_map, download_info)) {
+                    const ReadbackReasonScope readback_scope(ReadbackReason::AsyncFull);
+                    if (!download_info.native_sparse_copies.empty()) {
+                        const ReadbackReasonScope sparse_scope(ReadbackReason::AsyncSparse);
+                        image.DownloadMemory(download_map, download_info.native_sparse_copies);
+                    } else if (!TryDownloadObservedImage(image, download_map, download_info)) {
                         const auto copies = FullDownloadCopies(image.info);
                         image.DownloadMemory(download_map, copies);
                     }
@@ -1590,6 +1783,7 @@ TextureCache<P>::NewerOverlapGuard::~NewerOverlapGuard() {
 
 template <class P>
 void TextureCache<P>::PopAsyncFlushes() {
+    const ReadbackReasonScope readback_scope(ReadbackReason::AsyncFallback);
     if (committed_downloads.empty()) {
         return;
     }
@@ -1610,7 +1804,11 @@ void TextureCache<P>::PopAsyncFlushes() {
                     continue;
                 }
                 ImageBase& image = slot_images[download_info.object_id];
-                const auto copies = FullDownloadCopies(image.info);
+                const auto full_copies = FullDownloadCopies(image.info);
+                const std::span<const BufferImageCopy> copies =
+                    download_info.native_sparse_copies.empty()
+                        ? std::span<const BufferImageCopy>{full_copies}
+                        : std::span<const BufferImageCopy>{download_info.native_sparse_copies};
                 std::span<u8> download_span =
                     download_buffer.mapped_span.subspan(download_buffer.offset);
                 if (False(image.flags & ImageFlagBits::Remapped)) {
@@ -1634,6 +1832,14 @@ void TextureCache<P>::PopAsyncFlushes() {
                                 ASSERT(published);
                             }
                         }
+                    } else if (!download_info.native_sparse_copies.empty()) {
+                        if (auto* owner = ImageGpuMemory(image)) {
+                            SwizzleImage(*owner, image.gpu_addr, image.info, copies, download_span,
+                                         swizzle_data_buffer);
+                        } else {
+                            published = false;
+                        }
+                        observed_pages = false;
                     } else if (!PublishObservedReadback(image, copies, download_span,
                                                         download_info.observation_serial)) {
                         SwizzleImage(*gpu_memory, image.gpu_addr, image.info, copies, download_span,
@@ -1932,6 +2138,8 @@ void TextureCache<P>::DownloadImageIntoBuffer(typename TextureCache<P>::Image* i
                                               size_t buffer_offset,
                                               std::span<const VideoCommon::BufferImageCopy> copies,
                                               GPUVAddr address, size_t size) {
+    const ReadbackReasonScope readback_scope(ReadbackReason::ImageToGuestBuffer,
+        IMPLEMENTS_ASYNC_DOWNLOADS ? ReadbackDestination::HostLast : ReadbackDestination::Device);
     if constexpr (IMPLEMENTS_ASYNC_DOWNLOADS) {
         const BufferDownload new_buffer_download{address, size};
         auto slot = slot_buffer_downloads.insert(new_buffer_download);
@@ -1986,6 +2194,8 @@ void TextureCache<P>::UploadImageContents(Image& image, StagingBuffer& staging) 
     if (True(image.flags & ImageFlagBits::AcceleratedUpload)) {
         gpu_memory->ReadBlock(gpu_addr, mapped_span.data(), mapped_span.size_bytes(),
                               VideoCommon::CacheType::NoTextureCache);
+        if (image.info.native_tiling && image.info.type != ImageType::Linear)
+            ASSERT(Tegra::Texture::NormalizeNativeGobsInPlace(mapped_span));
         const auto uploads = FullUploadSwizzles(image.info);
         runtime.AccelerateImageUpload(image, staging, uploads);
         return;
@@ -2020,7 +2230,19 @@ ImageViewId TextureCache<P>::FindImageView(const TICEntry& config) {
 }
 
 template <class P>
-ImageViewId TextureCache<P>::CreateImageView(const TICEntry& config) {
+ImageViewId TextureCache<P>::CreateImageView(const TICEntry& raw_config) {
+    const bool native = gpu_memory->HasNativeSyncpointShim();
+    const TICEntry config = NativeTextureViewHeader(raw_config, native);
+    if (native && raw_config.BaseLayer() && DebugDocument::Enabled()) {
+        std::ostringstream doc;
+        doc << "{\"address\":" << raw_config.Address()
+            << ",\"legacy_base_layer\":" << raw_config.BaseLayer()
+            << ",\"effective_base_layer\":" << config.BaseLayer()
+            << ",\"width\":" << config.Width() << ",\"height\":" << config.Height()
+            << ",\"depth\":" << config.Depth()
+            << ",\"type\":" << static_cast<u32>(config.texture_type.Value()) << '}';
+        DebugDocument::Publish("texture-header", doc.str(), false);
+    }
     const ImageInfo info(config);
     if (info.type == ImageType::Buffer) {
         const ImageViewInfo view_info(config, 0);
@@ -2033,8 +2255,13 @@ ImageViewId TextureCache<P>::CreateImageView(const TICEntry& config) {
         return NULL_IMAGE_VIEW_ID;
     }
     ImageBase& image = slot_images[image_id];
-    const SubresourceBase base = image.TryFindBase(config.Address()).value();
-    ASSERT(base.level == 0);
+    const auto found_base = image.TryFindBase(config.Address());
+    if (!found_base || found_base->level != 0) {
+        LOG_ERROR(HW_GPU, "Invalid texture view base: address={:#x} image={:#x} native={}",
+                  config.Address(), image.gpu_addr, native);
+        return NULL_IMAGE_VIEW_ID;
+    }
+    const SubresourceBase base = *found_base;
     const ImageViewInfo view_info(config, base.layer);
     const ImageViewId image_view_id = FindOrEmplaceImageView(image_id, view_info);
     ImageViewBase& image_view = slot_image_views[image_view_id];
@@ -2280,7 +2507,9 @@ ImageId TextureCache<P>::InsertImage(const ImageInfo& info, GPUVAddr gpu_addr,
         }
     }
     ASSERT_MSG(cpu_addr, "Tried to insert an image to an invalid gpu_addr=0x{:x}", gpu_addr);
-    const ImageId image_id = JoinImages(info, gpu_addr, *cpu_addr, discard_contents);
+    ImageInfo storage_info = info;
+    storage_info.native_tiling = gpu_memory->HasNativeSyncpointShim();
+    const ImageId image_id = JoinImages(storage_info, gpu_addr, *cpu_addr, discard_contents);
     const Image& image = slot_images[image_id];
     // Using "image.gpu_addr" instead of "gpu_addr" is important because it might be different
     const auto [it, is_new] = image_allocs_table.try_emplace(image.gpu_addr);
@@ -2295,6 +2524,7 @@ template <class P>
 ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DAddr cpu_addr,
                                     bool discard_contents) {
     const GPUVAddr requested_address = gpu_addr;
+    const DAddr requested_cpu_address = cpu_addr;
     ImageInfo new_info = info;
     const size_t size_bytes = CalculateGuestSizeInBytes(new_info);
     const bool broken_views = runtime.HasBrokenTextureViewFormats();
@@ -2392,6 +2622,35 @@ ImageId TextureCache<P>::JoinImages(const ImageInfo& info, GPUVAddr gpu_addr, DA
 
     const ImageId new_image_id = slot_images.insert(runtime, new_info, gpu_addr, cpu_addr);
     Image& new_image = slot_images[new_image_id];
+
+    static u32 debug_join_count{};
+    if (new_info.native_tiling && DebugDocument::Enabled() && debug_join_count++ < 128) {
+        std::ostringstream doc;
+        const auto requested_map = gpu_memory->GpuToCpuAddress(requested_address);
+        const auto joined_map = gpu_memory->GpuToCpuAddress(gpu_addr);
+        doc << "{\"requested_gpu\":" << requested_address << ",\"requested_cpu\":" << requested_cpu_address
+            << ",\"requested_layers\":" << info.resources.layers << ",\"requested_levels\":" << info.resources.levels
+            << ",\"requested_layer_stride\":" << info.layer_stride
+            << ",\"joined_gpu\":" << gpu_addr << ",\"joined_cpu\":" << cpu_addr
+            << ",\"joined_layers\":" << new_info.resources.layers << ",\"joined_levels\":" << new_info.resources.levels
+            << ",\"joined_bytes\":" << new_image.guest_size_bytes
+            << ",\"requested_mapping\":" << (requested_map ? std::to_string(*requested_map) : "null")
+            << ",\"joined_mapping\":" << (joined_map ? std::to_string(*joined_map) : "null")
+            << ",\"page_table\":" << channel_state->gpu_page_table_index
+            << ",\"merged_count\":" << join_overlap_ids.size() << ",\"bad_overlap_count\":" << join_bad_overlap_ids.size()
+            << ",\"sources\":[";
+        size_t count{};
+        for (const auto& copy : join_copies_to_do) {
+            if (count == 8) break;
+            if (count++) doc << ',';
+            const Image& source = slot_images[copy.id];
+            doc << "{\"gpu\":" << source.gpu_addr << ",\"cpu\":" << source.cpu_addr
+                << ",\"layers\":" << source.info.resources.layers << ",\"bytes\":" << source.guest_size_bytes
+                << ",\"alias\":" << (copy.is_alias ? "true" : "false") << '}';
+        }
+        doc << "]}";
+        DebugDocument::Publish("image-join", doc.str());
+    }
 
     if (!gpu_memory->IsContinuousRange(new_image.gpu_addr, new_image.guest_size_bytes) &&
         new_info.is_sparse) {
@@ -3415,7 +3674,16 @@ void TextureCache<P>::RemoveFramebuffers(std::span<const ImageViewId> removed_vi
 }
 
 template <class P>
-void TextureCache<P>::MarkModification(ImageBase& image, ImageId image_id) noexcept {
+void TextureCache<P>::MarkModification(ImageBase& image, ImageId image_id,
+                                      const SubresourceRange* write_range) noexcept {
+    if (write_range && image.info.native_tiling && image.info.type == ImageType::e2D &&
+        image.info.resources.levels == 1 && write_range->base.level == 0 &&
+        write_range->extent.levels == 1) {
+        image.native_dirty_layers.MarkRange(write_range->base.layer, write_range->extent.layers,
+                                            image.info.resources.layers);
+    } else {
+        image.native_dirty_layers.MarkAll();
+    }
     image.flags |= ImageFlagBits::GpuModified;
     image.modification_tick = ++modification_tick;
     image.gpu_write_tick = modification_tick;
@@ -3451,6 +3719,7 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
         }
     }
     image.modification_tick = most_recent_tick;
+    image.native_dirty_layers.MarkAll();
     NotifyNativeImageModification(image, image_id);
     if (any_modified) {
         image.flags |= ImageFlagBits::GpuModified;
@@ -3479,7 +3748,8 @@ void TextureCache<P>::SynchronizeAliases(ImageId image_id) {
 }
 
 template <class P>
-void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool invalidate) {
+void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool invalidate,
+                                  const SubresourceRange* write_range) {
     Image& image = slot_images[image_id];
     if (invalidate) {
         image.flags &= ~ImageFlagBits::CpuModified;
@@ -3497,7 +3767,7 @@ void TextureCache<P>::PrepareImage(ImageId image_id, bool is_modification, bool 
         SynchronizeAliases(image_id);
     }
     if (is_modification) {
-        MarkModification(image, image_id);
+        MarkModification(image, image_id, write_range);
     }
     lru_cache.Touch(image.lru_index, frame_tick);
 }
@@ -3512,12 +3782,18 @@ void TextureCache<P>::PrepareImageView(ImageViewId image_view_id, bool is_modifi
     if (image_view.IsBuffer()) {
         return;
     }
-    PrepareImage(image_view.image_id, is_modification, invalidate);
+    // Refresh/alias synchronization may invalidate view slots. Keep write coverage
+    // in a value snapshot, not a pointer into the slot cache across that work.
+    const auto write_range = image_view.range;
+    const auto image_id = image_view.image_id;
+    PrepareImage(image_id, is_modification, invalidate, &write_range);
 }
 
 template <class P>
 void TextureCache<P>::CopyImage(ImageId dst_id, ImageId src_id, std::vector<ImageCopy> copies) {
     Image& dst = slot_images[dst_id];
+    // Aliases, reinterpretation and internal copies bypass render-target write ranges.
+    dst.native_dirty_layers.MarkAll();
     Image& src = slot_images[src_id];
     const bool is_rescaled = True(src.flags & ImageFlagBits::Rescaled);
     if (is_rescaled) {

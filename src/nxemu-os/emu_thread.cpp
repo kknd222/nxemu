@@ -109,6 +109,9 @@ public:
 
     void ShutdownProcess()
     {
+        // A nonblocking stop can arrive before the frontend's final module teardown.
+        // The process owns the backing pages used by asynchronous GPU publications.
+        m_system.QuiesceGpuBeforeProcessClose();
         if (m_process != nullptr)
         {
             m_process->Close();

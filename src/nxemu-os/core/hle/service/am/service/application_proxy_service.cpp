@@ -14,6 +14,7 @@ IApplicationProxyService::IApplicationProxyService(Core::System& system_)
     : ServiceFramework{system_, "appletOE"} {
     static const FunctionInfo functions[] = {
         {0, D<&IApplicationProxyService::OpenApplicationProxy>, "OpenApplicationProxy"},
+        {10, D<&IApplicationProxyService::OpenApplicationProxy>, "OpenApplicationProxyForSwitch2"},
     };
     RegisterHandlers(functions);
 }

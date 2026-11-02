@@ -27,6 +27,7 @@ public:
     ~ISelfController() override;
 
 private:
+    void GetGraphicsSystemSession(HLERequestContext& ctx);
     Result Exit();
     Result LockExit();
     Result UnlockExit();

@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include <array>
+#include "yuzu_video_core/macro_turing.h"
 #include <memory>
 #include <unordered_map>
 #include <vector>
@@ -114,6 +116,11 @@ public:
     explicit MacroEngine(Engines::Maxwell3D& maxwell3d);
     virtual ~MacroEngine();
 
+    void SetNativeTuring(bool enabled) { native_turing = enabled; }
+    bool IsNativeTuring() const { return native_turing; }
+    std::span<const u32> NativeCode() const { return native_code; }
+    TuringMacroInterpreter::DataRam* NativeDataRam() { return native_interpreter.active_dram; }
+
     // Store the uploaded macro code to compile them when they're called.
     void AddCode(u32 method, u32 data);
 
@@ -127,6 +134,11 @@ protected:
     virtual std::unique_ptr<CachedMacro> Compile(const std::vector<u32>& code) = 0;
 
 private:
+    bool native_turing{};
+    u32 native_write_offset{};
+    std::array<u32, 0x3000> native_code{};
+    TuringMacroInterpreter native_interpreter;
+    std::vector<u32> native_fifo;
     struct CacheInfo {
         std::unique_ptr<CachedMacro> lle_program{};
         std::unique_ptr<CachedMacro> hle_program{};

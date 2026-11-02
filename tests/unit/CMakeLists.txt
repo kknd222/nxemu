@@ -305,3 +305,8 @@ if(NXEMU_BUILD_VTG_GPU_TESTS)
     target_link_libraries(test_vtg_indirect_gpu PRIVATE nxemu_test_support video_core
         Vulkan::Headers Vulkan::UtilityHeaders GPUOpen::VulkanMemoryAllocator ${CMAKE_DL_LIBS})
 endif()
+
+# Native Switch 2 primitive semantics; no GPU/game-play claim.
+add_executable(test_nx2_primitives nx2/primitives.cpp)
+target_include_directories(test_nx2_primitives PRIVATE "${CMAKE_SOURCE_DIR}/src")
+nxemu_unit_test(test_nx2_primitives)

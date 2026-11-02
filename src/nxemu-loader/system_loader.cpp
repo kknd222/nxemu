@@ -20,6 +20,7 @@
 #include "core/file_sys/vfs/vfs_vector.h"
 #include "core/hle/service/set/settings_types.h"
 #include "core/loader/loader.h"
+#include "core/loader/deconstructed_rom_directory.h"
 #include "firmware_install.h"
 #include "game_list_cache.h"
 #include "loader_settings.h"
@@ -78,6 +79,9 @@ constexpr uint32_t kSupportedGameExtensionCount = (uint32_t)(sizeof(kSupportedGa
 
 bool HasSupportedFileExtension(const char * fileName)
 {
+    if (fileName == nullptr) return false;
+    // Extensionless main is only a candidate: GetLoader validates NSO0 and the ExeFS siblings.
+    if (Path(fileName).GetNameExtension() == "main") return true;
     std::string ext = Path(fileName).GetExtension();
     std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
     for (uint32_t i = 0; i < kSupportedGameExtensionCount; ++i)
@@ -771,4 +775,13 @@ FirmwareInstallStatus Systemloader::InstallFirmwarePackage(const char * utf8_pat
 
 void Systemloader::GetBackingReadTraffic(StorageReadTraffic* out) const {
     *out = FileSys::backing_read_traffic;
+}
+
+// Read-only diagnostic using the same filename gate and production ExeFS identifier.
+EXPORT int CALL NxemuProbeLooseExeFS(const char* path) {
+    if (!path || !HasSupportedFileExtension(path)) return static_cast<int>(LoaderFileType::Unknown);
+    FileSys::RealVfsFilesystem fs;
+    auto file = fs.OpenFile(path, VirtualFileOpenMode::Read);
+    if (!file) return static_cast<int>(LoaderFileType::Error);
+    return static_cast<int>(Loader::AppLoader_DeconstructedRomDirectory::IdentifyType(file));
 }

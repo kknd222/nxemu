@@ -65,6 +65,26 @@ inline bool IsStreamPlayFirmwareSupported(std::string_view version) {
     return cursor == end && components[0] >= 23;
 }
 
+// Native titles already identify the console generation before services start.
+// Missing/older installed firmware must not hide an HLE port the native SDK needs.
+inline bool ShouldRegisterStreamPlay(bool native_title, std::string_view firmware) {
+    return native_title || IsStreamPlayFirmwareSupported(firmware);
+}
+inline constexpr uint32_t StreamPlayTypeError = 0x2efb1f;
+inline constexpr uint32_t StreamPlayModeError = 0x2ee91f;
+inline constexpr uint32_t StreamPlayGuestError = 0x2ee31f;
+struct StreamPlayParameters { uint8_t type; uint8_t mode; uint16_t padding; int32_t guests; };
+static_assert(sizeof(StreamPlayParameters) == 8);
+inline uint32_t ValidateStreamPlay(uint8_t type, uint8_t mode, int32_t guests, bool initialize) {
+    if (initialize && guests > 3) return StreamPlayGuestError;
+    if (type > 1) return StreamPlayTypeError;
+    if (mode > 1) return StreamPlayModeError;
+    return 0;
+}
+inline uint32_t StreamPlayMemorySize(int32_t guests) {
+    return static_cast<uint32_t>(static_cast<int64_t>(guests) * 0x1000);
+}
+
 void RegisterStreamPlayServices(ServerManager& manager, Core::System& system);
 
 } // namespace Service::NGC

@@ -10,6 +10,7 @@
 #include <span>
 
 #include "yuzu_common/common_types.h"
+#include "yuzu_common/hid_write_trace.h"
 #include "yuzu_hid_core/hid_types.h"
 #include "yuzu_hid_core/resources/abstracted_pad/abstract_pad.h"
 #include "yuzu_hid_core/resources/controller_base.h"
@@ -209,6 +210,7 @@ private:
     NpadVibration vibration_handler{};
 
     std::atomic<u64> press_state{};
+    Common::HidWriteTrace debug_hid_writes;
     std::array<std::array<NpadControllerData, MaxSupportedNpadIdTypes>, AruidIndexMax>
         controller_data{};
 };

@@ -15,6 +15,8 @@ enum class MemoryLayout : uint32_t
     Memory_4Gb = 0,
     Memory_6Gb,
     Memory_8Gb,
+    Memory_10Gb,
+    Memory_12Gb,
 };
 
 typedef struct CabinetParameters
@@ -679,6 +681,7 @@ nxinterface IOperatingSystem
     virtual bool IsShuttingDown() const = 0;
     virtual bool IsPoweredOn() const = 0;
     virtual void ShutdownMainProcess() = 0;
+    virtual bool PrepareProgramMemory(bool switch2) = 0;
     virtual bool SetupCurrentProcess(uint64_t codeSize, const IProgramMetadata & metaData, uint64_t aslr_space_start, uint64_t & baseAddress, uint64_t & processID, bool is_hbl) = 0;
     virtual IKernelProcess * CurrentProcess() = 0;
     virtual void StartApplicationProcess(int32_t priority, int64_t stackSize, uint32_t version, StorageId baseGameStorageId, StorageId updateStorageId, uint8_t * nacpData, uint32_t nacpDataLen) = 0;

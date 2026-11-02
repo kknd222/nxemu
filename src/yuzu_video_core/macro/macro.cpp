@@ -14,6 +14,7 @@
 #include "yuzu_common/fs/path_util.h"
 #include "yuzu_common/settings.h"
 #include "yuzu_video_core/engines/maxwell_3d.h"
+#include "yuzu_video_core/memory_manager.h"
 #include "yuzu_video_core/macro/macro.h"
 #include "yuzu_video_core/macro/macro_hle.h"
 #include "yuzu_video_core/macro/macro_interpreter.h"
@@ -57,15 +58,63 @@ MacroEngine::MacroEngine(Engines::Maxwell3D& maxwell3d_)
 MacroEngine::~MacroEngine() = default;
 
 void MacroEngine::AddCode(u32 method, u32 data) {
+    if (native_turing) {
+        if (native_write_offset >= native_code.size()) {
+            LOG_ERROR(HW_GPU, "Native MME upload outside RAM at {:#x}", native_write_offset);
+            return;
+        }
+        native_code[native_write_offset++] = data;
+        return;
+    }
     uploaded_macro_code[method].push_back(data);
 }
 
 void MacroEngine::ClearCode(u32 method) {
+    if (native_turing) {
+        native_write_offset = method < 0x1000 ? method * 3 : static_cast<u32>(native_code.size());
+        return;
+    }
     macro_cache.erase(method);
     uploaded_macro_code.erase(method);
 }
 
 void MacroEngine::Execute(u32 method, const std::vector<u32>& parameters) {
+    if (native_turing) {
+        maxwell3d.RefreshParameters();
+        native_fifo.assign(parameters.begin(), parameters.end());
+        const auto result = native_interpreter.Execute(native_code, method, native_fifo,
+            [&](u32 address) { return address < Engines::Maxwell3D::Regs::NUM_REGS
+                ? maxwell3d.GetRegisterValue(address) : 0U; },
+            [&](u32 address, u32 value) {
+                // Native MME must not recursively launch another macro.
+                if (address >= 0xe00 ||
+                    address >= Engines::Maxwell3D::Regs::NUM_REGS) return false;
+                if (address == 0x157 || address == 0x158) {
+                    auto& memory = maxwell3d.GetMemoryManager();
+                    const GPUVAddr source = (GPUVAddr{maxwell3d.GetRegisterValue(0x154) & 0x1ffffff} << 32) |
+                                             maxwell3d.GetRegisterValue(0x155);
+                    const u32 ram = maxwell3d.GetRegisterValue(0x156);
+                    const size_t bytes = size_t{value} * sizeof(u32);
+                    if (value > 0x1000 || !memory.IsFullyMappedRange(source, bytes) ||
+                        (address == 0x157 && (ram >= native_interpreter.active_dram->size() ||
+                         value > native_interpreter.active_dram->size() - ram))) return false;
+                    if (memory.IsMemoryDirty(source, bytes, VideoCommon::CacheType::BufferCache))
+                        memory.FlushRegion(source, bytes, VideoCommon::CacheType::BufferCache);
+                    for (u32 i = 0; i < value; ++i) {
+                        const u32 word = memory.Read<u32>(source + u64{i} * sizeof(u32));
+                        if (address == 0x158) native_fifo.push_back(word);
+                        else (*native_interpreter.active_dram)[ram + i] = word;
+                    }
+                    return true;
+                }
+                maxwell3d.CallMethod(address, value, true);
+                return true;
+            });
+        if (!result.success) LOG_ERROR(HW_GPU,
+            "Native MME failed: start={:#x}, pc={:#x}, consumed={}/{}, error={}",
+            method, result.pc, result.consumed, native_fifo.size(), result.error);
+        return;
+    }
     auto compiled_macro = macro_cache.find(method);
     if (compiled_macro != macro_cache.end()) {
         const auto& cache_info = compiled_macro->second;

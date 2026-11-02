@@ -89,7 +89,14 @@ ThreadManager::ThreadManager(Tegra::GPU & gpu_, bool is_async_) :
 {
 }
 
-ThreadManager::~ThreadManager() = default;
+ThreadManager::~ThreadManager() { Stop(); }
+
+void ThreadManager::Stop() {
+    if (!thread.joinable()) return;
+    thread.request_stop();
+    state->queue.NotifyConsumer();
+    thread.join();
+}
 
 void ThreadManager::StartThread(VideoCore::RendererBase & renderer, Core::Frontend::GraphicsContext & context, Tegra::Control::Scheduler & scheduler)
 {

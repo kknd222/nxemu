@@ -53,6 +53,10 @@ public:
     [[nodiscard]] std::array<u32, 3> WorkgroupSize() const final;
 
     [[nodiscard]] u64 ReadInstruction(u32 address) final;
+    [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
+    [[nodiscard]] size_t GuestCodeSizeBytes(size_t fallback) const {
+        return native_source_size ? native_source_size : fallback;
+    }
 
     [[nodiscard]] std::optional<u64> Analyze();
 
@@ -96,6 +100,8 @@ protected:
         return shared_code ? std::span<const u64>(*shared_code) : std::span<const u64>(code);
     }
     std::optional<u64> TryFindSize();
+    void InitializeNativeCode(u32 header_size = 0x80);
+    u32 native_source_size{};
 
     /// Returns std::nullopt when the handle points outside of the texture table, which the
     /// texture cache binds as a null image view.
@@ -296,6 +302,7 @@ public:
     [[nodiscard]] u32 CompilationDifferenceMask(const FileEnvironment& other) const noexcept;
 
     [[nodiscard]] u64 ReadInstruction(u32 address) override;
+    [[nodiscard]] u32 TranslateProgramAddress(u32 address) const override;
 
     [[nodiscard]] u32 ReadCbufValue(u32 cbuf_index, u32 cbuf_offset) override;
 

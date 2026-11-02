@@ -2,6 +2,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <atomic>
+#include "yuzu_shader_recompiler/exception.h"
+#include "yuzu_video_core/native_shader_address.h"
 #include <array>
 #include <vector>
 
@@ -38,7 +41,7 @@ void ShaderCache::SyncGuestHost() {
 ShaderCache::ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory_)
     : device_memory{device_memory_} {}
 
-bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) {
+bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     auto& dirty{maxwell3d->dirty.flags};
     if (!dirty[VideoCommon::Dirty::Shaders]) {
         return last_shaders_valid;
@@ -58,7 +61,15 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) {
             unique_hashes[index] = 0;
             continue;
         }
-        const GPUVAddr shader_addr{base_addr + shader_config.offset};
+        const auto location = ResolveGraphicsProgramLocation(maxwell3d->IsNativeTuring(),
+            base_addr, shader_config.offset, shader_config.reserved[0], shader_config.reserved[1]);
+        const GPUVAddr shader_addr{location.address};
+        if (maxwell3d->IsNativeTuring()) {
+            static std::atomic<u32> reported{};
+            if (reported.fetch_add(1, std::memory_order_relaxed) < 24)
+                LOG_INFO(HW_GPU, "NX2_SHADER stage={} address={:#x} legacy_base={:#x} legacy_offset={:#x}",
+                    index, shader_addr, base_addr, shader_config.offset);
+        }
         const std::optional<VAddr> cpu_shader_addr{gpu_memory->GpuToCpuAddress(shader_addr)};
         if (!cpu_shader_addr) {
             LOG_ERROR(HW_GPU, "Invalid GPU address for shader 0x{:016x}", shader_addr);
@@ -67,8 +78,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) {
         }
         const ShaderInfo* shader_info{TryGet(*cpu_shader_addr)};
         if (!shader_info) {
-            const u32 start_address{shader_config.offset};
-            GraphicsEnvironment env{*maxwell3d, *gpu_memory, program, base_addr, start_address};
+            GraphicsEnvironment env{*maxwell3d, *gpu_memory, program, location.base, location.start};
             shader_info = MakeShaderInfo(env, *cpu_shader_addr);
         }
         shader_infos[index] = shader_info;
@@ -76,6 +86,14 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) {
     }
     last_shaders_valid = true;
     return true;
+} catch (const Shader::Exception& error) {
+    if (!maxwell3d->IsNativeTuring()) throw;
+    last_shaders_valid = false;
+    static std::atomic<uint64_t> rejected{};
+    const auto count = rejected.fetch_add(1, std::memory_order_relaxed) + 1;
+    if (count <= 16 || count % 1024 == 0)
+        LOG_ERROR(HW_GPU, "NX2_SHADER_REJECT count={} reason={}", count, error.what());
+    return false;
 }
 
 const ShaderInfo* ShaderCache::ComputeShader() {
@@ -104,8 +122,10 @@ void ShaderCache::GetGraphicsEnvironments(GraphicsEnvironments& result,
         }
         const auto program{static_cast<Tegra::Engines::Maxwell3D::Regs::ShaderType>(index)};
         auto& env{result.envs[index]};
-        const u32 start_address{maxwell3d->regs.pipelines[index].offset};
-        env = GraphicsEnvironment{*maxwell3d, *gpu_memory, program, base_addr, start_address,
+        const auto& config = maxwell3d->regs.pipelines[index];
+        const auto location = ResolveGraphicsProgramLocation(maxwell3d->IsNativeTuring(),
+            base_addr, config.offset, config.reserved[0], config.reserved[1]);
+        env = GraphicsEnvironment{*maxwell3d, *gpu_memory, program, location.base, location.start,
                                   shader_infos[index]->code, shader_infos[index]->size_bytes};
         result.env_ptrs[env_index++] = &env;
     }
@@ -245,7 +265,7 @@ const ShaderInfo* ShaderCache::MakeShaderInfo(GenericEnvironment& env, VAddr cpu
     const size_t size_bytes{info->size_bytes};
     const ShaderInfo* const result{info.get()};
     info->code = env.ShareCachedCode(info->size_bytes);
-    Register(std::move(info), cpu_addr, size_bytes);
+    Register(std::move(info), cpu_addr, env.GuestCodeSizeBytes(size_bytes));
     return result;
 }
 

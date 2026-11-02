@@ -101,6 +101,8 @@ struct InputSubsystem::Impl {
 
     template <typename Engine>
     void UnregisterEngine(std::shared_ptr<Engine>& engine) {
+        // Partial initialization and repeated teardown must be harmless.
+        if (!engine) return;
         Common::Input::UnregisterInputFactory(engine->GetEngineName());
         Common::Input::UnregisterOutputFactory(engine->GetEngineName());
         engine.reset();
@@ -123,7 +125,6 @@ struct InputSubsystem::Impl {
         UnregisterEngine(virtual_amiibo);
         UnregisterEngine(virtual_gamepad);
 #ifdef HAVE_SDL
-        UnregisterEngine(sdl);
         UnregisterEngine(joycon);
         UnregisterEngine(sdl);
 #endif

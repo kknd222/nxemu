@@ -58,6 +58,8 @@ public:
 
     /// Dispatches a compute shader invocation
     virtual void DispatchCompute() = 0;
+    // True only when the backend accepted a native dispatch, never a silent no-op.
+    virtual bool DispatchNativeCompute() { return false; }
 
     /// Resets the counter of a query
     virtual void ResetCounter(VideoCommon::QueryType type) = 0;
@@ -80,6 +82,8 @@ public:
 
     /// Signal a fence and wait for its deferred synchronization operations to complete.
     virtual void WaitForFence() = 0;
+    // Stop publishers while guest memory and service callbacks are still alive.
+    virtual void ShutdownAsyncReadbacks() {}
 
     /// Send an operation to be done after a certain amount of flushes.
     virtual void SyncOperation(std::function<void()>&& func) = 0;

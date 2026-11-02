@@ -9,6 +9,7 @@
 #include "yuzu_common/yuzu_assert.h"
 #include "loader.h"
 #include "core/loader/nca.h"
+#include "core/loader/deconstructed_rom_directory.h"
 #include "core/loader/nro.h"
 #include "core/loader/nsp.h"
 #include "core/loader/xci.h"
@@ -33,7 +34,12 @@ std::optional<LoaderFileType> IdentifyFileLoader(FileSys::VirtualFile file)
 
 LoaderFileType IdentifyFile(FileSys::VirtualFile file)
 {
-    if (const auto nro_type = IdentifyFileLoader<AppLoader_NRO>(file))
+    // Loose ExeFS must be selected before probing container formats.
+    if (const auto exefs_type = IdentifyFileLoader<AppLoader_DeconstructedRomDirectory>(file))
+    {
+        return *exefs_type;
+    }
+    else if (const auto nro_type = IdentifyFileLoader<AppLoader_NRO>(file))
     {
         return *nro_type;
     }
@@ -127,6 +133,8 @@ AppLoader::~AppLoader() = default;
 static std::shared_ptr<AppLoader> GetFileLoader(Systemloader & loader, FileSys::VirtualFile file, LoaderFileType type, uint64_t program_id, std::size_t program_index)
 {
     switch (type) {
+    case LoaderFileType::DeconstructedRomDirectory:
+        return std::make_shared<AppLoader_DeconstructedRomDirectory>(std::move(file));
     // NX NRO file format.
     case LoaderFileType::NRO:
         return std::make_shared<AppLoader_NRO>(std::move(file));

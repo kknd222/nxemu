@@ -232,6 +232,13 @@ void NVDRV::Close(HLERequestContext& ctx) {
     rb.PushEnum(result);
 }
 
+void NVDRV::InitializeForProcess(Kernel::KProcess* process) {
+    if (!is_initialized && process != nullptr) {
+        session_id = nvdrv->GetContainer().OpenSession(process);
+        is_initialized = true;
+    }
+}
+
 void NVDRV::Initialize(HLERequestContext& ctx) {
     LOG_WARNING(Service_NVDRV, "(STUBBED) called");
     NxemuAndroidDiagnostics::RecordEvent("NVDRV.Initialize", "called");

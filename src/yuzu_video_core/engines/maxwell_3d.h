@@ -55,6 +55,12 @@ class Maxwell3D final : public EngineInterface {
 public:
     explicit Maxwell3D(MemoryManager& memory_manager);
     ~Maxwell3D();
+    void SetNativeTuring(bool enabled);
+    std::span<const u32> NativeMacroCode() const { return macro_engine->NativeCode(); }
+    std::span<const u32> NativeMacroPositions() const { return macro_positions; }
+    TuringMacroInterpreter::DataRam* NativeMacroDataRam() { return macro_engine->NativeDataRam(); }
+    bool IsNativeTuring() const;
+    MemoryManager& GetMemoryManager() { return memory_manager; }
 
     /// Binds a rasterizer to this engine.
     void BindRasterizer(VideoCore::RasterizerInterface* rasterizer);
@@ -2602,6 +2608,12 @@ public:
             u32 start_shader_mask;
             u32 stop_shader_mask;
         };
+
+        // C797 uses 40-bit byte counts at byte offset 0x600, not legacy end addresses.
+        u64 NativeVertexStreamSize(std::size_t index) const {
+            const std::size_t method = 0x600 / sizeof(u32) + index * 2;
+            return (u64{reg_array[method] & 0xffU} << 32) | reg_array[method + 1];
+        }
 
         // clang-format off
         union {
