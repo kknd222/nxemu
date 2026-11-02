@@ -123,8 +123,10 @@ struct InputSubsystem::Impl {
         UnregisterEngine(virtual_amiibo);
         UnregisterEngine(virtual_gamepad);
 #ifdef HAVE_SDL2
-        UnregisterEngine(sdl);
+        // Joycons uses SDL HIDAPI directly. Stop its scan/device threads before SDLDriver tears
+        // down the shared SDL joystick and HIDAPI subsystems.
         UnregisterEngine(joycon);
+        UnregisterEngine(sdl);
 #endif
 
         Common::Input::UnregisterInputFactory("touch_from_button");

@@ -659,15 +659,24 @@ SDLDriver::SDLDriver(std::string input_engine_) :
 
 SDLDriver::~SDLDriver()
 {
-    CloseJoysticks();
-    SDL_DelEventWatch(&SDLEventWatcher, this);
-
+    LOG_INFO(Input, "SDL shutdown: stopping vibration worker");
     initialized = false;
-    if (start_thread)
+    if (start_thread && vibration_thread.joinable())
     {
         vibration_thread.join();
+    }
+
+    // Stop callbacks into this object before closing devices. In particular, Windows Gaming Input
+    // can deliver removal notifications concurrently with joystick shutdown.
+    SDL_DelEventWatch(&SDLEventWatcher, this);
+    CloseJoysticks();
+
+    if (start_thread)
+    {
+        LOG_INFO(Input, "SDL shutdown: quitting joystick subsystem");
         SDL_QuitSubSystem(SDL_INIT_JOYSTICK | SDL_INIT_GAMECONTROLLER);
     }
+    LOG_INFO(Input, "SDL shutdown: complete");
 }
 
 std::vector<Common::ParamPackage> SDLDriver::GetInputDevices() const
