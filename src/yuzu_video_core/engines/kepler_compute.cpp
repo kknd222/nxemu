@@ -12,6 +12,7 @@
 #include "yuzu_video_core/engines/kepler_compute.h"
 #include "yuzu_video_core/engines/maxwell_3d.h"
 #include "yuzu_video_core/memory_manager.h"
+#include "yuzu_video_core/shader_rejection_trace.h"
 #include "yuzu_video_core/rasterizer_interface.h"
 #include "yuzu_video_core/textures/decoders.h"
 
@@ -192,14 +193,32 @@ bool KeplerCompute::DispatchNativeCompute(const NativeQmdScheduler::Descriptor& 
         buffer.size.Assign(((high >> 19) & 0x1fff) << 4);
     }
     if (!launch_description.block_dim_x || !launch_description.block_dim_y || !launch_description.block_dim_z) return false;
+    VideoCommon::ShaderRejectionTrace::DispatchContext diagnostic{};
+    if (VideoCommon::ShaderRejectionTrace::Enabled()) {
+        diagnostic.token=VideoCommon::ShaderRejectionTrace::NextDispatchToken();
+        diagnostic.program=regs.code_loc.Address();
+        diagnostic.grid={qmd[12],qmd[13]&0xffff,qmd[14]&0xffff};
+        diagnostic.block={qmd[18]>>16,qmd[19]&0xffff,qmd[19]>>16};
+        diagnostic.cbuf_mask=qmd[20]&0xff;
+        for(u32 slot=0;slot<diagnostic.cbufs.size();++slot) {
+            const u32 high=qmd[33+slot*2];
+            diagnostic.cbufs[slot]={u64{qmd[32+slot*2]}|(u64{high&0xff}<<32),
+                ((high>>19)&0x1fff)<<4,(diagnostic.cbuf_mask&(1U<<slot))!=0};
+        }
+    }
+    const VideoCommon::ShaderRejectionTrace::ScopedDispatch diagnostic_scope{diagnostic};
     try {
         const bool submitted = rasterizer->DispatchNativeCompute();
+        VideoCommon::ShaderRejectionTrace::DispatchResult(submitted);
         static u32 logged{};
         if (logged++ < 16)
             LOG_INFO(HW_GPU, "NX2_COMPUTE_DISPATCH program={:#x} grid={}/{}/{} submitted={}",
                      regs.code_loc.Address(), qmd[12], qmd[13] & 0xffff, qmd[14] & 0xffff, submitted);
         return submitted;
     } catch (const Shader::Exception& error) {
+        VideoCommon::ShaderRejectionTrace::DispatchException(regs.code_loc.Address(),error.what());
+        VideoCommon::ShaderRejectionTrace::DispatchResult(false);
+        VideoCommon::ShaderRejectionTrace::Publish();
         static u32 rejected{};
         if (rejected++ < 16) LOG_ERROR(HW_GPU, "NX2_COMPUTE_REJECT program={:#x} reason={}", regs.code_loc.Address(), error.what());
         return false;

@@ -427,8 +427,15 @@ bool QueryCacheBase<Traits>::AccelerateHostConditionalRendering() {
                     .found_query = nullptr,
                 };
             }
+            it_current = it_current_2;
         }
         auto* query = impl->ObtainQuery(it_current->second);
+        if (!query) {
+            return VideoCommon::LookupData{
+                .address = cpu_addr,
+                .found_query = nullptr,
+            };
+        }
         qc_dirty |= True(query->flags & QueryFlagBits::IsHostManaged) &&
                     False(query->flags & QueryFlagBits::IsGuestSynced);
         return VideoCommon::LookupData{

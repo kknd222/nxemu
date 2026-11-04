@@ -4,6 +4,7 @@
 #pragma once
 
 #include "yuzu_video_core/native_gob.h"
+#include "yuzu_video_core/frame_capture_context.h"
 #include "yuzu_video_core/native_sparse_readback.h"
 #include "yuzu_video_core/readback_metrics.h"
 #include "yuzu_video_core/native_texture_view.h"
@@ -1414,8 +1415,13 @@ std::pair<typename P::ImageView*, bool> TextureCache<P>::TryFindFramebufferImage
             info.z_source = static_cast<u8>(SwizzleSource::B);
             info.w_source = static_cast<u8>(SwizzleSource::OneFloat);
         }
-        return std::make_pair(&slot_image_views[FindOrEmplaceImageView(image_id, info)],
-                              slot_images[image_id].IsRescaled());
+        const auto view_id = FindOrEmplaceImageView(image_id, info);
+        if (FrameCaptureContext::Active()) {
+            const auto& image=slot_images[image_id];
+            const auto owner=ImageAddressSpace(image);
+            FrameCaptureContext::Selected({true,owner.has_value(),image.IsRescaled(),cpu_addr,image_id.index,view_id.index,image.cpu_addr,image.gpu_addr,image.gpu_page_table_index,owner.value_or(0),image.modification_tick,image.published_tick,image.gpu_write_tick,static_cast<uint32_t>(image.info.size.width),static_cast<uint32_t>(image.info.size.height),static_cast<uint32_t>(image.info.format),static_cast<uint32_t>(image.flags),info.range.base.layer});
+        }
+        return std::make_pair(&slot_image_views[view_id],slot_images[image_id].IsRescaled());
     };
 
     if (valid_image_ids.size() == 1) [[likely]] {

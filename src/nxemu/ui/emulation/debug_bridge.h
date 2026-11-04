@@ -36,11 +36,15 @@ public:
         }
         run = std::to_string(std::chrono::system_clock::now().time_since_epoch().count());
         if (enabled) {
+            // Keep legacy bridge launches detailed, but permit status/control-only runs.
+            // Explicit zero is disabled; unlike the old nonempty test it is not truthy.
+            const char* requestedDetail = std::getenv("NXEMU_DEBUG_DETAIL");
+            const char* detailValue = !requestedDetail || std::string(requestedDetail) == "1" ? "1" : "0";
 #ifdef _WIN32
-            _putenv_s("NXEMU_DEBUG_DETAIL", "1");
+            _putenv_s("NXEMU_DEBUG_DETAIL", detailValue);
             _putenv_s("NXEMU_DEBUG_RUN_ID", run.c_str());
 #else
-            setenv("NXEMU_DEBUG_DETAIL", "1", 1);
+            setenv("NXEMU_DEBUG_DETAIL", detailValue, 1);
             setenv("NXEMU_DEBUG_RUN_ID", run.c_str(), 1);
 #endif
         }
@@ -155,6 +159,27 @@ public:
             << ",\"emulation_speed\":" << finite(perf.emulation_speed)
             << ",\"perf_sample\":" << window.DebugPerformanceSample()
             << ",\"bridge_version\":5,\"module_generation\":" << generation
+            << ",\"diagnostic_config\":{\"source\":\"startup_environment_not_coverage_proof\",\"detail\":"
+            << (VideoCommon::DebugDocument::Enabled() ? "true" : "false")
+            << ",\"handle_trace\":"
+            << ((VideoCommon::DebugDocument::Environment("NXEMU_HANDLE_TRACE").empty() ?
+                 VideoCommon::DebugDocument::Enabled() : VideoCommon::DebugDocument::Environment("NXEMU_HANDLE_TRACE") == "1") ? "true" : "false")
+            << ",\"shader_rejection_trace\":"
+            << ((VideoCommon::DebugDocument::Environment("NXEMU_SHADER_REJECTION_TRACE").empty() ?
+                 VideoCommon::DebugDocument::Enabled() : VideoCommon::DebugDocument::Environment("NXEMU_SHADER_REJECTION_TRACE") == "1") ? "true" : "false")
+            << ",\"shader_fixtures\":"
+            << (VideoCommon::DebugDocument::Environment("NXEMU_NATIVE_SHADER_FIXTURES") == "1" ? "true" : "false")
+            << ",\"frame_capture\":"
+            << ((VideoCommon::DebugDocument::Environment("NXEMU_FRAME_CAPTURE").empty() ?
+                 VideoCommon::DebugDocument::Enabled() : VideoCommon::DebugDocument::Environment("NXEMU_FRAME_CAPTURE") == "1") ? "true" : "false")
+            << ",\"paired_pixels\":" << (VideoCommon::DebugDocument::Environment("NXEMU_PAIRED_PIXELS")=="1"?"true":"false")
+            << ",\"image_writers\":" << (VideoCommon::DebugDocument::Environment("NXEMU_IMAGE_WRITERS")=="1"?"true":"false")
+            << ",\"native_draw_inputs\":" << (VideoCommon::DebugDocument::Environment("NXEMU_NATIVE_DRAW_INPUTS")=="1"?"true":"false")
+            << ",\"shader_progress\":"
+            << ((VideoCommon::DebugDocument::Environment("NXEMU_SHADER_PROGRESS").empty() ?
+                 VideoCommon::DebugDocument::Enabled() : VideoCommon::DebugDocument::Environment("NXEMU_SHADER_PROGRESS") == "1") ? "true" : "false")
+            << ",\"pipeline_fixtures\":" << (VideoCommon::DebugDocument::Environment("NXEMU_PIPELINE_FIXTURES")=="1"?"true":"false")
+            << ",\"pipeline_fixture_key\":" << VideoCommon::DebugDocument::Quote(VideoCommon::DebugDocument::Environment("NXEMU_PIPELINE_FIXTURE_KEY")) << "}"
             << ",\"game_path\":" << VideoCommon::DebugDocument::Quote(session.DebugGamePath())
             << ",\"guest_program_id\":" << (valid ? session.Modules().OperatingSystem().GetProgramId() : 0)
             << ",\"is_64bit_program\":" << (SettingsStore::GetInstance().GetBool(NXCoreSetting::Is64BitProgram) ? "true" : "false")

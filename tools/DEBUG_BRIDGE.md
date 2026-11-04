@@ -178,3 +178,86 @@ overflow and old-row/current-tick are explicit. Caller holds the existing NPad
 shared-memory lock. Guest consumption remains null; no input or LIFO rules changed.
 Records cover the system-ext path and the existing style switch before it,not all
 HID APIs. Full queue timing and bridge publication overhead still require profiling.
+
+
+### Evidence-led debugging methodology (2026-11-02)
+Specification/reverse engineering -> executable semantics -> minimal guest tests -> independent/hardware differential -> general fix -> cross-game regression -> optimization.
+Host WinDbg requires matching DLL/PDB; guest registers come from the executing core boundary, not host x64 registers or stale saved HLE contexts. Compare the first semantic divergence using module offsets/object IDs. Pause changes scheduling: separate paused and uninterrupted results. Complete registers, bounded read-only probes and stack hints are observations, not a lock-owner graph. Follow PROJECT_MEMORY.md and nx2-methodology-20261102/METHODOLOGY.md. No game inputs during user-owned gameplay testing.
+
+
+### Guest register/probe and reply observations
+guest-activity CPU rows now carry registers[0..30], PSTATE, executing-core source, sample_age_ms and capture_ns. At most eight read-only 64-bit probes use x0/x8/x9/x25 bases and +0xd0 as explicit exploratory hints; unreadable values are null. Frame chain LRs are hints, not unwinding proof. All capture runs on the owning core after RunThread and before UnlockThread; other cores can mutate memory. No owner is inferred from spinlock value1. ipc_recent keeps32 completed dispatch/reply boundaries independent of SVC traffic. ipc_reply_pending captures guest_tid/command, server object, absolute completion deadline and starting guest time; it is distinct from service dispatch and client consumption. ro-nrr records versioned metadata validation before allocation. NxemuA64SemanticProbeV1 is an offline, explicitly called export using the actual linked JIT; callback-memory differential does not cover fastmem or multicore ordering. Evidence: nx2-lock-method-20261102.
+
+### Guest scheduler states and IPC admission (2026-11-02)
+`guest-threads` snapshots scalar thread state under the existing scheduler lock and
+try-locked global thread-list guard, every500ms, guest threads first,128 slots.
+Reports tid/pid, raw/suspend state, priorities, core, wait generation and kernel
+lock-owner tid. This is NOT the owner of an arbitrary guest spinlock. Saved
+contexts (31 GPR,PC/SP/PSTATE) are copied only after that thread's own-core
+SaveContext, at most every500ms/thread,128 slots. Sources and sample ages are
+explicit; a pure JIT spin or stopped scheduler may leave samples old/absent.
+Omitted threads/contexts and slot overflow are explicit. collector_ns covers
+state capture and publication only, not every SaveContext/mutex or SDK cost.
+`guest-activity` adds32 transport_recent events separate from service dispatch.
+ipc_transport links the scalar request token and numeric request/server identity:
+enqueue_scheduler_lock_wait -> queued_before_notification -> client_wait_queued
+-> dequeued -> populate_incoming_command -> ready_for_handler ->
+send_reply_transaction -> client_wait_ended -> reply_transaction_finished.
+The last observed phase is not proof every intermediate phase occurred; async,
+error and cancellation paths differ. Final destruction without an observed reply
+ends request_destroyed_without_reply_observation, result UINT32_MAX, not success.
+Bounded48byte request headers are copied on the submitting client path; parsed
+command/tipc attach at admission. No request pointers are retained by the bridge.
+No wait, queue, notification, cancellation, or reply semantics are changed.
+
+### Six-core topology and compatibility (2026-11-02)
+Shared scheduler/CPU-monitor capacity is6; guest NS1 remains4 (cores0..3),
+NS2 remains6 (cores0..5), and NPDM core masks still authorize each request.
+Core4/5 IDs and masks are no longer folded to0/1. The standard per-core
+preemption priorities remain59/59/59/63/59/59; no ad-hoc44 time slice or forced unlock.
+IKernelProcess appends GetGuestCoreCount (default4); matching rebuilt CPU/OS modules
+must be deployed/rolled back together. This keeps instruction-count timing4 forNS1
+and6 forNS2 rather than blindly dividing all titles by the capacity6. Existing
+CpuThreadContext and fixed guest debug-event ABI layouts remain unchanged.
+`guest-threads` includes scheduler_core_capacity, per-thread guest_core_count,
+active_core, physical_affinity_mask and last_scheduled_tick. These remain sampled
+scheduler-owned scalars, not continuously live registers or raw-spinlock ownership.
+NxemuSixCoreMonitorProbeV1 is explicit OFFLINE: the actual linked Dynarmic monitor,
+six independent slots, stale reservation rejection, ClearProcessor isolation and
+six concurrent1000-increment exclusive loops. It does not execute emitted JIT
+fastmem or the actual kernel scheduler, and is never called during gameplay.
+
+### Shader rejection diagnosis (2026-11-03)
+`inspect.render["shader-rejections"]` reads the bounded `shader-rejections.json` snapshot. Normal detail-off runs do not collect it; `NXEMU_SHADER_REJECTION_TRACE=0` explicitly disables and `=1` opts in. With the variable unset it follows the existing debug-detail switch.
+The document separates lowering rejection attempts from dispatch exceptions; they can refer to the same failure and must not be summed as unique failures. Counted reason buckets and first-retained latches survive ordinary ring overwrites, but contention drops and budget omissions are explicit. The old 16-line NX2_COMPUTE_REJECT log cap is not a total failure count.
+A sampled failure includes original native four-word instruction, byte offset, stage, up to nine neighboring instructions and matching same-thread QMD token/grid/block/constant-buffer descriptors. Descriptors and memory addresses are not input/output contents, dependency proof, or GPU completion evidence. No extra GPU readback or fence wait is inserted. Session/generation and row age must be checked; a fresh publication does not make an old rejection a current GPU state.
+
+
+### Experimental profiles / native case corpus (2026-11-03)
+New startup options (strict0/1): `--debug-detail`, `--handle-trace`, `--shader-rejection-trace`, `--shader-fixtures`, `--frame-capture`.
+Legacy `--debug-bridge DIR` keeps detail1 unless explicitly set; `--debug-detail 0` now actually disables broad detail. Base status/control remains active. Narrow handle/shader traces can publish independently of detail. `--frame-capture 1` permits explicit capture requests even with detail0; no request means noGPUreadback. status.diagnostic_config reports startup settings, NOT coverage or total cost.
+`NXEMU_DEBUG_DETAIL=0` is no longer treated as truthy. Startup-cached controls need process restart; they are not live toggles. SDK launch forwards options explicitly through the Cua launcher, avoiding caller-shell/daemon environment mismatch.
+
+`--shader-fixtures 1` / `NXEMU_NATIVE_SHADER_FIXTURES=1` archives existing CPU-native vectors at actual lower rejection, defaultoff. diagnostics/native-fixtures/index.json +native-ID.bin/json: max8items/4MiB total/1MiB per blob;500ms newwrite cadence; exactbytesdedup; metadata-ready published last. Legacy automatic partial dump and extra GPU-header read are removed. Captured vector excludes SPH/CB/textures/resources and is NOT complete GPU task replay. FNV contentID only dedup/integrity hint, SDK adds SHA256; neither authenticates originalROM. Capture state complete is decoder termination, not fullgame program proof.
+
+```powershell
+# A fresh isolated run, no game input; explicit case and GPU composition capture
+python tools/nx2_lab.py run --game 'E:\download\SW2-dumpster\KirbyAirRiders_GlobalTestRide\updates\65536\exefs\main' --out 'D:\project\nxemu-switch2-upgrade\MY_NEW_LAB_RUN' --seconds 30 --detail 0 --shader-fixtures 1 --capture-frame
+# Real command syntax uses spaces between option name and value:
+# --seconds 30 --detail 0 --shader-fixtures 1
+python tools/nx2_lab.py cases --bridge 'D:\project\nxemu-switch2-upgrade\MY_NEW_LAB_RUN\bridge'
+```
+`cases` validates schema/session/ID/length/contentID/SHA256/failureoffset/nativewords/opcode. Reports replay_ready=false and missing resource/binding/synchronization/oracle components. `collect --bridge DIR --out DIR [--capture-frame]` supports an existing session; mixed-session livecases rejected, offline cases explicitly history. `run` reuses supervisor, requires freshbridge/no otherNXEmu, default30s, choices30/60, explicit capture after50composites. First composite/PPM alone is not gameplay proof; user retains actual gameplay testing.
+
+Current experiment guide is docs/EXPERIMENT_LAB.md, projectroot TODO/REQUIREMENTS/PROJECT_MEMORY. Source and reports stay local until separately committed/pushed; no automatic GitHub release.
+
+Native experiment extensions: `nx2_lab.py build-probe --out DIR`, `probe --bridge BRIDGE --probe-directory DIR --out JSON`, `stacks --path CDB_TEXT --out JSON`. The probe calls actual production lowerer and records/guards input-source/exeSHA256. No IR/SPIRV/Vulkan numerical acceptance is claimed by this command. Runtime Vulkan device is read from the same run log, not inferred from installed adapters. Offline CDB snapshot classifications preserve unknown/noncontinuous limitations.
+
+## Compute compilation progress and coupled experiment plans
+Startup `--shader-progress 0|1` / `NXEMU_SHADER_PROGRESS`: explicit override; unset follows debug detail. `--debug-detail 0 --shader-progress 1` enables this narrow document without broad detail. Restart required. The publisher is the frontend DebugSnapshot heartbeat, not the blocked GPU/compiler worker.
+`diagnostics/shader-progress.json` records session/token/pipeline hash, CFG/TranslateProgram/IRPostprocess/EmitSPIRV/ShaderModule/constructor/queue/descriptor/driver/statistics stages; independent waiters do not overwrite the running driver stage. Actual flags/subgroup parameters and bounded IR/SPIRV/source/SSBO metrics are observations, not complete replay inputs. Fixed 64 active/32 history, 500ms publication, try-lock drops and measured capture/publication cost; truncated/unknown fields explicit. Compute-only: excludes graphics/native lowering/cache hits, so an empty active list never proves all shaders idle. SDK separates document freshness, observed active-stage age and historical terminal-event age; a fresh heartbeat is not compilation success.
+`nx2_lab.py run ... --shader-progress 1` also retains per-sample progress in launch-status.jsonl. `debug_sdk.py --bridge DIR inspect` exposes the document and long-stage indicators; these are not automatic root-cause claims.
+`python tools/nx2_lab.py validate-plan --path PLAN.json --out RESULT.json` validates dependencies/DAG, single file writer, local/system oracle descriptions, fixed fixture and exact 0/A/B/A+B rows. Missing prerequisites must be explicit. It accepts only planned rows and never executes a matrix or certifies a repair. Root integrates frozen artifacts and performs local, joint and regression tests separately.
+
+Pipeline input tools: `--pipeline-fixtures 0|1` defaults off; `--pipeline-fixture-key HEX16` optional strict lowercase16 key. `pipeline-cases --bridge DIR` in both SDK/lab verifies ready-last metadata/SPIRV raw bytes/FNV+SHA256/session/structural instruction walk and actual feature/layout inputs. 16 cases/run,4MiB/case,16MiB/run, reload does not reset the budget. Startup progress identities now use fixed-slot admission; updates/snapshots/terminal may still drop, independently counted. `pending_terminal` rows are already ended but occupy capacity pending history archive; not active driver work.
+`nx2_lab.py pipeline-probe --metadata CAPTURE --out RESULT [--adapter-match-index N]` invokes separate real Vulkan create-only helper with30s external watchdog. `pipeline_probe.py --validate-only` never loads Vulkan. Default ambiguous GPU identity rejected; explicit matching index is a candidate not original source identity. Helper matches source properties/driver/cacheUUID, typed feature nodes/actual descriptors/subgroup and creates no GPU buffers, submits no GPU work. Original instanceextensions and cacheblob are not captured, so only null-application-cache candidate replay; driver internal/persistentcache not controlled. Creation success is not shader numerical validation.

@@ -16,6 +16,7 @@
 #include "yuzu_video_core/renderer_vulkan/vk_blit_screen.h"
 #include "yuzu_video_core/textures/decoders.h"
 #include "yuzu_video_core/native_gob.h"
+#include "yuzu_video_core/frame_capture_context.h"
 #include "yuzu_video_core/native_debug_document.h"
 
 namespace Vulkan {
@@ -73,6 +74,7 @@ void Layer::ConfigureDraw(PresentPushConstants* out_push_constants,
                           const Layout::FramebufferLayout& layout) {
     const auto debug_started = std::chrono::steady_clock::now();
     std::uint64_t debug_raw_us{};
+    VideoCommon::FrameCaptureContext::BeginLayer();
     const auto texture_info = rasterizer.AccelerateDisplay(
         framebuffer, framebuffer.address + framebuffer.offset, framebuffer.stride);
     const u32 texture_width = texture_info ? texture_info->width : framebuffer.width;
@@ -109,6 +111,8 @@ void Layer::ConfigureDraw(PresentPushConstants* out_push_constants,
     VkImageView source_image_view =
         texture_info ? texture_info->image_view : *raw_image_views[image_index];
 
+    const auto original_source_image=source_image;
+    const auto original_source_view=source_image_view;
     anti_alias->Draw(scheduler, image_index, &source_image, &source_image_view);
 
     auto crop_rect = Tegra::NormalizeCrop(framebuffer, texture_width, texture_height);
@@ -128,6 +132,10 @@ void Layer::ConfigureDraw(PresentPushConstants* out_push_constants,
 
     UpdateDescriptorSet(source_image_view, sampler, image_index);
     *out_descriptor_set = descriptor_sets[image_index];
+    if(VideoCommon::FrameCaptureContext::Active()){
+        using namespace VideoCommon::FrameCaptureContext;
+        Bound({use_accelerated,fsr!=nullptr,Handle(original_source_image),Handle(original_source_view),Handle(source_image),Handle(source_image_view),Handle(*out_descriptor_set),Handle(sampler),image_index,texture_width,texture_height,scaled_width,scaled_height,layout.width,layout.height,{crop_rect.left,crop_rect.top,crop_rect.right,crop_rect.bottom}});
+    }
 }
 
 void Layer::CreateDescriptorPool() {

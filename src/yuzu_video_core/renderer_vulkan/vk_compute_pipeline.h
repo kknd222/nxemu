@@ -3,6 +3,8 @@
 
 #pragma once
 
+#include "yuzu_video_core/shader_progress_trace.h"
+#include "yuzu_video_core/pipeline_fixture.h"
 #include <atomic>
 #include <condition_variable>
 #include <memory>
@@ -38,7 +40,9 @@ public:
                              NativePipelineBuildQueue* thread_worker,
                              PipelineStatistics* pipeline_statistics,
                              VideoCore::ShaderNotify* shader_notify, const Shader::Info& info,
-                             vk::ShaderModule spv_module, StagingBufferPool& staging_pool);
+                             vk::ShaderModule spv_module, StagingBufferPool& staging_pool,
+                             VideoCommon::ShaderProgress::Token progress_token = {},
+                             std::shared_ptr<VideoCommon::PipelineFixture::Handle> pipeline_fixture = {});
 
     ComputePipeline& operator=(ComputePipeline&&) noexcept = delete;
     ComputePipeline(ComputePipeline&&) noexcept = delete;
@@ -64,6 +68,7 @@ public:
     }
 
 private:
+    VideoCommon::ShaderProgress::Token progress_token{};
     const Device& device;
     vk::PipelineCache& pipeline_cache;
     GuestDescriptorQueue& guest_descriptor_queue;

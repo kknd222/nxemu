@@ -25,6 +25,7 @@
 #include "core/hle/service/hle_ipc.h"
 #include "core/hle/service/ipc_helpers.h"
 #include "core/memory.h"
+#include "core/guest_debug_trace.h"
 
 namespace Kernel {
 
@@ -1124,6 +1125,7 @@ Result KServerSession::ReceiveRequest(uintptr_t server_message, uintptr_t server
         // Pop the first request from the list.
         request = std::addressof(m_request_list.front());
         m_request_list.pop_front();
+        request->DebugPhase("dequeued");
 
         // Get the thread for the request.
         client_thread = request->GetThread();
@@ -1161,10 +1163,15 @@ Result KServerSession::ReceiveRequest(uintptr_t server_message, uintptr_t server
             if (!client_message) client_message = client_thread->GetTlsAddress().GetValue();
             auto& memory = client_thread->GetOwnerKProcess()->GetCoreMemory();
             auto* cmd_buf = reinterpret_cast<u32*>(memory.GetPointer(client_message));
+            request->DebugPhase("populate_incoming_command");
             *out_context = std::make_shared<Service::HLERequestContext>(m_kernel, memory, this,
                                                                       client_thread, client_message, request);
             (*out_context)->SetSessionRequestManager(manager);
             result = (*out_context)->PopulateFromIncomingCommandBuffer(cmd_buf);
+            if(R_SUCCEEDED(result)) {
+                Core::GuestDebugTrace::Command(request->GetDebugToken(),(*out_context)->GetCommand(),(*out_context)->IsTipc());
+                request->DebugPhase("ready_for_handler");
+            }
             R_SUCCEED_IF(R_SUCCEEDED(result));
             out_context->reset();
         } else {
@@ -1281,6 +1288,7 @@ Result KServerSession::SendReply(uintptr_t server_message, uintptr_t server_buff
     const size_t client_buffer_size = request->GetSize();
     KThread* client_thread = request->GetThread();
     KEvent* event = request->GetEvent();
+    request->DebugPhase("send_reply_transaction");
 
     std::optional<KScopedSchedulerLock> hle_reply_lock;
     if (is_hle) hle_reply_lock.emplace(m_kernel);
@@ -1365,14 +1373,28 @@ Result KServerSession::SendReply(uintptr_t server_message, uintptr_t server_buff
             if (request->IsClientWaitCurrent()) {
                 request->MarkCompleted();
                 client_thread->EndWait(client_result);
+                request->DebugPhase("client_wait_ended");
             }
         }
     }
 
+    request->DebugFinish(client_result.raw,"reply_transaction_finished");
     R_RETURN(result);
 }
 
 Result KServerSession::OnRequest(KSessionRequest* request) {
+    if(Core::GuestDebugTrace::Enabled()) {
+        Core::GuestDebugTrace::Event e;e.kind="ipc_transport";e.phase="enqueue_scheduler_lock_wait";
+        e.guest_tid=request->GetThread()->GetThreadId();
+        e.objects[0]=reinterpret_cast<uint64_t>(request);e.object_types[0]="KSessionRequest";
+        e.objects[1]=reinterpret_cast<uint64_t>(this);e.object_types[1]="KServerSession";
+        e.objects[2]=request->GetAddress();e.object_types[2]="explicit_message_address_zero_means_tls";e.object_count=3;
+        auto* p=request->GetThread()->GetOwnerKProcess();
+        const auto address=request->GetAddress()?request->GetAddress():request->GetThread()->GetTlsAddress().GetValue();
+        if(p && p->GetMemory().IsValidVirtualAddressRange(address,sizeof(e.words)))
+            p->GetCoreMemory().ReadBlock(address,e.words.data(),sizeof(e.words));
+        request->SetDebugToken(Core::GuestDebugTrace::Begin(std::move(e)));
+    }
     // Create the wait queue.
     ThreadQueueImplForKServerSessionRequest wait_queue{m_kernel};
 
@@ -1392,6 +1414,7 @@ Result KServerSession::OnRequest(KSessionRequest* request) {
         // Add the request to the list.
         request->Open();
         m_request_list.push_back(*request);
+        request->DebugPhase("queued_before_notification");
 
         // If we were empty, signal.
         if (was_empty) {
@@ -1405,6 +1428,7 @@ Result KServerSession::OnRequest(KSessionRequest* request) {
         GetCurrentThread(m_kernel).SetWaitReasonForDebugging(ThreadWaitReasonForDebugging::IPC);
         GetCurrentThread(m_kernel).BeginWait(std::addressof(wait_queue));
         request->CaptureClientWait();
+        request->DebugPhase("client_wait_queued");
     }
 
     return GetCurrentThread(m_kernel).GetWaitResult();

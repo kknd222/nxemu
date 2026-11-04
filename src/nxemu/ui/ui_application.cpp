@@ -300,6 +300,20 @@ int RunUiApplication(int argc, char ** argv)
         else if (argument == "--nxshader-timing") environment = "NXEMU_NXSHADER_TIMING";
         else if (argument == "--nxshader-timing-file") environment = "NXEMU_NXSHADER_TIMING_FILE";
         else if (argument == "--nxshader-runtime-report") environment = "NXEMU_NXSHADER_RUNTIME_REPORT";
+        else if (argument == "--debug-detail") environment = "NXEMU_DEBUG_DETAIL";
+        else if (argument == "--handle-trace") environment = "NXEMU_HANDLE_TRACE";
+        else if (argument == "--shader-rejection-trace") environment = "NXEMU_SHADER_REJECTION_TRACE";
+        else if (argument == "--shader-fixtures") environment = "NXEMU_NATIVE_SHADER_FIXTURES";
+        else if (argument == "--frame-capture") environment = "NXEMU_FRAME_CAPTURE";
+        else if (argument == "--paired-pixels") environment = "NXEMU_PAIRED_PIXELS";
+        else if (argument == "--image-writers") environment = "NXEMU_IMAGE_WRITERS";
+        else if (argument == "--native-draw-inputs") environment = "NXEMU_NATIVE_DRAW_INPUTS";
+        else if (argument == "--native-compute-inputs") environment = "NXEMU_NATIVE_COMPUTE_INPUTS";
+        else if (argument == "--native-compute-input-hash") environment = "NXEMU_NATIVE_COMPUTE_INPUT_HASH";
+        else if (argument == "--shader-progress") environment = "NXEMU_SHADER_PROGRESS";
+        else if (argument == "--ssa-fixtures") environment = "NXEMU_SSA_FIXTURES";
+        else if (argument == "--pipeline-fixtures") environment = "NXEMU_PIPELINE_FIXTURES";
+        else if (argument == "--pipeline-fixture-key") environment = "NXEMU_PIPELINE_FIXTURE_KEY";
         if (environment)
         {
             if (++i >= argc)
@@ -308,12 +322,22 @@ int RunUiApplication(int argc, char ** argv)
                 SetNotification(nullptr);
                 return 1;
             }
-            if ((argument == "--native-sparse-readback" || argument == "--native-dirty-readback" || argument == "--buffer-readback-segments") &&
+            if ((argument == "--native-sparse-readback" || argument == "--native-dirty-readback" || argument == "--buffer-readback-segments" ||
+                 argument == "--debug-detail" || argument == "--handle-trace" ||
+                 argument == "--shader-rejection-trace" || argument == "--shader-fixtures" || argument == "--frame-capture" || argument == "--paired-pixels" || argument == "--image-writers" || argument == "--native-draw-inputs" ||
+                  argument == "--shader-progress" || argument == "--pipeline-fixtures" || argument == "--ssa-fixtures" || argument == "--native-compute-inputs") &&
                 std::string(argv[i]) != "0" && std::string(argv[i]) != "1") {
                 notification.DisplayError("Native readback option expects 0 or 1.", "NXEmu");
                 SetNotification(nullptr);
                 return 1;
             }
+              if(argument=="--pipeline-fixture-key" || argument=="--native-compute-input-hash") {
+                  const std::string key=argv[i];
+                  if(key.size()!=16 || key.find_first_not_of("0123456789abcdef")!=std::string::npos) {
+                      notification.DisplayError("Pipeline key expects 16 lowercase hex digits.","NXEmu");
+                      SetNotification(nullptr);return 1;
+                  }
+              }
 #ifdef _WIN32
             _putenv_s(environment, argv[i]);
 #else

@@ -45,6 +45,7 @@ VK_DEFINE_HANDLE(VmaAllocator)
 
 // Define all features which may be used by the implementation and require an extension here.
 #define FOR_EACH_VK_FEATURE_EXT(FEATURE)                                                           \
+    FEATURE(EXT, ConditionalRendering, CONDITIONAL_RENDERING, conditional_rendering)              \
     FEATURE(EXT, CustomBorderColor, CUSTOM_BORDER_COLOR, custom_border_color)                      \
     FEATURE(EXT, DepthBiasControl, DEPTH_BIAS_CONTROL, depth_bias_control)                         \
     FEATURE(EXT, DepthClipControl, DEPTH_CLIP_CONTROL, depth_clip_control)                         \
@@ -68,7 +69,6 @@ VK_DEFINE_HANDLE(VmaAllocator)
 
 // Define miscellaneous extensions which may be used by the implementation here.
 #define FOR_EACH_VK_EXTENSION(EXTENSION)                                                           \
-    EXTENSION(EXT, CONDITIONAL_RENDERING, conditional_rendering)                                   \
     EXTENSION(EXT, CONSERVATIVE_RASTERIZATION, conservative_rasterization)                         \
     EXTENSION(EXT, DEPTH_RANGE_UNRESTRICTED, depth_range_unrestricted)                             \
     EXTENSION(EXT, MEMORY_BUDGET, memory_budget)                                                   \
@@ -246,6 +246,9 @@ public:
     const vk::Device& GetLogical() const {
         return logical;
     }
+
+    /// Immutable CPU-only snapshot of the actual logical-device creation input.
+    const std::string& DebugCreationRecipe() const noexcept { return debug_creation_recipe; }
 
     /// Returns the physical device.
     vk::PhysicalDevice GetPhysical() const {
@@ -732,7 +735,7 @@ public:
     }
 
     bool IsExtConditionalRendering() const {
-        return extensions.conditional_rendering;
+        return extensions.conditional_rendering && features.conditional_rendering.conditionalRendering;
     }
 
     bool HasTimelineSemaphore() const;
@@ -963,6 +966,7 @@ private:
         VkPhysicalDeviceProperties properties{};
     };
 
+    std::string debug_creation_recipe;
     Extensions extensions{};
     Features features{};
     Properties properties{};

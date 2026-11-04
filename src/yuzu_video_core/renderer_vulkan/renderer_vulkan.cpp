@@ -23,6 +23,13 @@
 #include "video_settings.h"
 #include "yuzu_common/stb.h"
 #include "yuzu_video_core/capture.h"
+#include "yuzu_video_core/diagnostic_frame_capture.h"
+#include "yuzu_video_core/frame_capture_context.h"
+#include "yuzu_video_core/paired_pixel_capture.h"
+#include "yuzu_video_core/draw_admission_trace.h"
+#include "yuzu_video_core/native_draw_input_fixture.h"
+#include "yuzu_video_core/image_writer_trace.h"
+#include "yuzu_video_core/renderer_vulkan/source_pixel_probe.h"
 #include "yuzu_video_core/gpu.h"
 #include "yuzu_video_core/host_shaders/watermark_frag_spv.h"
 #include "yuzu_video_core/host_shaders/watermark_vert_spv.h"
@@ -215,6 +222,11 @@ catch (const vk::Exception & exception)
 
 RendererVulkan::~RendererVulkan()
 {
+    if (VideoCommon::DiagnosticFrameCapture::Enabled()) {
+        VideoCommon::DiagnosticFrameCapture::CancelQueued(
+            VideoCommon::DiagnosticFrameCapture::Root(),VideoCommon::DiagnosticFrameCapture::RunId(),
+            VideoCommon::DiagnosticFrameCapture::Generation());
+    }
     scheduler.RegisterOnSubmit([] {});
     rasterizer.WaitForShaderBuilds();
     scheduler.Finish();
@@ -262,8 +274,149 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
 
     RenderAppletCaptureLayer(framebuffers);
 
+    std::unique_ptr<VideoCommon::FrameCaptureContext::Scope> frame_context;
+    namespace P = VideoCommon::PairedPixelCapture;
+    std::optional<VideoCommon::DiagnosticFrameCapture::Ticket> paired_ticket;
+    vk::Buffer paired_offscreen, paired_target_buffer;
+    uint64_t paired_offscreen_ns{}, paired_started_ns{}, paired_readback_ns{};
+    std::unique_ptr<SourcePixelProbe::Scope> source_probe;
+    P::Image paired_target;
+    bool paired_target_queued{}, paired_gpu_finished{}, paired_gpu_drained{};
+    SCOPE_EXIT {
+        if (paired_ticket) {
+            // Never release a queued download allocation on an exception/early return before
+            // the renderer's existing completion mechanism has waited for its commands.
+            try {
+                if (!paired_gpu_drained && (paired_target_queued ||
+                    (source_probe && source_probe->data.queued))) {
+                    try {
+                        scheduler.Finish();paired_gpu_drained=true;
+                        paired_gpu_finished=!device.IsLost();
+                    } catch(...) {
+                        // A failed wait is not a completion proof. Retain at most this one
+                        // request's allocations and disable future paired allocation.
+                        paired_readback_disabled=true;
+                        if(source_probe && source_probe->data.queued){
+                            paired_failed_buffers[0]=std::move(source_probe->data.buffer);
+                            source_probe->data.queued=false;
+                            source_probe->data.reason="finish_failed_buffer_retained";
+                        }
+                        if(paired_target_queued){
+                            paired_failed_buffers[1]=std::move(paired_target_buffer);
+                            paired_target_queued=false;
+                            paired_target.reason="finish_failed_buffer_retained";
+                        }
+                    }
+                }
+                P::Image source;
+                if (source_probe) {
+                    auto& d=source_probe->data;
+                    source.width=d.width;source.height=d.height;source.format=d.format;
+                    source.mip=d.mip;source.layer=d.layer;source.samples=d.samples;
+                    source.image=VideoCommon::FrameCaptureContext::Handle(d.source_image);
+                    source.view=VideoCommon::FrameCaptureContext::Handle(d.source_view);
+                    source.swizzle_known=d.swizzle_known;source.identity_swizzle=d.identity_swizzle;
+                    source.swizzle=d.swizzle;
+                    source.reason=d.reason;
+                    if(device.IsLost())source.reason="device_lost_not_pixel_evidence";
+                    if (d.queued && paired_gpu_finished) {
+                        d.buffer.Invalidate();source.pixels=d.buffer.Mapped();source.gpu_completed=true;
+                    }
+                }
+                if (paired_target_queued && paired_gpu_finished) {
+                    paired_target_buffer.Invalidate();
+                    paired_target.pixels=paired_target_buffer.Mapped();paired_target.gpu_completed=true;
+                }
+                if(device.IsLost())paired_target.reason="device_lost_not_pixel_evidence";
+                if(VideoCommon::ImageWriters::Enabled()){
+                    try {
+                    namespace W=VideoCommon::ImageWriters;
+                    const auto writer_snapshot=W::Read(source.image);
+                    const auto snapshot=W::Serialize(writer_snapshot);
+                    std::string admissions;
+                    try {
+                        admissions=VideoCommon::DrawAdmission::Serialize(
+                            VideoCommon::DrawAdmission::Read(writer_snapshot));
+                    } catch(...) {
+                        VideoCommon::DrawAdmission::Snapshot failed;
+                        failed.selected=source.image;
+                        failed.reason="admission_serialization_failed";
+                        admissions=VideoCommon::DrawAdmission::Serialize(failed);
+                    }
+                    using namespace VideoCommon::DiagnosticFrameCapture;
+                    std::ostringstream writer;
+                    writer<<"{\"schema\":1,\"request_id\":"<<Quote(paired_ticket->request.id)
+                     <<",\"run_id\":"<<Quote(paired_ticket->request.run_id)
+                     <<",\"generation\":"<<Quote(paired_ticket->request.generation)
+                     <<",\"composite_ordinal\":"<<composite_ordinal<<",\"snapshot_epoch_ms\":"<<EpochMs()
+                     <<",\"gpu_finish_boundary\":"<<(paired_gpu_finished&&!device.IsLost()?"true":"false")
+                     <<",\"registry\":"<<snapshot
+                     <<",\"admissions\":"<<admissions
+                     <<",\"native_draw_input_diagnostics\":"
+                     <<(VideoCommon::NativeDrawInputs::Enabled()?VideoCommon::NativeDrawInputs::CountersJson():"null")
+                     <<",\"coverage\":\"original/scaled birth; direct draw; native full-color clear; ordinary upload/copy/blit-scale; PrepareDraw admission guest-owner birth candidates\""
+                     <<",\"missing\":[\"VTG/indirect/DrawTexture\",\"masked/helper clear\",\"storage-image compute/reinterpret/MSAA\"]}";
+                    const auto text=writer.str();
+                    if(text.size()<=W::MaxBytes)AtomicText(paired_ticket->root/("frame-capture-"+paired_ticket->request.id+".writers.json"),text);
+                    } catch(...) { /* Optional writer history must not discard paired pixels. */ }
+                }
+                P::Publish(*paired_ticket,composite_ordinal,source,paired_target,paired_readback_ns);
+            } catch(const std::exception& error) {
+                LOG_WARNING(Render_Vulkan,"Paired pixel capture publication failed: {}",error.what());
+            } catch(...) { LOG_WARNING(Render_Vulkan,"Paired pixel capture publication failed"); }
+            // Opt-in pair metadata is published before the existing completion marker. The
+            // legacy (pair disabled) branch below retains its original completion timing.
+            try {
+                if(device.IsLost())VideoCommon::DiagnosticFrameCapture::Failure(*paired_ticket,"device_lost_not_pixel_evidence");
+                else VideoCommon::DiagnosticFrameCapture::Complete(*paired_ticket,paired_offscreen.Mapped(),paired_offscreen_ns);
+            }
+            catch(...) {
+                try { VideoCommon::DiagnosticFrameCapture::Failure(*paired_ticket,"deferred capture publication exception"); }
+                catch(...) { /* Capture IO must not terminate renderer scope exit. */ }
+            }
+        }
+    };
+    // Explicit offscreen diagnostic capture precedes visibility checks. It does not depend on
+    // the OS window being restored, and owns the download buffer until GPU Finish completes.
+    if (VideoCommon::DiagnosticFrameCapture::Enabled()) {
+        using namespace VideoCommon::DiagnosticFrameCapture;
+        if (auto ticket=Poll(Root(),RunId(),Generation(),render_window.IsShown())) {
+            try {
+                namespace C = VideoCommon::FrameCaptureContext;
+                frame_context=std::make_unique<C::Scope>(ticket->root,ticket->request.id,ticket->request.run_id,ticket->request.generation,composite_ordinal,ticket->window_is_shown);
+                std::array<C::Input,C::MaxLayers> inputs{};
+                const auto count=std::min(framebuffers.size(),C::MaxLayers);
+                for(size_t n=0;n<count;++n){const auto& f=framebuffers[n];inputs[n]={f.address,f.offset,f.width,f.height,f.stride,static_cast<uint32_t>(f.pixel_format),static_cast<uint32_t>(f.transform_flags),static_cast<uint32_t>(f.blending),f.block_height_log2,{f.crop_rect.left,f.crop_rect.top,f.crop_rect.right,f.crop_rect.bottom},f.native_tiling};}
+                frame_context->Inputs(std::span(inputs.data(),count));frame_context->data->input_total=framebuffers.size();
+            } catch(...) { /* Optional context cannot reject a render or capture request. */ }
+            try {
+                const Layout::FramebufferLayout layout{
+                    .width=Width,.height=Height,.screen={0,0,Width,Height},.is_srgb=false};
+                const auto started=SteadyNs();
+                auto buffer=RenderToBuffer(framebuffers,layout,VK_FORMAT_B8G8R8A8_UNORM,
+                    VkDeviceSize{Width}*Height*4);
+                if(device.IsLost())throw std::runtime_error("device_lost_not_pixel_evidence");
+                if (Common::DebugDocument::Environment("NXEMU_PAIRED_PIXELS")=="1" && !paired_readback_disabled) {
+                    paired_offscreen=std::move(buffer);paired_offscreen_ns=SteadyNs()-started;
+                    paired_ticket=*ticket;
+                } else {
+                    if(paired_readback_disabled && Common::DebugDocument::Environment("NXEMU_PAIRED_PIXELS")=="1"){
+                        P::Image missing;missing.reason="paired_capture_disabled_after_failed_wait";
+                        try { P::Publish(*ticket,composite_ordinal,missing,missing,0); } catch(...) {}
+                    }
+                    Complete(*ticket,buffer.Mapped(),SteadyNs()-started);
+                }
+            } catch (const std::exception& error) {
+                Failure(*ticket,error.what());
+                LOG_WARNING(Render_Vulkan,"Diagnostic frame capture failed: {}",error.what());
+            }
+        }
+    }
+
+    VideoCommon::FrameCaptureContext::SetRole(VideoCommon::FrameCaptureContext::Role::Other);
     if (!render_window.IsShown())
     {
+        VideoCommon::FrameCaptureContext::Path("hidden_return",false);
         NxemuVideoDiag("RendererVulkan.CompositeSkip",
                                                       "render_window_hidden");
         return;
@@ -288,8 +441,10 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
         }
     }
 #endif
-    if (HoldIncompleteFrame())
+    const bool hold_incomplete = HoldIncompleteFrame();
+    if (hold_incomplete)
     {
+        VideoCommon::FrameCaptureContext::Path("held_incomplete_return",true,true,true);
         scheduler.Flush();
         gpu.RendererFrameEndNotify();
         rasterizer.TickFrame();
@@ -297,12 +452,57 @@ void RendererVulkan::Composite(std::span<const Tegra::FramebufferConfig> framebu
     }
     presented_once = true;
     Frame * frame = present_manager.GetRenderFrame();
+    VideoCommon::FrameCaptureContext::Path("swapchain_draw_entered",true,true,false);
+    VideoCommon::FrameCaptureContext::SetRole(VideoCommon::FrameCaptureContext::Role::Swapchain);
+    if (paired_ticket) {
+        paired_started_ns=VideoCommon::DiagnosticFrameCapture::SteadyNs();
+        try { source_probe=std::make_unique<SourcePixelProbe::Scope>(true); }
+        catch(...) { /* Optional probe allocation must not reject actual drawing. */ }
+    }
     blit_swapchain.DrawToFrame(rasterizer, frame, framebuffers,
                                render_window.GetFramebufferLayout(), swapchain.GetImageCount(),
                                swapchain.GetImageViewFormat());
+    VideoCommon::FrameCaptureContext::Target(VideoCommon::FrameCaptureContext::Handle(*frame->image),VideoCommon::FrameCaptureContext::Handle(*frame->image_view));
+    if (paired_ticket) {
+        try {
+            paired_target.width=frame->width;paired_target.height=frame->height;
+            paired_target.format=swapchain.GetImageViewFormat();
+            paired_target.image=VideoCommon::FrameCaptureContext::Handle(*frame->image);
+            paired_target.view=VideoCommon::FrameCaptureContext::Handle(*frame->image_view);
+            paired_target.swizzle_known=true;paired_target.identity_swizzle=true;
+            const auto bytes=P::Bytes(frame->width,frame->height);
+            if (!bytes || !P::Supported(paired_target.format)) {
+                paired_target.reason="unsupported target format or byte budget";
+            } else {
+                paired_target_buffer=CreateWrappedBuffer(memory_allocator,bytes,MemoryUsage::Download);
+                const VkImage image=*frame->image;const VkBuffer buffer=*paired_target_buffer;
+                const VkExtent3D extent{frame->width,frame->height,1};
+                scheduler.RequestOutsideRenderPassOperationContext();
+                scheduler.Record([image,buffer,extent](vk::CommandBuffer cmdbuf) {
+                    DownloadColorImage(cmdbuf,image,buffer,extent);
+                    const VkMemoryBarrier host{
+                        .sType=VK_STRUCTURE_TYPE_MEMORY_BARRIER,.pNext=nullptr,
+                        .srcAccessMask=VK_ACCESS_TRANSFER_WRITE_BIT,.dstAccessMask=VK_ACCESS_HOST_READ_BIT};
+                    cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,VK_PIPELINE_STAGE_HOST_BIT,0,host);
+                });
+                paired_target_queued=true;paired_target.reason.clear();
+            }
+            if (paired_target_queued || (source_probe && source_probe->data.queued)) {
+                scheduler.Finish();paired_gpu_drained=true;paired_gpu_finished=!device.IsLost();
+            }
+            paired_readback_ns=VideoCommon::DiagnosticFrameCapture::SteadyNs()-paired_started_ns;
+        } catch(const std::exception& error) {
+            paired_target.reason="paired readback exception";
+            LOG_WARNING(Render_Vulkan,"Paired pixel readback failed: {}",error.what());
+        } catch(...) { paired_target.reason="paired readback exception"; }
+        // Stop request-local source interception before the next draw or callback.
+        // Scope/allocation itself remains alive through publication at function exit.
+        SourcePixelProbe::current=nullptr;
+    }
     // Do not overlay the NXEmu logo on running game frames.
     scheduler.Flush(*frame->render_ready);
     present_manager.Present(frame);
+    VideoCommon::FrameCaptureContext::Path("present_enqueued_not_present_completion",true,true,false);
     g_android_present_count.fetch_add(1, std::memory_order_relaxed);
     if (NxemuShouldKeepVideoDiag(composite_ordinal)) {
         NxemuVideoDiag("RendererVulkan.Present",
@@ -849,3 +1049,21 @@ void RendererVulkan::RenderAppletCaptureLayer(std::span<const Tegra::Framebuffer
     blit_applet.DrawToFrame(rasterizer, &applet_frame, framebuffers, VideoCore::Capture::Layout, 3, CaptureFormat);
 }
 } // namespace Vulkan
+
+// Platform diagnostic IO stays at the owner translation-unit tail, never in a shared header.
+#include "yuzu_common/debug_document.h"
+namespace VideoCommon::DiagnosticFrameCapture {
+bool Enabled() {
+    static const bool enabled=[] {
+        const auto value=Common::DebugDocument::Environment("NXEMU_FRAME_CAPTURE");
+        return value.empty() ? Common::DebugDocument::Enabled() :
+               value == "1" && !Common::DebugDocument::Environment("NXEMU_NATIVE_SHADER_DIAG_DIR").empty();
+    }();
+    return enabled;
+}
+std::filesystem::path Root() {
+    return std::filesystem::u8path(Common::DebugDocument::Environment("NXEMU_NATIVE_SHADER_DIAG_DIR"));
+}
+std::string RunId() { return Common::DebugDocument::Environment("NXEMU_DEBUG_RUN_ID"); }
+std::string Generation() { return Common::DebugDocument::Environment("NXEMU_DEBUG_GENERATION"); }
+} // namespace VideoCommon::DiagnosticFrameCapture

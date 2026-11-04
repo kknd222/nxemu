@@ -5,6 +5,7 @@
 #include <memory>
 #include <numeric>
 #include <optional>
+#include <stdexcept>
 #include <utility>
 
 #include "yuzu_video_core/renderer_vulkan/vk_texture_cache.h"
@@ -544,21 +545,32 @@ ConditionalRenderingResolvePass::ConditionalRenderingResolvePass(
     const Device& device_, Scheduler& scheduler_, DescriptorPool& descriptor_pool_,
     ComputePassDescriptorQueue& compute_pass_descriptor_queue_)
     : ComputePass(device_, descriptor_pool_, INPUT_OUTPUT_DESCRIPTOR_SET_BINDINGS,
-                  INPUT_OUTPUT_DESCRIPTOR_UPDATE_TEMPLATE, INPUT_OUTPUT_BANK_INFO, nullptr,
+                  INPUT_OUTPUT_DESCRIPTOR_UPDATE_TEMPLATE, INPUT_OUTPUT_BANK_INFO,
+                  COMPUTE_PUSH_CONSTANT_RANGE<sizeof(u32) * 2>,
                   RESOLVE_CONDITIONAL_RENDER_COMP_SPV),
       scheduler{scheduler_}, compute_pass_descriptor_queue{compute_pass_descriptor_queue_} {}
 
 void ConditionalRenderingResolvePass::Resolve(VkBuffer dst_buffer, VkBuffer src_buffer,
                                               u32 src_offset, bool compare_to_zero) {
     const size_t compare_size = compare_to_zero ? 8 : 24;
+    // Storage descriptors have a device alignment independent of guest u32
+    // alignment. Bind an aligned prefix and select the first word in the shader.
+    if (src_offset % sizeof(u32) != 0) {
+        throw std::invalid_argument("Conditional comparison requires u32-aligned input");
+    }
+    const VkDeviceSize alignment = device.GetStorageBufferAlignment();
+    const VkDeviceSize aligned_offset = src_offset - src_offset % alignment;
+    const u32 prefix = static_cast<u32>(src_offset - aligned_offset);
+    const std::array<u32, 2> push_constants{
+        compare_to_zero ? 1U : 0U, prefix / static_cast<u32>(sizeof(u32))};
 
     compute_pass_descriptor_queue.Acquire(2);
-    compute_pass_descriptor_queue.AddBuffer(src_buffer, src_offset, compare_size);
+    compute_pass_descriptor_queue.AddBuffer(src_buffer, aligned_offset, prefix + compare_size);
     compute_pass_descriptor_queue.AddBuffer(dst_buffer, 0, sizeof(u32));
     const void* const descriptor_data{compute_pass_descriptor_queue.UpdateData()};
 
     scheduler.RequestOutsideRenderPassOperationContext();
-    scheduler.Record([this, descriptor_data](vk::CommandBuffer cmdbuf) {
+    scheduler.Record([this, descriptor_data, push_constants](vk::CommandBuffer cmdbuf) {
         static constexpr VkMemoryBarrier read_barrier{
             .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
             .pNext = nullptr,
@@ -578,6 +590,8 @@ void ConditionalRenderingResolvePass::Resolve(VkBuffer dst_buffer, VkBuffer src_
                                VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT, 0, read_barrier);
         cmdbuf.BindPipeline(VK_PIPELINE_BIND_POINT_COMPUTE, *pipeline);
         cmdbuf.BindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE, *layout, 0, set, {});
+        cmdbuf.PushConstants(*layout, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+                             sizeof(push_constants), push_constants.data());
         cmdbuf.Dispatch(1, 1, 1);
         cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
                                VK_PIPELINE_STAGE_CONDITIONAL_RENDERING_BIT_EXT, 0, write_barrier);

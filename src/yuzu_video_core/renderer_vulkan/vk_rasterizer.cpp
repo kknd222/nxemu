@@ -1,3 +1,4 @@
+#include "yuzu_video_core/native_draw_invocation.h"
 #include "yuzu_video_core/textures/decoders.h"
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
@@ -32,11 +33,14 @@
 #include "yuzu_video_core/renderer_vulkan/blit_image.h"
 #include "yuzu_video_core/renderer_vulkan/fixed_pipeline_state.h"
 #include "yuzu_video_core/renderer_vulkan/maxwell_to_vk.h"
+#include "yuzu_video_core/renderer_vulkan/source_pixel_probe.h"
+#include "yuzu_video_core/image_writer_trace.h"
 #include "yuzu_video_core/renderer_vulkan/vk_buffer_cache.h"
 #include "yuzu_video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "yuzu_video_core/renderer_vulkan/vk_descriptor_pool.h"
 #include "yuzu_video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "yuzu_video_core/renderer_vulkan/vk_query_cache.h"
+#include "yuzu_video_core/draw_admission_trace.h"
 #include "yuzu_video_core/renderer_vulkan/vk_rasterizer.h"
 #include "yuzu_video_core/renderer_vulkan/vk_scheduler.h"
 #include "yuzu_video_core/renderer_vulkan/vk_staging_buffer_pool.h"
@@ -307,9 +311,28 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
     query_cache.NotifySegment(true);
 
     ++frame_draws;
+    // Optional CPU admission evidence. Read raw guest RT state and existing birth registry
+    // only: do not resolve/create/update framebuffer attachments to observe a failed draw.
+    namespace A = VideoCommon::DrawAdmission;
+    A::Scoped admission;
+    if (A::Enabled()) {
+        const auto& regs = maxwell3d->regs;
+        for (u32 output = 0; output < std::min<u32>(regs.rt_control.count, 8); ++output) {
+            const u32 slot = regs.rt_control.Map(output);
+            if (slot >= 8) continue;
+            const auto& rt = regs.rt[slot];
+            if (!rt.Address() || rt.format == Tegra::RenderTargetFormat::NONE) continue;
+            u32 tile_mode{};
+            std::memcpy(&tile_mode, &rt.tile_mode, sizeof(tile_mode));
+            admission.BeginTarget({rt.Address(),slot,rt.width,rt.height,
+                static_cast<u32>(rt.format),rt.base_layer,rt.depth,rt.array_pitch,
+                tile_mode,regs.color_mask[regs.color_mask_common ? 0 : output].raw,output});
+        }
+    }
     GraphicsPipeline* pipeline{pipeline_cache.CurrentGraphicsPipeline()};
     if (!pipeline) {
         if (!pipeline_cache.SkippedUnfinished()) {
+            admission.Finish(A::Outcome::PipelineNull);
             return;
         }
         // Skipping a draw whose pipeline is still compiling only hides it until a later frame
@@ -323,13 +346,16 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         }
         if (drawn_before) {
             ++frame_skipped_draws;
+            admission.Finish(A::Outcome::AsyncSkipped);
             return;
         }
         pipeline = pipeline_cache.WaitForCurrentGraphicsPipeline();
         if (!pipeline) {
+            admission.Finish(A::Outcome::WaitFailed);
             return;
         }
     }
+    admission.Finish(A::Outcome::PipelineReady);
     std::scoped_lock lock{buffer_cache.mutex, texture_cache.mutex};
     // update engine as channel may be different.
     pipeline->SetEngine(maxwell3d, gpu_memory);
@@ -393,6 +419,8 @@ void RasterizerVulkan::DrawVtgAsCompute(const GraphicsPipeline* pipeline) {
 }
 
 void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
+    namespace DI=VideoCommon::NativeDrawInvocation;
+    const DI::Scope diagnostic_invocation{DI::Enabled()?DI::MakeDirect(maxwell3d->draw_manager->GetDrawState(),is_indexed,instance_count):DI::Snapshot{}};
     vtg_instance_count = instance_count;
     PrepareDraw(is_indexed, [this, is_indexed, instance_count](const GraphicsPipeline* pipeline) {
         if (pipeline->IsVtgAsCompute()) {
@@ -402,6 +430,32 @@ void RasterizerVulkan::Draw(bool is_indexed, u32 instance_count) {
         const auto& draw_state = maxwell3d->draw_manager->GetDrawState();
         const u32 num_instances{instance_count};
         const DrawParams draw_params{MakeDrawParams(draw_state, num_instances, is_indexed)};
+        if (VideoCommon::ImageWriters::Enabled()) {
+            // The disabled path keeps its original small command closure. Birth epochs and
+            // shader keys are fixed at enqueue, never looked up from a later current pipeline.
+            auto events = pipeline->DiagnosticDrawEvents();
+            for (auto& event : events) {
+                event.aux = {draw_params.num_vertices, draw_params.num_instances,
+                             static_cast<uint64_t>(draw_params.base_vertex), draw_params.base_instance};
+            }
+            scheduler.Record([pipeline, draw_params, events](vk::CommandBuffer cmdbuf) {
+                namespace W = VideoCommon::ImageWriters;
+                if (!pipeline->IsBuilt()) {
+                    for (auto event : events) { event.op = W::Op::DrawSkipped; W::Record(event); }
+                    return;
+                }
+                if (draw_params.is_indexed) {
+                    cmdbuf.DrawIndexed(draw_params.num_vertices, draw_params.num_instances,
+                                      draw_params.first_index, draw_params.base_vertex,
+                                      draw_params.base_instance);
+                } else {
+                    cmdbuf.Draw(draw_params.num_vertices, draw_params.num_instances,
+                               draw_params.base_vertex, draw_params.base_instance);
+                }
+                for (auto event : events) { event.op = W::Op::DrawRecorded; W::Record(event); }
+            });
+            return;
+        }
         scheduler.Record([pipeline, draw_params](vk::CommandBuffer cmdbuf) {
             if (!pipeline->IsBuilt()) {
                 return;
@@ -444,6 +498,8 @@ bool RasterizerVulkan::DrawIndirect() {
             vtg_indirect_instance_mask = params.instance_mask;
         }
     }
+    namespace DI=VideoCommon::NativeDrawInvocation;
+    const DI::Scope diagnostic_invocation{DI::Enabled()?DI::MakeIndirect(maxwell3d->draw_manager->GetDrawState(),params):DI::Snapshot{}};
     buffer_cache.SetDrawIndirect(&params);
     PrepareDraw(params.is_indexed, [this, &params](const GraphicsPipeline* pipeline) {
         if (pipeline->IsVtgAsCompute()) {
@@ -691,6 +747,31 @@ void RasterizerVulkan::Clear(u32 layer_count) {
         if (regs.clear_surface.R && regs.clear_surface.G && regs.clear_surface.B &&
             regs.clear_surface.A && !integer_shader_clear) {
             scheduler.RequestRenderpass(framebuffer, color_scratch_mask);
+            if (VideoCommon::ImageWriters::Enabled()) {
+                namespace W = VideoCommon::ImageWriters;
+                auto event = W::Stamp(W::Handle(framebuffer->DiagnosticColorImage(color_attachment, color_scratch_mask)),
+                                      W::Op::ClearRecorded);
+                event.clear_region_known = true;
+                event.clear_rect = {
+                    static_cast<uint64_t>(static_cast<int64_t>(clear_rect.rect.offset.x)),
+                    static_cast<uint64_t>(static_cast<int64_t>(clear_rect.rect.offset.y)),
+                    clear_rect.rect.extent.width, clear_rect.rect.extent.height};
+                event.clear_layers = {clear_rect.baseArrayLayer, clear_rect.layerCount};
+                for (size_t channel = 0; channel < event.aux.size(); ++channel) {
+                    uint32_t bits{};
+                    std::memcpy(&bits, &clear_value.color.float32[channel], sizeof(bits));
+                    event.aux[channel] = bits;
+                }
+                scheduler.Record([color_attachment, clear_value, clear_rect, event](vk::CommandBuffer cmdbuf) {
+                    const VkClearAttachment attachment{
+                        .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
+                        .colorAttachment = color_attachment,
+                        .clearValue = clear_value,
+                    };
+                    cmdbuf.ClearAttachments(attachment, clear_rect);
+                    W::Record(event);
+                });
+            } else {
             scheduler.Record([color_attachment, clear_value, clear_rect](vk::CommandBuffer cmdbuf) {
                 const VkClearAttachment attachment{
                     .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT,
@@ -699,6 +780,7 @@ void RasterizerVulkan::Clear(u32 layer_count) {
                 };
                 cmdbuf.ClearAttachments(attachment, clear_rect);
             });
+            }
         } else {
             u8 color_mask = static_cast<u8>(regs.clear_surface.R | regs.clear_surface.G << 1 |
                                             regs.clear_surface.B << 2 | regs.clear_surface.A << 3);
@@ -1331,6 +1413,32 @@ std::optional<FramebufferTextureInfo> RasterizerVulkan::AccelerateDisplay(
     info.height = image_view->size.height;
     info.scaled_width = scaled ? resolution.ScaleUp(info.width) : info.width;
     info.scaled_height = scaled ? resolution.ScaleUp(info.height) : info.height;
+    if (SourcePixelProbe::Active()) {
+        try {
+            const auto& range = image_view->range;
+            const bool dimension_supported =
+                (image_view->type == VideoCommon::ImageViewType::e2D ||
+                 image_view->type == VideoCommon::ImageViewType::e2DArray) &&
+                False(image_view->flags & VideoCommon::ImageViewFlagBits::Slice) &&
+                range.base.level >= 0 && range.base.layer >= 0 &&
+                !(scaled && range.base.level != 0);
+            const VkFormat view_format = MaxwellToVK::SurfaceFormat(
+                device, FormatType::Optimal, true, image_view->format).format;
+            const auto components = image_view->Color2DComponents();
+            SourcePixelProbe::Record(
+                scheduler, memory_allocator, info.image, info.image_view, view_format,
+                info.scaled_width, info.scaled_height, static_cast<uint32_t>(range.base.level),
+                static_cast<uint32_t>(range.base.layer), image_view->Samples(),
+                image_view->HasIdentitySwizzle(), dimension_supported, range.extent.levels == 1,
+                {static_cast<uint32_t>(components.r), static_cast<uint32_t>(components.g),
+                 static_cast<uint32_t>(components.b), static_cast<uint32_t>(components.a)},
+                image_view->Color2DComponentsKnown());
+        } catch (const std::exception&) {
+            SourcePixelProbe::Failed("std::exception in source probe");
+        } catch (...) {
+            SourcePixelProbe::Failed("unknown source probe exception");
+        }
+    }
     return info;
 }
 

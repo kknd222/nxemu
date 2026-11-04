@@ -2,6 +2,10 @@
 # SPDX-License-Identifier: GPL-2.0-or-later
 
 add_library(shader_recompiler STATIC
+    ssa_fixture.cpp
+    ssa_fixture.h
+    ssa_fixture_capture.cpp
+    ssa_fixture_capture.h
     backend/bindings.h
     backend/glasm/emit_glasm.cpp
     backend/glasm/emit_glasm.h

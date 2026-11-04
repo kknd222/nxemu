@@ -17,6 +17,8 @@
 #include "core/hle/service/ro/ro_nro_utils.h"
 #include "core/hle/service/ro/ro_results.h"
 #include "core/hle/service/ro/ro_types.h"
+#include "core/hle/service/ro/nrr_metadata.h"
+#include "yuzu_common/debug_document.h"
 #include "core/hle/service/server_manager.h"
 
 namespace Service::RO {
@@ -379,8 +381,30 @@ public:
         R_UNLESS(process != nullptr, RO::ResultInvalidProcess);
 
         // Read NRR.
-        NrrHeader header{};
-        process->GetCoreMemory().ReadBlock(nrr_address, std::addressof(header), sizeof(header));
+        std::array<u8,0x4d0> header_bytes{};
+        R_UNLESS(nrr_size>=header_bytes.size() &&
+                 process->GetMemory().IsValidVirtualAddressRange(nrr_address,nrr_size),
+                 RO::ResultInvalidNrr);
+        R_UNLESS(process->GetCoreMemory().ReadBlock(nrr_address,header_bytes.data(),header_bytes.size()),
+                 RO::ResultInvalidNrr);
+        NrrMetadata metadata{};
+        const bool valid=ParseNrrMetadata(header_bytes,nrr_size,metadata);
+        if (Common::DebugDocument::Enabled()) {
+            Common::DebugDocument::Publish("ro-nrr",
+                fmt::format("{{\"address\":{},\"supplied_size\":{},\"layout_tag\":{},"
+                            "\"header_size\":{},\"program_id\":{},\"hashes_offset\":{},"
+                            "\"num_hashes\":{},\"valid\":{}}}",
+                            nrr_address,nrr_size,metadata.layout_tag,metadata.header_size,
+                            metadata.program_id,metadata.hashes_offset,metadata.num_hashes,
+                            valid?"true":"false"),false);
+        }
+        R_UNLESS(valid,RO::ResultInvalidNrr);
+        R_UNLESS(!enforce_nrr_kind || metadata.kind==static_cast<u8>(nrr_kind),
+                 RO::ResultInvalidNrrKind);
+        // Validate and acquire the complete hash list before committing the slot.
+        std::vector<Sha256Hash> hashes(metadata.num_hashes);
+        R_UNLESS(process->GetCoreMemory().ReadBlock(nrr_address+metadata.hashes_offset,
+                 hashes.data(),sizeof(Sha256Hash)*metadata.num_hashes),RO::ResultInvalidNrr);
 
         // Set NRR info.
         context->SetNrrInfoInUse(nrr_info, true);
@@ -388,10 +412,7 @@ public:
         nrr_info->nrr_heap_size = nrr_size;
 
         // Read NRR hash list.
-        nrr_info->hashes.resize(header.GetNumHashes());
-        process->GetCoreMemory().ReadBlock(nrr_address + header.GetHashesOffset(),
-                                       nrr_info->hashes.data(),
-                                       sizeof(Sha256Hash) * header.GetNumHashes());
+        nrr_info->hashes=std::move(hashes);
 
         R_SUCCEED();
     }

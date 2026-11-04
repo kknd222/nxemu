@@ -2,12 +2,13 @@
 #include <cstdint>
 
 namespace Kernel::Svc {
-// NXEmu has four host core schedulers. Switch2 applications can request six
-// virtual cores: map 4/5 to 0/1, leaving invalid IDs and negative sentinels alone.
+// Six independent guest core schedulers preserve NS2 IDs/affinity0..5.
+// Do not fold non-preemptible workers onto another guest core. Invalid IDs,
+// negative sentinels and unsupported mask bits remain for caller validation.
 constexpr std::int32_t FoldNx2CoreId(std::int32_t core) {
-    return core >= 4 && core < 6 ? core - 4 : core;
+    return core;
 }
 constexpr std::uint64_t FoldNx2CoreMask(std::uint64_t mask) {
-    return (mask & 0xFULL) | ((mask >> 4) & 0x3ULL) | (mask & ~0x3FULL);
+    return mask;
 }
 }

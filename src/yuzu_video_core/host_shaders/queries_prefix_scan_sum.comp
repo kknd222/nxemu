@@ -106,7 +106,17 @@ void WriteResults(uvec2 results[LOCAL_RESULTS]) {
     groupMemoryBarrier();
 
     if (current_id == base_id) {
+        // A reset at the first slot has no preceding prefix to subtract.
+        if (max_accumulation_base == 0) {
+            accumulated_data = results[index];
+            return;
+        }
         uvec2 reset_value = output_data[max_accumulation_base - 1];
+        // The prefix before the reset can include the previous epoch's carry,
+        // whereas results after the reset do not. Subtract the raw prefix only.
+        if (max_accumulation_base - 1 < min_accumulation_base) {
+            reset_value = AddUint64(reset_value, AddUint64(uvec2(1, 0), ~accum));
+        }
         // Calculate two complement / negate manually
         reset_value = AddUint64(uvec2(1,0), ~reset_value);
         accumulated_data = AddUint64(results[index], reset_value);

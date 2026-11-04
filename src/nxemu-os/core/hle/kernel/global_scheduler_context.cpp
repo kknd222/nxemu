@@ -14,6 +14,8 @@
 #include "core/hle/kernel/k_scheduler.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/physical_core.h"
+#include "core/hle/kernel/k_process.h"
+#include "core/guest_thread_trace.h"
 
 
 namespace Kernel {
@@ -69,18 +71,40 @@ void GlobalSchedulerContext::RemoveThread(KThread* thread) {
 
 void GlobalSchedulerContext::PreemptThreads() {
     // The priority levels at which the global scheduler preempts threads every 10 ms. They are
-    // ordered from Core 0 to Core 3.
+    // ordered from Core 0 to Core 5; core3 is the shared system core.
     static constexpr std::array<u32, Hardware::NUM_CPU_CORES> preemption_priorities{
         59,
         59,
         59,
         63,
+        59,
+        59,
     };
 
     ASSERT(KScheduler::IsSchedulerLockedByCurrentThread(m_kernel));
     for (u32 core_id = 0; core_id < Hardware::NUM_CPU_CORES; core_id++) {
         const u32 priority = preemption_priorities[core_id];
         KScheduler::RotateScheduledQueue(m_kernel, core_id, priority);
+    }
+    static uint64_t last_snapshot_ms{};
+    if(Core::GuestThreadTrace::Due(last_snapshot_ms)) {
+        const auto start=std::chrono::steady_clock::now();
+        std::unique_lock list_lock(m_global_list_guard,std::try_to_lock);
+        if(list_lock.owns_lock()) {
+            std::array<Core::GuestThreadTrace::State,128> rows{};size_t count{};uint64_t omitted{};
+            for(int pass=0;pass<2;++pass)for(const auto* t:m_thread_list) {
+                const auto* p=t->GetOwnerKProcess();if((p!=nullptr)!=(pass==0))continue;
+                if(count==rows.size()){++omitted;continue;}
+                auto& row=rows[count++];row.tid=t->GetThreadId();row.pid=p?p->GetProcessId():0;
+                row.state=static_cast<int32_t>(t->GetState());row.raw_state=static_cast<int32_t>(t->GetRawState());
+                row.priority=t->GetPriority();row.base_priority=t->GetBasePriority();row.current_core=t->GetCurrentCore();
+                row.wait_reason=static_cast<int32_t>(t->GetWaitReasonForDebugging());row.type=static_cast<int32_t>(t->GetThreadType());
+                const auto* owner=t->GetLockOwner();row.owner_tid=owner?owner->GetThreadId():0;row.wait_generation=t->GetWaitGeneration();
+                row.guest_core_count=p?p->GetGuestCoreCount():0;row.active_core=t->GetActiveCore();
+                row.physical_affinity_mask=t->GetAffinityMask().GetAffinityMask();row.last_scheduled_tick=t->GetLastScheduledTick();
+            }
+            Core::GuestThreadTrace::States(rows,count,omitted,std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-start).count());
+        }
     }
 }
 

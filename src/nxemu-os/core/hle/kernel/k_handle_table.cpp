@@ -48,8 +48,10 @@ bool KHandleTable::Remove(Handle handle) {
             const auto index = handle_pack.index;
 
             obj = m_objects[index];
+            this->TraceHandle("remove", handle, obj, "", "valid-before-free");
             this->FreeEntry(index);
         } else {
+            if (HandleDebugTrace::Enabled()) this->GetObjectImpl(handle); // Existing lock; no reference acquired.
             return false;
         }
     }
@@ -65,7 +67,10 @@ Result KHandleTable::Add(Handle* out_handle, KAutoObject* obj) {
     KScopedSpinLock lk(m_lock);
 
     // Never exceed our capacity.
-    R_UNLESS(m_count < m_table_size, ResultOutOfHandles);
+    if (m_count >= m_table_size) {
+        this->TraceHandle("add", 0, obj, "", "table-capacity", ResultOutOfHandles.GetInnerValue());
+        R_THROW(ResultOutOfHandles);
+    }
 
     // Allocate entry, set output handle.
     {
@@ -78,6 +83,7 @@ Result KHandleTable::Add(Handle* out_handle, KAutoObject* obj) {
         obj->Open();
 
         *out_handle = EncodeHandle(static_cast<u16>(index), linear_id);
+        this->TraceHandle("add", *out_handle, obj, "", "object-opened");
     }
 
     R_SUCCEED();
@@ -104,9 +110,13 @@ Result KHandleTable::Reserve(Handle* out_handle) {
     KScopedSpinLock lk(m_lock);
 
     // Never exceed our capacity.
-    R_UNLESS(m_count < m_table_size, ResultOutOfHandles);
+    if (m_count >= m_table_size) {
+        this->TraceHandle("reserve", 0, nullptr, "", "table-capacity", ResultOutOfHandles.GetInnerValue());
+        R_THROW(ResultOutOfHandles);
+    }
 
     *out_handle = EncodeHandle(static_cast<u16>(this->AllocateEntry()), this->AllocateLinearId());
+    this->TraceHandle("reserve", *out_handle, nullptr, "", "reserved-generation-in-handle-only");
     R_SUCCEED();
 }
 
@@ -125,6 +135,7 @@ void KHandleTable::Unreserve(Handle handle) {
     if (index < m_table_size) [[likely]] {
         // NOTE: This code does not check the linear id.
         ASSERT(m_objects[index] == nullptr);
+        this->TraceHandle("unreserve", handle, nullptr, "", "no-generation-check-original-semantics");
         this->FreeEntry(index);
     }
 }
@@ -149,6 +160,7 @@ void KHandleTable::Register(Handle handle, KAutoObject* obj) {
         m_objects[index] = obj;
 
         obj->Open();
+        this->TraceHandle("register", handle, obj, "", "object-opened");
     }
 }
 

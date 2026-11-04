@@ -279,6 +279,15 @@ public:
         return identity_swizzle;
     }
 
+    /// Components of the actually created sampled Color2D view, not an inferred mapping.
+    [[nodiscard]] VkComponentMapping Color2DComponents() const noexcept {
+        return color2d_components;
+    }
+
+    [[nodiscard]] bool Color2DComponentsKnown() const noexcept {
+        return color2d_components_known;
+    }
+
     [[nodiscard]] VkImageView RenderTarget() const noexcept {
         return render_target;
     }
@@ -308,6 +317,8 @@ private:
     const Device* device = nullptr;
     const SlotVector<Image>* slot_images = nullptr;
     bool identity_swizzle = false;
+    VkComponentMapping color2d_components{};
+    bool color2d_components_known = false;
 
     std::array<vk::ImageView, Shader::NUM_TEXTURE_TYPES> image_views;
     std::unique_ptr<StorageViews> storage_views;
@@ -409,6 +420,11 @@ public:
     [[nodiscard]] std::array<VkImage, 9> Images(u32 color_scratch_mask = 0) const noexcept;
     [[nodiscard]] std::array<VkImageSubresourceRange, 9> ImageRanges(
         u32 color_scratch_mask = 0) const noexcept;
+    // Read-only compressed attachment mapping; never create a view/framebuffer for diagnosis.
+    [[nodiscard]] VkImage DiagnosticColorImage(size_t slot,u32 scratch_mask=0) const noexcept {
+        if(slot>=NUM_RT || render_pass_key.color_formats[slot]==PixelFormat::Invalid)return VK_NULL_HANDLE;
+        return Images(scratch_mask)[rt_map[slot]];
+    }
 
     [[nodiscard]] bool HasAspectColorBit(size_t index) const noexcept {
         return render_pass_key.color_formats.at(index) != PixelFormat::Invalid &&

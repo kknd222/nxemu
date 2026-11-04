@@ -24,11 +24,40 @@ def document(sdk, name, status=None):
         d=bounded_json(p);d['age_seconds']=max(0,time.time()-d['epoch_ms']/1000)
         d['session_matches']=d.get('run_id')==s['run_id'] and str(d.get('module_generation',''))==str(s.get('module_generation',''))
         d['fresh']=bool(s['fresh'] and s.get('video_snapshot_available') and d['session_matches'] and d['age_seconds']<(12 if name.startswith('stall-') else 3))
-        d['available']=True;return d
+        d['available']=True
+        if d.get('category') == 'pipeline-capture':
+            d['coverage_scope'] = 'compute Capture hook and recipe publication only; not graphics/cache hits/pre-Capture failures'
+            d['counter_scope'] = 'video_module_load_not_current_generation'
+            d['counts_are_not_live_task_or_gpu_success'] = True
+        if d.get('category') == 'shader-progress':
+            payload = d.get('data', {})
+            sampled = payload.get('sampled_ns')
+            for row in payload.get('active', []):
+                if isinstance(row, dict) and isinstance(row.get('age_ms'), (int, float)):
+                    row['observed_stage_age_seconds_now'] = max(0, row['age_ms'] / 1000 + d['age_seconds'])
+                    row['continued_execution_not_verified_after_snapshot'] = True
+            for row in list(payload.get('history', []))+list(payload.get('pending_terminal', [])):
+                if isinstance(row, dict) and isinstance(sampled, (int, float)) and isinstance(row.get('ended_ns'), (int, float)):
+                    row['terminal_event_age_seconds_now'] = max(0, (sampled - row['ended_ns']) / 1e9 + d['age_seconds'])
+            d['coverage_scope'] = 'compute pipeline compilation hooks only; not graphics/native lower/cache hits/all shaders'
+            d['empty_active_is_not_global_idle_proof'] = True
+        if d.get('category') in ['loader-resources','system-resources','sm-resolution','shader-rejections']:
+            d['event_history_only']=True; d['event_freshness_requires_row_age']=True
+            for event in d.get('data',{}).get('events',[]):
+                if 'event_epoch_ms' in event:
+                    event['event_age_seconds_now']=max(0,time.time()-event['event_epoch_ms']/1000)
+            if d.get('category') == 'shader-rejections':
+                payload = d.get('data', {})
+                rows = list(payload.get('recent', []))
+                rows += [payload.get(k) for k in ('first_retained_lowering_rejection', 'first_retained_dispatch_exception')]
+                for row in rows:
+                    if isinstance(row, dict) and isinstance(row.get('age_ms'), (int, float)):
+                        row['event_age_seconds_now'] = max(0, row['age_ms'] / 1000 + d['age_seconds'])
+        return d
     except (OSError,ValueError,KeyError) as e:return {'available':False,'reason':str(e),'path':str(p)}
 
 def render_documents(sdk,status=None):
-    s=status or sdk.status();r={n:document(sdk,n+'.json',s) for n in ['texture-cache','display','present','native-readback','texture-header','physical-alias','device-backing','readback-transfers','buffer-transfers','software-keyboard','hid-npad-writes']}
+    s=status or sdk.status();r={n:document(sdk,n+'.json',s) for n in ['texture-cache','display','present','native-readback','texture-header','physical-alias','device-backing','readback-transfers','buffer-transfers','shader-rejections','shader-progress','pipeline-capture','software-keyboard','hid-npad-writes','guest-activity','guest-threads','handle-lifecycle','os-service-events','loader-resources','system-resources','sm-resolution']}
     root=sdk.root/'diagnostics'
     r['stalls']=[document(sdk,p.name,s) for p in sorted(itertools.islice(root.glob('stall-*.json'),32))] if root.exists() else []
     return r
@@ -144,6 +173,14 @@ def diagnosis(s,render,host=None):
     if present.get('fresh') and present['data'].get('configure_source_us',0)>50000:
         findings.append({'kind':'present_source_stall','evidence_us':present['data']['configure_source_us'],'severity':'high'})
     if s.get('shaders_building',0):findings.append({'kind':'shader_building','count':s['shaders_building'],'severity':'info'})
+    progress = render.get('shader-progress', {})
+    if progress.get('fresh'):
+        slow = [row for row in progress.get('data', {}).get('active', [])
+                if row.get('observed_stage_age_seconds_now', 0) >= 5]
+        if slow:
+            findings.append({'kind':'observed_compute_compile_stage_over_5s',
+                             'evidence':slow[:8], 'severity':'info',
+                             'note':'observed stage age, not proof of driver deadlock or root cause'})
     if s.get('unbound_methods',0):findings.append({'kind':'unbound_gpu_methods','count':s['unbound_methods'],'severity':'high'})
     if host:
         for gpu in host.get('gpu',{}).get('devices',[]):
@@ -158,9 +195,9 @@ def inspect(sdk,with_host=True):
     host=sdk.telemetry()['host'] if with_host else {}
     return {'schema':1,'status':s,'render':render,'inventory':runtime_inventory(sdk,s),'host':host,
             'diagnosis':diagnosis(s,render,host),'coverage':{
-                'direct':['frontend_state','ui_perf','title_id','game_path','shader_cache_progress','cache_candidates','present_paths','scheduler_stalls','loaded_module_hashes','host_threads','gpu_metrics'],
+                'direct':['frontend_state','ui_perf','title_id','game_path','shader_cache_progress','cache_candidates','present_paths','scheduler_stalls','loaded_module_hashes','host_threads','gpu_metrics','guest_thread_states_and_saved_contexts','own_core_boundary_register_samples','ipc_transport_history','sm_resolution_history','resource_open_resolution','software_keyboard_lifecycle','hid_shared_memory_writes'],
                 'on_demand':['noninvasive_host_stacks','bounded_frame_event_history','diagnostic_bundle'],
-                'not_exposed_yet':['full_guest_thread_registers','per_service_ipc_counters','per_audio_voice_state','per_draw_renderdoc_capture'],
+                'not_exposed_yet':['continuous_live_guest_registers_in_pure_jit_loops','complete_service_catalog_and_deferred_waiter_inventory','per_audio_voice_state','per_draw_renderdoc_capture','full_guest_hid_consumption_trace','complete_firmware_resource_read_validation'],
                 'render_debug_abi_unchanged':3}}
 
 def stack(sdk,out,timeout=30):

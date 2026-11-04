@@ -1,3 +1,5 @@
+#include "yuzu_video_core/shader_progress_trace.h"
+#include "yuzu_video_core/pipeline_fixture.h"
 #include "yuzu_video_core/host1x/ffmpeg/device_cache.h"
 #include "render_window.h"
 #include "video_manager.h"
@@ -832,6 +834,9 @@ bool VideoManager::SetNativeSyncpointShim(uint32_t gmmu, uint64_t address) {
 }
 
 VideoDebugSnapshot VideoManager::DebugSnapshot() {
+    // CPU diagnostic snapshot only: no GPU calls, extra queued work, or new thread.
+    VideoCommon::ShaderProgress::Publish();
+    VideoCommon::PipelineFixture::Publish();
     VideoDebugSnapshot s;
     s.map_calls = m_debugMapCalls.load(std::memory_order_relaxed);
     s.mapped_bytes = m_debugMappedBytes.load(std::memory_order_relaxed);
@@ -857,3 +862,45 @@ VideoDebugSnapshot VideoManager::DebugSnapshot() {
     }
     return s;
 }
+
+#include "yuzu_common/debug_document.h"
+#include "yuzu_video_core/pipeline_fixture.h"
+namespace VideoCommon::PipelineFixture {
+std::string Environment(std::string_view name) { return Common::DebugDocument::Environment(std::string(name).c_str()); }
+void Publish() noexcept {
+    try {
+        if (!Enabled()) return;
+        constexpr std::uint64_t interval=500000000;
+        static std::atomic<std::uint64_t> last{};
+        const auto now=Now();auto previous=last.load(std::memory_order_relaxed);
+        if (previous && now-previous<interval) return;
+        if (!last.compare_exchange_strong(previous,now)) return;
+        Common::DebugDocument::Publish("pipeline-capture",CountersJson(),false);
+    } catch (...) { /* Snapshot failures never change pipeline execution. */ }
+}
+}
+namespace VideoCommon::ShaderProgress {
+bool Enabled() {
+    const auto value=Common::DebugDocument::Environment("NXEMU_SHADER_PROGRESS");
+    return value=="1" || (value.empty() && Common::DebugDocument::Enabled());
+}
+std::string RunId(){return Common::DebugDocument::Environment("NXEMU_DEBUG_RUN_ID");}
+std::string Generation(){return Common::DebugDocument::Environment("NXEMU_DEBUG_GENERATION");}
+void Publish() noexcept {
+    try {
+    if (!Enabled()) return;
+    const auto started=Now();auto& r=registry;
+    auto previous=r.last_publish_ns.load();
+    if (previous && started-previous<PublishIntervalNs) return;
+    if (!r.last_publish_ns.compare_exchange_strong(previous,started)) {++r.publish_drops;return;}
+    try {
+        if (const auto snapshot=Take(started)) {
+            const auto json=Json(*snapshot);
+            if (json.size()<=128*1024) Common::DebugDocument::Publish("shader-progress",json,false);
+            else ++r.publish_drops;
+        }
+    } catch (...) {++r.publish_drops;}
+    r.publish_ns+=Now()-started;
+    } catch (...) {++registry.publish_drops;}
+}
+} // namespace VideoCommon::ShaderProgress

@@ -27,7 +27,16 @@ inline std::string Environment(const char* name) {
 #endif
 }
 inline bool Enabled() {
-    return !Environment("NXEMU_NATIVE_SHADER_DIAG_DIR").empty() && !Environment("NXEMU_DEBUG_DETAIL").empty();
+    return !Environment("NXEMU_NATIVE_SHADER_DIAG_DIR").empty() && Environment("NXEMU_DEBUG_DETAIL") == "1";
+}
+inline bool PublicationEnabled(const std::string& category) {
+    if (Environment("NXEMU_NATIVE_SHADER_DIAG_DIR").empty()) return false;
+    if (Enabled()) return true;
+    // Explicit narrow traces can publish while all other detail collectors stay off.
+    return (category == "handle-lifecycle" && Environment("NXEMU_HANDLE_TRACE") == "1") ||
+           (category == "shader-rejections" && Environment("NXEMU_SHADER_REJECTION_TRACE") == "1") ||
+           (category == "shader-progress" && Environment("NXEMU_SHADER_PROGRESS") == "1") ||
+           (category == "pipeline-capture" && Environment("NXEMU_PIPELINE_FIXTURES") == "1");
 }
 inline std::string Quote(const std::string& input) {
     std::ostringstream s; s << '"';
@@ -45,7 +54,7 @@ inline std::uint64_t EpochMs() {
 // Read on the GPU owner thread; no extra emulator-state lock or queued GPU work.
 // Publication is opt-in and bounded. A contended diagnostic writer drops a sample.
 inline void Publish(const std::string& category, const std::string& payload, bool history = true) noexcept {
-    if (!Enabled() || payload.size() > 128 * 1024 || category.size() > 48 ||
+    if (!PublicationEnabled(category) || payload.size() > 128 * 1024 || category.size() > 48 ||
         category.find_first_not_of("abcdefghijklmnopqrstuvwxyz0123456789-") != std::string::npos) return;
     try {
         static std::mutex writer_mutex;

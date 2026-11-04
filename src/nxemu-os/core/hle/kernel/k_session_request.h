@@ -189,6 +189,7 @@ public:
         m_size = size;
         m_wait_generation = 0;
         m_completed = false;
+        m_debug_token = 0;
 
         m_thread->Open();
         if (m_event != nullptr) {
@@ -221,6 +222,10 @@ public:
 
     // Called immediately after BeginWait, while holding the scheduler lock.
     void CaptureClientWait() { m_wait_generation = m_thread->GetWaitGeneration(); }
+    void SetDebugToken(uint64_t token) { m_debug_token=token; }
+    uint64_t GetDebugToken() const { return m_debug_token; }
+    void DebugPhase(const char* phase);
+    void DebugFinish(uint32_t result,const char* phase);
     bool IsClientWaitCurrent() const {
         return m_thread && CanCompleteIpcWait(m_wait_generation, m_thread->GetWaitGeneration(),
             m_thread->GetState() == ThreadState::Waiting, m_thread->IsTerminationRequested());
@@ -311,6 +316,7 @@ public:
 private:
     // NOTE: This is public and virtual in Nintendo's kernel.
     void Finalize() override {
+        DebugFinish(UINT32_MAX,"request_destroyed_without_reply_observation");
         m_mappings.Finalize();
 
         if (m_thread) {
@@ -331,6 +337,7 @@ private:
     KEvent* m_event{};
     u64 m_wait_generation{};
     bool m_completed{};
+    uint64_t m_debug_token{};
     uintptr_t m_address{};
     size_t m_size{};
 };

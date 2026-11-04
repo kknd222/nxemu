@@ -34,14 +34,22 @@ namespace {
 FileSys::VirtualFile FindLooseRomFS(const FileSys::VirtualDir& exefs) {
     if (!exefs) return nullptr;
     for (const auto& file : exefs->GetFiles()) {
-        if (file->GetExtension() == "romfs") return file;
+        if (file->GetExtension() == "romfs") {
+            // Selection-path observation only; preserve the existing VFS iteration order.
+            LOG_INFO(Loader, "ROM_SET_SOURCE stage=romfs-select kind=exefs-image exefs={} source={}",
+                     exefs->GetFullPath(), file->GetFullPath());
+            return file;
+        }
     }
     if (const auto parent = exefs->GetParentDirectory()) {
         if (const auto directory = parent->GetSubdirectory("romfs")) {
             LOG_INFO(Loader, "Using RomFS directory next to ExeFS");
+            LOG_INFO(Loader, "ROM_SET_SOURCE stage=romfs-select kind=sibling-directory exefs={} source={}",
+                     exefs->GetFullPath(), directory->GetFullPath());
             return FileSys::CreateRomFS(directory);
         }
     }
+    LOG_INFO(Loader, "ROM_SET_SOURCE stage=romfs-select kind=missing exefs={}", exefs->GetFullPath());
     return nullptr;
 }
 
@@ -197,6 +205,8 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
     }
     metadata.Print();
 
+    LOG_INFO(Loader, "ROM_SET_SOURCE stage=npdm-loaded source={} exefs={} size={}",
+             npdm->GetFullPath(), dir->GetFullPath(), npdm->GetSize());
     const bool is_39bit = metadata.GetAddressSpaceType() == ProgramAddressSpaceType::Is39Bit;
     const bool is_application = metadata.GetPoolPartition() == PoolPartition::Application;
     LOG_INFO(Loader, "Process CPU: AArch{}, address-space type {}",
@@ -321,6 +331,9 @@ AppLoader_DeconstructedRomDirectory::LoadResult AppLoader_DeconstructedRomDirect
         // Keep module bases in release logs as they are required to translate
         // guest PCs produced by the diagnostic sampler back to NSO offsets.
         LOG_INFO(Loader, "loaded module {} @ {:#X}", module, load_addr);
+        // At most the fixed 13 module slots per load; no per-frame logging or extra reads.
+        LOG_INFO(Loader, "ROM_SET_SOURCE stage=module-loaded module={} source={} size={} address={:#X}",
+                 module, module_file->GetFullPath(), module_file->GetSize(), load_addr);
     }
 
     // A standalone ExeFS has no NCA loader to register its process for FS.

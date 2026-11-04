@@ -141,7 +141,7 @@ public:
         // if not all cores are doing a similar amount of work. Instead of doing this, we should
         // device a way so that timing is consistent across all cores without increasing the ticks 4
         // times.
-        u64 amortized_ticks = ticks / Hardware::NUM_CPU_CORES;
+        u64 amortized_ticks = ticks / m_process.GetGuestCoreCount();
         // Always execute at least one tick.
         amortized_ticks = std::max<u64>(amortized_ticks, 1);
 
@@ -386,7 +386,7 @@ CpuHaltReason ArmDynarmic32::RunThread(IKernelThread * thread)
     ScopedJitExecution sj(thread->GetOwnerProcess());
 
     m_jit->ClearExclusiveState();
-    return TranslateHaltReason(m_jit->Run());
+    return TranslateHaltReason(m_jit->Run(), this, m_core_index, "run");
 }
 
 CpuHaltReason ArmDynarmic32::StepThread(IKernelThread * thread)
@@ -394,7 +394,7 @@ CpuHaltReason ArmDynarmic32::StepThread(IKernelThread * thread)
     ScopedJitExecution sj(thread->GetOwnerProcess());
 
     m_jit->ClearExclusiveState();
-    return TranslateHaltReason(m_jit->Step());
+    return TranslateHaltReason(m_jit->Step(), this, m_core_index, "step");
 }
 
 void ArmDynarmic32::LockThread(IKernelThread * /*thread*/)

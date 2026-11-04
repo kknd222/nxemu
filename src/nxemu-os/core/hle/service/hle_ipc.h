@@ -216,6 +216,7 @@ public:
 
     /// Writes data from this context back to the requesting process/thread.
     Result WriteToOutgoingCommandBuffer();
+    void SetGuestDebugToken(u64 token) { guest_debug_token = token; }
 
     [[nodiscard]] u32_le GetHipcCommand() const {
         return command;
@@ -423,6 +424,7 @@ private:
     Kernel::KSessionRequest* session_request{};
     u64 command_buffer_address{};
     u64 completion_time{};
+    u64 guest_debug_token{};
     bool defer_response_buffers{};
     mutable IpcResponseWrites response_writes;
     mutable bool response_write_failed{};

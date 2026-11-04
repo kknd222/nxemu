@@ -38,6 +38,92 @@ class NxEmuSDK:
         data['process_alive'] = process_alive(data['pid'])
         data['fresh'] = data['age_seconds'] < 3 and not data['exited'] and data['process_alive']
         return data
+    def ssa_cases(self):
+        from ssa_cases import inspect_cases
+        return inspect_cases(self.root, self.status())
+    def frame_context(self, request_id, status=None):
+        from frame_context import inspect_context
+        return inspect_context(self.root, request_id, status or self.status())
+    def paired_pixels(self, request_id, status=None):
+        from paired_pixels import inspect_pair
+        return inspect_pair(self.root, request_id, status or self.status())
+    def native_draw_inputs(self):
+        from native_draw_inputs import inspect_inputs
+        status=self.status()
+        result=inspect_inputs(self.root,status)
+        result['live_state']={k:status.get(k) for k in ('pid','run_id','module_generation','fresh','process_alive','exited','age_seconds')}
+        return result
+    def image_writers(self, request_id, status=None):
+        from image_writers import inspect_writers
+        return inspect_writers(self.root, request_id, status or self.status())
+    def native_compute_inputs(self):
+        from native_compute_inputs import inspect_inputs
+        status=self.status()
+        result=inspect_inputs(self.root,status)
+        result['live_state']={k:status.get(k) for k in ('pid','run_id','module_generation','fresh','process_alive','exited','age_seconds')}
+        return result
+    def capture_frame(self, timeout=15):
+        """One explicit GPU-owner offscreen capture; no OS input or buffer cancellation."""
+        import uuid, hashlib
+        from debug_inspect import bounded_json
+        if not 0 < timeout <= 30: raise ValueError('capture timeout=0..30 seconds')
+        initial = self.status()
+        if not initial['fresh'] or not initial.get('video_snapshot_available'):
+            return {'result':'backend_not_ready', 'status':initial}
+        if initial.get('diagnostic_config', {}).get('frame_capture') is False:
+            return {'result':'frame_capture_disabled_by_profile',
+                    'note':'Start with --frame-capture 1 for explicit GPU capture in detail-off runs.'}
+        root = self.root / 'diagnostics'; root.mkdir(parents=True, exist_ok=True)
+        request_id = uuid.uuid4().hex
+        generation = str(initial['module_generation'])
+        request = dict(schema=1, run_id=initial['run_id'], generation=generation,
+                       id=request_id, epoch_ms=round(time.time()*1000))
+        path = root / 'frame-capture-request.json'
+        temporary = root / ('frame-capture-request-' + request_id + '.tmp')
+        temporary.write_text(json.dumps(request, separators=(',', ':')), encoding='utf-8')
+        temporary.replace(path)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            current = self.status()
+            if (current['run_id'] != initial['run_id'] or
+                    str(current['module_generation']) != generation or not current['fresh']):
+                return {'result':'session_changed_or_stale', 'request':request,
+                        'note':'An already started GPU capture is not cancelled or freed by this client.'}
+            for candidate in (root / ('frame-capture-' + request_id + '.json'), root / 'frame-capture-status.json'):
+                if not candidate.is_file(): continue
+                meta = bounded_json(candidate, 65536)
+                if meta.get('request_id') != request_id: continue
+                if meta.get('run_id') != initial['run_id'] or str(meta.get('generation')) != generation:
+                    return {'result':'capture_session_mismatch', 'request':request, 'capture':meta}
+                if meta.get('status') == 'completed':
+                    if not meta.get('gpu_readback_completed'):
+                        return {'result':'capture_rejected_or_failed', 'request':request, 'capture':meta}
+                    image = root / ('frame-capture-' + request_id + '.ppm')
+                    if not image.is_file() or image.stat().st_size > 4*1024*1024:
+                        raise ValueError('Captured image missing or exceeds bounded size')
+                    raw = image.read_bytes(); header = b'P6\n1280 720\n255\n'
+                    if not raw.startswith(header) or len(raw) != len(header) + 1280*720*3:
+                        raise ValueError('Unexpected captured image dimensions or PPM layout')
+                    pixels = raw[len(header):]; count = 1280*720
+                    black = sum(1 for i in range(0, len(pixels), 3)
+                                if not (pixels[i] | pixels[i+1] | pixels[i+2]))
+                    try: context=self.frame_context(request_id,initial)
+                    except (OSError,ValueError,KeyError,TypeError) as error: context={'available':False,'reason':'context_invalid','error':str(error)[:256]}
+                    try: pair=self.paired_pixels(request_id,initial)
+                    except (OSError,ValueError,KeyError,TypeError) as error: pair={'available':False,'reason':'pair_invalid','error':str(error)[:256]}
+                    try: writers=self.image_writers(request_id,initial)
+                    except (OSError,ValueError,KeyError,TypeError) as error: writers={'available':False,'reason':'writers_invalid','error':str(error)[:256]}
+                    return {'result':'captured', 'request':request, 'capture':meta,
+                            'path':str(image.resolve()), 'bytes':len(raw),
+                            'sha256':hashlib.sha256(raw).hexdigest(), 'black_pixel_fraction':black/count,
+                            'all_rgb_zero':not any(pixels),
+                            'context':context,'paired_pixels':pair,'image_writers':writers,
+                            'scope':'GPU offscreen composite, not desktop/UI or compute output dependency proof'}
+                if meta.get('status') not in ('started','pending',None):
+                    return {'result':'capture_rejected_or_failed', 'request':request, 'capture':meta}
+            time.sleep(.05)
+        return {'result':'observer_timeout', 'request':request,
+                'note':'Capture may complete later; this timeout does not cancel GPU work or release its buffer.'}
     def diagnose(self, log):
         s = self.status(); p = Path(log)
         with p.open('rb') as f:
@@ -74,7 +160,17 @@ class NxEmuSDK:
         fault_probe = ('vertex_stream_size_or_vulkan_memory' if any('NX2_VK_BUFFER_FAILURE' in l or 'NX2_VERTEX' in l for l in faults)
                        else 'native_compute_qmd_and_shader' if any('NX2_QMD' in l or 'native shader dispatch required' in l for l in faults)
                        else 'native_shader_lowering' if any('NX2_SHADER_REJECT' in l for l in faults) else None)
-        return {'status': s, 'log_bytes_sampled':len(data), 'milestones': markers[-25:],
+        from debug_guest_faults import guest_faults
+        guest_failure = guest_faults(p)
+        for event in guest_failure.get('cpu_halts', []):
+            event['report_tags_match_session'] = str(event['run_id']) == str(s['run_id']) and str(event['module_generation']) == str(s['module_generation'])
+            event['event_age_seconds'] = max(0, time.time() - event['epoch_ms'] / 1000)
+            event['recent_matching_report'] = bool(s['fresh'] and event['report_tags_match_session'] and event['event_age_seconds'] < 3)
+            event['not_active_cpu_state'] = True
+
+        if guest_failure['guest_panic_observed']: fault_probe='guest_panic_and_first_failing_svc'
+        if guest_failure.get('cpu_halts'): fault_probe='cpu_halt_mapping_raw_context_and_guest_panic' if guest_failure['guest_panic_observed'] else 'cpu_halt_mapping_raw_context'
+        return {'status': s, 'cpu_halts':guest_failure.get('cpu_halts',[]), 'guest_faults':guest_failure, 'log_bytes_sampled':len(data), 'milestones': markers[-25:],
                 'unimplemented_tail':unknown[-8:], 'runtime_faults':faults[-16:], 'diagnostic_artifacts':artifacts, 'native_compute_descriptors':descriptors, 'native_draw_states':draws,
                 'next_probe': fault_probe if fault_probe else 'process_exit' if not s['process_alive'] else
                     'present_fence_completion' if s['present_requests'] > s['composites_completed'] + 8 or
@@ -221,11 +317,17 @@ def main():
     sub = p.add_subparsers(dest='action', required=True)
     sub.add_parser('status')
     sub.add_parser('inspect')
+    sub.add_parser('pipeline-cases')
+    sub.add_parser('ssa-cases')
+    sub.add_parser('native-draw-inputs')
+    sub.add_parser('native-compute-inputs')
+    fc = sub.add_parser('capture-frame'); fc.add_argument('--timeout', type=float, default=15)
     e = sub.add_parser('events'); e.add_argument('--limit',type=int,default=128); e.add_argument('--include-lifecycle',action='store_true')
     b = sub.add_parser('bundle'); b.add_argument('--out',required=True); b.add_argument('--log')
     st = sub.add_parser('stack'); st.add_argument('--out',required=True); st.add_argument('--timeout',type=float,default=30)
     t = sub.add_parser('telemetry'); t.add_argument('--out'); t.add_argument('--seconds', type=float, default=60); t.add_argument('--interval', type=float, default=1)
     d = sub.add_parser('diagnose'); d.add_argument('--log', required=True)
+    gf = sub.add_parser('guest-faults'); gf.add_argument('--log', required=True)
     w = sub.add_parser('wait'); w.add_argument('--frames', type=int, default=1)
     w.add_argument('--timeout', type=float, default=60); w.add_argument('--progress', action='store_true')
     c = sub.add_parser('command'); c.add_argument('verb', choices=['load','stop','pause','resume','quit'])
@@ -241,17 +343,42 @@ def main():
     launch.add_argument('--out',required=True); launch.add_argument('--no-dump',action='store_true')
     launch.add_argument('--readback-segments',type=int,choices=[0,1])
     launch.add_argument('--keyboard-name')
+    for name in ('debug-detail','handle-trace','shader-rejection-trace','shader-fixtures','frame-capture','shader-progress','pipeline-fixtures','ssa-fixtures','native-compute-inputs'):
+        launch.add_argument('--'+name,type=int,choices=[0,1])
+    launch.add_argument('--pipeline-fixture-key')
+    launch.add_argument('--native-compute-input-hash')
     a = p.parse_args(); sdk = NxEmuSDK(a.bridge); code = 0
     try:
         if a.action == 'launch':
             from debug_launch import supervise
-            result,code=supervise(a.bridge,a.exe,a.game,a.seconds,a.out,not a.no_dump,a.readback_segments,a.keyboard_name)
+            options={name:getattr(a,name.replace('-','_')) for name in
+                     ('debug-detail','handle-trace','shader-rejection-trace','shader-fixtures','frame-capture','shader-progress','pipeline-fixtures','ssa-fixtures','native-compute-inputs')
+                     if getattr(a,name.replace('-','_')) is not None}
+            if a.pipeline_fixture_key is not None:options['pipeline-fixture-key']=a.pipeline_fixture_key
+            if a.native_compute_input_hash is not None:options['native-compute-input-hash']=a.native_compute_input_hash
+            result,code=supervise(a.bridge,a.exe,a.game,a.seconds,a.out,not a.no_dump,a.readback_segments,a.keyboard_name,options)
         elif a.action == 'input':
             result=sdk.input(a.button,a.player,a.hold_ms,a.gap_ms,a.count,a.timeout)
             if result['result']!='completed':code=4
         elif a.action == 'keyboard': result,code=sdk.keyboard(a.wait,a.timeout,a.after_sequence)
         elif a.action == 'status': result = sdk.status()
         elif a.action == 'inspect': result = sdk.inspect()
+        elif a.action == 'pipeline-cases':
+            from pipeline_cases import inspect_cases
+            result=inspect_cases(a.bridge)
+            if not result['available']:code=3
+        elif a.action == 'ssa-cases':
+            result=sdk.ssa_cases()
+            if not result['available']:code=3
+        elif a.action == 'native-draw-inputs':
+            result=sdk.native_draw_inputs()
+            if not result['available']:code=3
+        elif a.action == 'capture-frame':
+            result = sdk.capture_frame(a.timeout)
+            if result['result'] != 'captured': code = 4
+        elif a.action == 'native-compute-inputs':
+            result=sdk.native_compute_inputs()
+            if not result['available']:code=3
         elif a.action == 'events': result = sdk.events(a.limit,a.include_lifecycle)
         elif a.action == 'bundle': result = sdk.bundle(a.out,a.log)
         elif a.action == 'stack': result = sdk.stack(a.out,a.timeout)
@@ -261,6 +388,9 @@ def main():
             try: result = sampler.watch(a.out, a.seconds, a.interval) if a.out else sampler.sample()
             finally: sampler.gpu.close()
         elif a.action == 'diagnose': result = sdk.diagnose(a.log)
+        elif a.action == 'guest-faults':
+            from debug_guest_faults import guest_faults
+            result=guest_faults(a.log)
         elif a.action == 'wait': result, code = sdk.wait(a.frames, a.timeout, a.progress)
         else:
             result = sdk.command(a.verb, a.path, a.timeout)

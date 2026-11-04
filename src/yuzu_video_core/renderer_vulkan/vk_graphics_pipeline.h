@@ -20,6 +20,7 @@
 #include <boost/container/static_vector.hpp>
 
 #include "yuzu_video_core/renderer_vulkan/native_pipeline_build_queue.h"
+#include "yuzu_video_core/image_writer_trace.h"
 #include "yuzu_shader_recompiler/backend/spirv/emit_spirv.h"
 #include "yuzu_shader_recompiler/shader_info.h"
 #include "yuzu_shader_recompiler/vtg_as_compute.h"
@@ -162,6 +163,11 @@ public:
 
     void Configure(bool is_indexed);
 
+    /// Enqueue-time packet for the exact attachment handles configured for this draw.
+    /// Only populated by the opt-in writer observer; queued commands copy the packet.
+    [[nodiscard]] const std::array<VideoCommon::ImageWriters::Event, 8>&
+    DiagnosticDrawEvents() const noexcept { return diagnostic_draw_events; }
+
     /// recipe_prefix: the recipe recorder's memo for the matched key, valid until the next call.
     [[nodiscard]] GraphicsPipeline* Next(const GraphicsPipelineCacheKey& current_key,
                                          u64*& recipe_prefix) noexcept {
@@ -264,6 +270,9 @@ private:
     void Validate();
 
     const GraphicsPipelineCacheKey key;
+    std::array<VideoCommon::ImageWriters::Event, 8> diagnostic_draw_events{};
+    uint64_t diagnostic_shader_key{};
+    bool diagnostic_shader_key_known{};
     GraphicsPipelineCacheKey shared_key;
     bool has_shared_key{};
     // One memo per key this pipeline matches, each tied to that key's words.

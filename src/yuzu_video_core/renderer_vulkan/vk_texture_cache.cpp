@@ -10,6 +10,7 @@
 #include <chrono>
 #include <sstream>
 #include "yuzu_video_core/native_debug_document.h"
+#include "yuzu_video_core/image_writer_trace.h"
 #include <boost/container/small_vector.hpp>
 
 #if defined(ANDROID) || defined(__ANDROID__)
@@ -40,6 +41,13 @@
 #include "yuzu_video_core/vulkan_common/vulkan_wrapper.h"
 
 namespace Vulkan {
+namespace W = VideoCommon::ImageWriters;
+template<class F> void RecordWriter(Scheduler& scheduler,W::Event event,F&& body) {
+    if(event.valid) scheduler.Record([body=std::forward<F>(body),event](vk::CommandBuffer command) {
+        body(command);W::Record(event);
+    });
+    else scheduler.Record(std::forward<F>(body));
+}
 
 using Tegra::Engines::Fermi2D;
 using Tegra::Texture::SwizzleSource;
@@ -841,7 +849,7 @@ void BlitScale(Scheduler& scheduler, VkImage src_image, VkImage dst_image, const
     const VkFilter vk_filter = is_bilinear ? VK_FILTER_LINEAR : VK_FILTER_NEAREST;
 
     scheduler.RequestOutsideRenderPassOperationContext();
-    scheduler.Record([dst_image, src_image, extent, resources, aspect_mask, resolution, is_2d,
+    RecordWriter(scheduler,W::Stamp(W::Handle(dst_image), up_scaling?W::Op::ScaleUpRecorded:W::Op::ScaleDownRecorded,W::Handle(src_image)),[dst_image, src_image, extent, resources, aspect_mask, resolution, is_2d,
                       vk_filter, up_scaling](vk::CommandBuffer cmdbuf) {
         const VkOffset2D src_size{
             .x = static_cast<s32>(up_scaling ? extent.width : resolution.ScaleUp(extent.width)),
@@ -1522,7 +1530,7 @@ void TextureCacheRuntime::CopyImage(Image& dst, Image& src,
     const VkImage dst_image = dst.Handle();
     const VkImage src_image = src.Handle();
     scheduler.RequestOutsideRenderPassOperationContext();
-    scheduler.Record([dst_image, src_image, aspect_mask, vk_copies](vk::CommandBuffer cmdbuf) {
+    RecordWriter(scheduler,W::Stamp(W::Handle(dst_image),W::Op::CopyRecorded,W::Handle(src_image)),[dst_image, src_image, aspect_mask, vk_copies](vk::CommandBuffer cmdbuf) {
         RangedBarrierRange dst_range;
         RangedBarrierRange src_range;
         for (const VkImageCopy& copy : vk_copies) {
@@ -1729,6 +1737,7 @@ Image::Image(TextureCacheRuntime& runtime_, const ImageInfo& info_, GPUVAddr gpu
         original_image.SetObjectNameEXT(VideoCommon::Name(*this).c_str());
     }
     current_image = *original_image;
+    W::Birth(W::Handle(current_image),cpu_addr,gpu_addr,0,info.size.width,info.size.height);
     storage_image_views.resize(info.resources.levels);
     if (IsPixelFormatASTC(info.format) && !runtime->device.IsOptimalAstcSupported() &&
         videoSettings.astc_recompression == AstcRecompression::Uncompressed) {
@@ -1843,7 +1852,7 @@ void Image::UploadMemory(VkBuffer buffer, VkDeviceSize offset,
     const VkImage vk_image = *original_image;
     const VkImageAspectFlags vk_aspect_mask = aspect_mask;
     const bool is_initialized = std::exchange(initialized, true);
-    scheduler->Record([src_buffer, vk_image, vk_aspect_mask, is_initialized,
+    RecordWriter(*scheduler,W::Stamp(W::Handle(vk_image),W::Op::UploadRecorded),[src_buffer, vk_image, vk_aspect_mask, is_initialized,
                        vk_copies](vk::CommandBuffer cmdbuf) {
         CopyBufferToImage(cmdbuf, src_buffer, vk_image, vk_aspect_mask, is_initialized, vk_copies);
     });
@@ -2029,16 +2038,19 @@ bool Image::ScaleUp(bool ignore) {
         scaled_info.size.height = scaled_height;
         scaled_image = MakeImage(runtime->device, runtime->memory_allocator, scaled_info,
                                  runtime->ViewFormats(info.format));
+        W::Birth(W::Handle(*scaled_image),cpu_addr,gpu_addr,W::Handle(*original_image),scaled_width,scaled_height);
         ignore = false;
     }
     current_image = *scaled_image;
     if (ignore) {
+        W::Record(W::Stamp(W::Handle(current_image),W::Op::ScaleDiscard,W::Handle(*original_image)));
         return true;
     }
     if (aspect_mask == 0) {
         aspect_mask = ImageAspectMask(info.format);
     }
     if (NeedsScaleHelper()) {
+        W::Record(W::Stamp(W::Handle(*scaled_image),W::Op::ScaleHelperQueued,W::Handle(*original_image)));
         return BlitScaleHelper(true);
     } else {
         BlitScale(*scheduler, *original_image, *scaled_image, info, aspect_mask, resolution);
@@ -2058,12 +2070,14 @@ bool Image::ScaleDown(bool ignore) {
     flags &= ~ImageFlagBits::Rescaled;
     current_image = *original_image;
     if (ignore) {
+        W::Record(W::Stamp(W::Handle(current_image),W::Op::ScaleDiscard,W::Handle(*scaled_image)));
         return true;
     }
     if (aspect_mask == 0) {
         aspect_mask = ImageAspectMask(info.format);
     }
     if (NeedsScaleHelper()) {
+        W::Record(W::Stamp(W::Handle(*original_image),W::Op::ScaleHelperQueued,W::Handle(*scaled_image)));
         return BlitScaleHelper(false);
     } else {
         BlitScale(*scheduler, *scaled_image, *original_image, info, aspect_mask, resolution, false);
@@ -2215,6 +2229,10 @@ ImageView::ImageView(TextureCacheRuntime& runtime, const VideoCommon::ImageViewI
             handle.SetObjectNameEXT(VideoCommon::Name(*this, gpu_addr).c_str());
         }
         image_views[static_cast<size_t>(tex_type)] = std::move(handle);
+        if (tex_type == TextureType::Color2D) {
+            color2d_components = ci.components;
+            color2d_components_known = true;
+        }
     };
     switch (info.type) {
     case VideoCommon::ImageViewType::e1D:

@@ -8,6 +8,7 @@
 #include <nxemu/ui/host/sdl_input.h>
 #include <nxemu/ui/host/ui_notification.h>
 #include <nxemu/ui/i18n/translation.h>
+#include <yuzu_common/debug_document.h>
 #include <yuzu_common/fs/filesystem_interfaces.h>
 #include <yuzu_common/fs/fs_util.h>
 #include <yuzu_common/logging/log.h>
@@ -35,6 +36,7 @@ EmulatorSession::~EmulatorSession()
 bool EmulatorSession::Initialise()
 {
     m_notification.BindWindow(m_window);
+    AdvanceModuleGeneration();
     m_modules.Setup(m_renderWindow);
     if (!m_modules.IsValid())
     {
@@ -216,6 +218,8 @@ bool EmulatorSession::LoadProgram(const std::string & path, int32_t programIndex
     m_pendingLaunch = PendingLaunch{path, programId, programIndex, previousProgramIndex, launchType, userChannel, started};
     m_launchCancelled = false;
     m_notification.BindWindow(m_window);
+    // Reserve/publish the callback and diagnostic identity before the worker can compile.
+    AdvanceModuleGeneration();
     if (!m_modules.StartLaunch(m_renderWindow, PrepareLaunch, this))
     {
         ReportError(Tr("Required modules failed to load."));
@@ -319,7 +323,7 @@ void EmulatorSession::ReleaseModules()
     SettingsStore::GetInstance().SetBool(NXCoreSetting::EmulationRunning, false);
     m_modules.ShutDown();
     m_callbackContext.reset();
-    ++m_moduleGeneration;
+    AdvanceModuleGeneration();
     {
         std::lock_guard<std::mutex> lock(m_programEventsMutex);
         m_programEvents.clear();
@@ -329,6 +333,7 @@ void EmulatorSession::ReleaseModules()
 bool EmulatorSession::ResetModules()
 {
     ReleaseModules();
+    AdvanceModuleGeneration();
     m_modules.Setup(m_renderWindow);
     m_notification.BindWindow(m_window);
     if (!m_modules.IsValid())
@@ -347,9 +352,28 @@ bool EmulatorSession::ResetModules()
     return true;
 }
 
+void EmulatorSession::AdvanceModuleGeneration()
+{
+    ++m_moduleGeneration;
+    // Diagnostic publication never changes launch/teardown success semantics.
+    try
+    {
+        if (!Common::DebugDocument::Environment("NXEMU_DEBUG_RUN_ID").empty())
+        {
+            const auto generation = std::to_string(m_moduleGeneration);
+#ifdef _WIN32
+            _putenv_s("NXEMU_DEBUG_GENERATION", generation.c_str());
+#else
+            setenv("NXEMU_DEBUG_GENERATION", generation.c_str(), 1);
+#endif
+        }
+    }
+    catch (...) { /* Diagnostic metadata failure must not abort module lifecycle. */ }
+}
+
 void EmulatorSession::RegisterSystemCallbacks()
 {
-    m_callbackContext = std::make_unique<CallbackContext>(CallbackContext{this, ++m_moduleGeneration});
+    m_callbackContext = std::make_unique<CallbackContext>(CallbackContext{this, m_moduleGeneration});
     IOperatingSystem & os = m_modules.Modules().OperatingSystem();
     os.RegisterExecuteProgramCallback(ExecuteProgramCallback, m_callbackContext.get());
     os.RegisterExitCallback(ExitProgramCallback, m_callbackContext.get());

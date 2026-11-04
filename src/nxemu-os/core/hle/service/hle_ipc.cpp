@@ -28,6 +28,11 @@
 #include "core/memory.h"
 #include "core/core.h"
 #include "core/core_timing.h"
+#include "core/guest_debug_trace.h"
+// Debug-document publication includes Win32; do not rewrite IPC::CommandType::SendMessage.
+#ifdef SendMessage
+#undef SendMessage
+#endif
 
 namespace Service {
 
@@ -353,6 +358,12 @@ Result HLERequestContext::WriteToOutgoingCommandBuffer() {
     }), Kernel::ResultInvalidCurrentMemory);
     R_UNLESS(memory.WriteBlock(Common::ProcessAddress{command_buffer_address}, cmd_buf.data(),
                               write_size * sizeof(u32)), Kernel::ResultInvalidCurrentMemory);
+    if (Core::GuestDebugTrace::NeedsPublishedTls(guest_debug_token)) {
+        std::array<u32,12> tls{};
+        const bool readable = memory.ReadBlock(command_buffer_address, tls.data(), sizeof(tls));
+        Core::GuestDebugTrace::PublishedTls(guest_debug_token, cmd_buf.data(), write_size,
+                                          tls.data(), readable);
+    }
     if (request_manager->IsDomain()) {
         for (auto& object : outgoing_domain_objects) {
             if (object) request_manager->AppendDomainHandler(std::move(object));

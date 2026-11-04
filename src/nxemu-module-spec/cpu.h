@@ -155,6 +155,9 @@ nxinterface IKernelProcess
     virtual void EnableNceAtomicHandlers() = 0;
     virtual void RegisterNceReadHandler(uint64_t pc, uint64_t handler) {}
     virtual uint64_t InstallNceReadHandler(uint64_t pc) { return 0; }
+    // Appended topology query: deploy matching CPU/OS modules together.
+    // Existing process implementations retain NS1 instruction-timing behavior.
+    virtual uint32_t GetGuestCoreCount() const { return 4; }
 };
 
 struct NativeExecutionParameters

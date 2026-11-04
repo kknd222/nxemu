@@ -129,7 +129,15 @@ void main(void) {
             accumulated_data = shared_data[accumulation_limit];
             return;
         }
+        // A reset at the first slot has no preceding prefix to subtract.
+        if (max_accumulation_base == 0) {
+            accumulated_data = shared_data[accumulation_limit];
+            return;
+        }
         uvec2 reset_value = shared_data[max_accumulation_base - 1];
+        if (max_accumulation_base - 1 < min_accumulation_base) {
+            reset_value = AddUint64(reset_value, AddUint64(uvec2(1, 0), ~accum));
+        }
         uvec2 final_value = shared_data[accumulation_limit];
         // Two complements
         reset_value = AddUint64(uvec2(1, 0), ~reset_value);

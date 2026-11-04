@@ -3,8 +3,15 @@
 
 #include "core/hle/kernel/k_page_buffer.h"
 #include "core/hle/kernel/k_session_request.h"
+#include "core/guest_debug_trace.h"
 
 namespace Kernel {
+void KSessionRequest::DebugPhase(const char* phase) {
+    Core::GuestDebugTrace::Phase(m_debug_token,phase);
+}
+void KSessionRequest::DebugFinish(uint32_t result,const char* phase) {
+    Core::GuestDebugTrace::End(m_debug_token,nullptr,result,phase);m_debug_token=0;
+}
 
 Result KSessionRequest::SessionMappings::PushMap(KProcessAddress client, KProcessAddress server,
                                                  size_t size, KMemoryState state, size_t index) {

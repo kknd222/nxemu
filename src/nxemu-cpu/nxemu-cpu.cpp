@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <nxemu-core/settings/identifiers.h>
 #include <yuzu_common/fs/path_util.h>
+#include <yuzu_common/hardware_properties.h>
 #include <yuzu_common/logging/backend.h>
 #ifdef ANDROID
 #include <yuzu_common/android/java_bridge.h>
@@ -116,17 +117,13 @@ EXPORT void CALL FlushSettings()
 
 ICpu * CALL CreateCpu(ISystemModules & modules)
 {
-    enum
-    {
-        NUM_CPU_CORES = 4,
-    };
-    
+
     if (g_cpuInterface.get() != nullptr)
     {
         g_notify->BreakPoint(__FILE__, __LINE__);
         return nullptr;
     }
-    g_cpuInterface = std::make_unique<CpuInterface>(modules, NUM_CPU_CORES);
+    g_cpuInterface = std::make_unique<CpuInterface>(modules, Hardware::NUM_CPU_CORES);
     return g_cpuInterface.get();
 }
 

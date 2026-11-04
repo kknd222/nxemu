@@ -6,9 +6,12 @@
 layout(local_size_x = 1) in;
 
 layout(std430, binding = 0) buffer Query {
-    uvec2 initial;
-    uvec2 unknown;
-    uvec2 current;
+    uint words[];
+};
+
+layout(push_constant) uniform Parameters {
+    uint compare_to_zero;
+    uint word_offset;
 };
 
 layout(std430, binding = 1) buffer Result {
@@ -16,5 +19,12 @@ layout(std430, binding = 1) buffer Result {
 };
 
 void main() {
-    result = all(equal(initial, current)) ? 1 : 0;
+    uvec2 initial = uvec2(words[word_offset], words[word_offset + 1]);
+    if (compare_to_zero != 0) {
+        // This descriptor covers only the two initial words, not current.
+        result = all(equal(initial, uvec2(0))) ? 1 : 0;
+    } else {
+        uvec2 current = uvec2(words[word_offset + 4], words[word_offset + 5]);
+        result = all(equal(initial, current)) ? 1 : 0;
+    }
 }

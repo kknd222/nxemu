@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include "yuzu_common/yuzu_assert.h"
+#include "yuzu_common/scope_exit.h"
+#include "core/guest_debug_trace.h"
 #include "yuzu_common/common_types.h"
 #include "yuzu_common/scratch_buffer.h"
 #include "core/hle/kernel/k_scheduler.h"
@@ -80,6 +82,18 @@ Result KSynchronizationObject::Wait(KernelCore& kernel, s32* out_index,
 
     // Prepare for wait.
     KThread* thread = GetCurrentThreadPointer(kernel);
+    uint64_t debug_token=0;
+    if(thread && Core::GuestDebugTrace::Enabled()) {
+        Core::GuestDebugTrace::Event event;
+        event.kind="wait";event.phase="synchronization_wait";
+        event.guest_tid=thread->GetThreadId();event.pc=thread->GetContext().pc;
+        event.timeout_ns=timeout;event.object_count=static_cast<uint32_t>(std::max(0,num_objects));
+        for(size_t i=0;i<std::min<size_t>(event.object_count,event.objects.size());++i)if(objects[i]){
+            event.objects[i]=reinterpret_cast<uint64_t>(objects[i]);event.object_types[i]=objects[i]->GetTypeName();
+        }
+        debug_token=Core::GuestDebugTrace::Begin(std::move(event));
+    }
+    auto debug_end=SCOPE_GUARD { Core::GuestDebugTrace::End(debug_token); };
     KHardwareTimer* timer{};
     ThreadQueueImplForKSynchronizationObjectWait wait_queue(kernel, objects, thread_nodes.data(),
                                                             num_objects);

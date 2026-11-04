@@ -31,8 +31,10 @@ ComputePipeline::ComputePipeline(const Device& device_, vk::PipelineCache& pipel
                                  NativePipelineBuildQueue* thread_worker,
                                  PipelineStatistics* pipeline_statistics,
                                  VideoCore::ShaderNotify* shader_notify, const Shader::Info& info_,
-                                 vk::ShaderModule spv_module_, StagingBufferPool& staging_pool_)
-    : device{device_},
+                                 vk::ShaderModule spv_module_, StagingBufferPool& staging_pool_,
+                                 VideoCommon::ShaderProgress::Token progress_token_,
+                                 std::shared_ptr<VideoCommon::PipelineFixture::Handle> pipeline_fixture)
+    : progress_token{progress_token_}, device{device_},
       pipeline_cache(pipeline_cache_), guest_descriptor_queue{guest_descriptor_queue_}, info{info_},
       staging_pool{staging_pool_},
       spv_module(std::move(spv_module_)) {
@@ -51,7 +53,10 @@ ComputePipeline::ComputePipeline(const Device& device_, vk::PipelineCache& pipel
     writes_images = std::ranges::any_of(info.image_descriptors, is_written) ||
                     std::ranges::any_of(info.image_buffer_descriptors, is_written);
 
-    auto func{[this, &descriptor_pool, shader_notify, pipeline_statistics, runtime_event=VideoCommon::ShaderProfile::Runtime::current] {
+    auto func{[this, &descriptor_pool, shader_notify, pipeline_statistics, runtime_event=VideoCommon::ShaderProfile::Runtime::current, trace_token=progress_token, pipeline_fixture=std::move(pipeline_fixture)] {
+        namespace Progress=VideoCommon::ShaderProgress;
+        Progress::Guard trace_guard(trace_token);
+        Progress::Transition(trace_token,Progress::Stage::DescriptorLayout);
         VideoCommon::ShaderProfile::Runtime::Span runtime_timer(runtime_event,VideoCommon::ShaderProfile::Runtime::Work::Native);
         try {
             DescriptorLayoutBuilder builder{device};
@@ -71,6 +76,21 @@ ComputePipeline::ComputePipeline(const Device& device_, vk::PipelineCache& pipel
             if (device.IsKhrPipelineExecutablePropertiesEnabled()) {
                 flags |= VK_PIPELINE_CREATE_CAPTURE_STATISTICS_BIT_KHR;
             }
+            const auto* subgroup_pnext=device.CanRequestComputeSubgroupSize() ? &subgroup_size_ci : nullptr;
+            Progress::SetNativeParameters(trace_token,static_cast<std::uint64_t>(flags),
+                subgroup_pnext!=nullptr,subgroup_pnext?subgroup_pnext->requiredSubgroupSize:0);
+            if(pipeline_fixture) {
+                try {
+                    std::ostringstream recipe;
+                    recipe<<"{\"device\":"<<(device.DebugCreationRecipe().empty()?"null":device.DebugCreationRecipe())
+                          <<",\"descriptor_layout\":"<<builder.DebugComputeRecipe()
+                          <<",\"pipeline_flags\":"<<flags<<",\"stage_flags\":0,\"shader_module_flags\":0,\"specialization\":null"
+                          <<",\"subgroup_pnext_present\":"<<(subgroup_pnext?"true":"false")<<",\"required_subgroup_size\":"<<(subgroup_pnext?subgroup_pnext->requiredSubgroupSize:0)
+                          <<",\"cache_blob_captured\":false,\"cache_policy\":\"application_cache_not_captured_replay_cold_only\"}";
+                    VideoCommon::PipelineFixture::Recipe(pipeline_fixture,recipe.str());
+                }catch(...){++VideoCommon::PipelineFixture::errors;VideoCommon::PipelineFixture::Note(VideoCommon::PipelineFixture::Outcome::RecipeBuildException);}
+            }
+            Progress::Transition(trace_token,Progress::Stage::DriverCreateComputePipeline);
             pipeline = Timing::Measure(Timing::current, Timing::Phase::NativeCompute, [&] { return device.GetLogical().CreateComputePipeline(
                 {
                     .sType = VK_STRUCTURE_TYPE_COMPUTE_PIPELINE_CREATE_INFO,
@@ -78,8 +98,7 @@ ComputePipeline::ComputePipeline(const Device& device_, vk::PipelineCache& pipel
                     .flags = flags,
                     .stage{
                         .sType = VK_STRUCTURE_TYPE_PIPELINE_SHADER_STAGE_CREATE_INFO,
-                        .pNext =
-                            device.CanRequestComputeSubgroupSize() ? &subgroup_size_ci : nullptr,
+                        .pNext = subgroup_pnext,
                         .flags = 0,
                         .stage = VK_SHADER_STAGE_COMPUTE_BIT,
                         .module = *spv_module,
@@ -92,12 +111,14 @@ ComputePipeline::ComputePipeline(const Device& device_, vk::PipelineCache& pipel
                 },
                 *pipeline_cache); });
 
+            Progress::Transition(trace_token,Progress::Stage::Statistics);
             if (pipeline_statistics) {
                 pipeline_statistics->Collect(*pipeline);
             }
         } catch (const vk::Exception& exception) {
             LOG_ERROR(Render_Vulkan, "Compute pipeline build failed: {}", exception.what());
             build_failed = true;
+            Progress::SetReason(trace_token,exception.what());
         }
         VideoCommon::ShaderProfile::Runtime::NativeResult(runtime_event,!build_failed);
         std::scoped_lock lock{build_mutex};
@@ -106,9 +127,12 @@ ComputePipeline::ComputePipeline(const Device& device_, vk::PipelineCache& pipel
         if (shader_notify) {
             shader_notify->MarkShaderComplete();
         }
+        Progress::Finish(trace_token,build_failed ? Progress::State::Exception : Progress::State::Completed);
+        trace_guard.HandOff();
     }};
     if (thread_worker) {
         build_queue = thread_worker;
+        VideoCommon::ShaderProgress::Transition(progress_token,VideoCommon::ShaderProgress::Stage::Queued);
         queued_build = thread_worker->QueueWork(std::move(func));
     } else {
         func();
@@ -116,6 +140,7 @@ ComputePipeline::ComputePipeline(const Device& device_, vk::PipelineCache& pipel
 }
 
 bool ComputePipeline::WaitForNativeBuild() {
+    VideoCommon::ShaderProgress::WaitGuard progress_wait(progress_token);
     if (build_queue) build_queue->RunNow(queued_build);
     std::unique_lock lock{build_mutex};
     build_condvar.wait(lock, [this] { return is_built.load(std::memory_order_acquire); });

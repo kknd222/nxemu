@@ -30,6 +30,7 @@
 #include "yuzu_common/yuzu_assert.h"
 #include <nxemu-module-spec/system_loader.h>
 #include <yuzu_common/fs/filesystem_interfaces.h>
+#include "yuzu_common/resource_trace.h"
 
 namespace
 {
@@ -412,6 +413,8 @@ Result FSP_SRV::OpenDataStorageByDataId(OutInterface<IStorage> out_interface, St
     auto resolved_storage_id = storage_id;
     IVirtualFilePtr data(romfs_controller->OpenRomFS(title_id, resolved_storage_id, LoaderContentRecordType::Data));
 
+    Common::ResourceTrace::System::Record(title_id, int(storage_id), int(LoaderContentRecordType::Data), "initial-open", -1, bool(data));
+
     constexpr u64 system_archive_base_title_id = 0x0100000000000800;
     constexpr u64 system_archive_last_title_id = 0x0100000000000827;
     if (!data && title_id >= system_archive_base_title_id && title_id <= system_archive_last_title_id &&
@@ -423,21 +426,26 @@ Result FSP_SRV::OpenDataStorageByDataId(OutInterface<IStorage> out_interface, St
         resolved_storage_id = StorageId::NandSystem;
         data = IVirtualFilePtr(
             romfs_controller->OpenRomFS(title_id, resolved_storage_id, LoaderContentRecordType::Data));
+        Common::ResourceTrace::System::Record(title_id, int(resolved_storage_id), int(LoaderContentRecordType::Data), "nand-system-retry", -1, bool(data));
     }
 
     if (!data)
     {
         ISystemloader & loader = system.GetSystemloader();
         IVirtualFile * archive = loader.SynthesizeSystemArchive(title_id);
+        Common::ResourceTrace::System::Record(title_id, int(resolved_storage_id), int(LoaderContentRecordType::Data), "synth-fallback", -1, archive != nullptr);
         if (archive != nullptr)
         {
             *out_interface = std::make_shared<IStorage>(system, IVirtualFilePtr(archive));
+            Common::ResourceTrace::System::Record(title_id, int(resolved_storage_id), int(LoaderContentRecordType::Data), "return-synth", 0, true);
             R_SUCCEED();
         }
         LOG_ERROR(Service_FS, "Could not open data storage with title_id={:016X}, storage_id={:02X}", title_id, storage_id);
+        Common::ResourceTrace::System::Record(title_id, int(resolved_storage_id), int(LoaderContentRecordType::Data), "return-missing", int(ResultUnknown.raw), false);
         R_RETURN(ResultUnknown);
     }
     IVirtualFilePtr patched_file(romfs_controller->PatchBaseNca(title_id, resolved_storage_id, LoaderContentRecordType::Data, *data));
+    Common::ResourceTrace::System::Record(title_id, int(resolved_storage_id), int(LoaderContentRecordType::Data), "return-patched", 0, bool(patched_file));
     auto storage = std::make_shared<IStorage>(system, std::move(patched_file));
     *out_interface = std::move(storage);
     R_SUCCEED();

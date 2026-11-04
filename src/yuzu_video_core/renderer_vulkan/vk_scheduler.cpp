@@ -128,6 +128,28 @@ void Scheduler::RequestRenderpass(const Framebuffer* framebuffer, u32 color_scra
     }
 }
 
+void Scheduler::RequestLabRenderpass(VkRenderPass pass,VkFramebuffer framebuffer,VkExtent2D extent,
+                                     std::span<const VkImage> images,
+                                     std::span<const VkImageSubresourceRange> ranges) {
+    if (!pass || !framebuffer || !extent.width || !extent.height || images.size()>9 ||
+        images.size()!=ranges.size()) throw std::invalid_argument("Invalid lab renderpass recipe");
+    for (size_t i = 0; i < images.size(); ++i) {
+        if (!images[i] || !ranges[i].aspectMask || !ranges[i].levelCount || !ranges[i].layerCount)
+            throw std::invalid_argument("Invalid lab attachment range");
+    }
+    EndRenderPass();
+    state.renderpass=pass;state.framebuffer=framebuffer;state.render_area=extent;
+    num_renderpass_images=static_cast<u32>(images.size());
+    std::copy(images.begin(),images.end(),renderpass_images.begin());
+    std::copy(ranges.begin(),ranges.end(),renderpass_image_ranges.begin());
+    Record([pass,framebuffer,extent](vk::CommandBuffer command) {
+        VkRenderPassBeginInfo info{VK_STRUCTURE_TYPE_RENDER_PASS_BEGIN_INFO};
+        info.renderPass=pass;info.framebuffer=framebuffer;info.renderArea={{0,0},extent};
+        command.BeginRenderPass(info,VK_SUBPASS_CONTENTS_INLINE);
+    });
+    if (query_cache) query_cache->NotifyRenderPass(true);
+}
+
 void Scheduler::RequestOutsideRenderPassOperationContext() {
     EndRenderPass();
 }

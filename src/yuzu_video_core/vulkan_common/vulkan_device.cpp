@@ -19,6 +19,9 @@
 #include "yuzu_video_core/vulkan_common/vma.h"
 #include "yuzu_video_core/vulkan_common/vulkan_device.h"
 #include "yuzu_video_core/vulkan_common/vulkan_wrapper.h"
+#include "yuzu_video_core/vulkan_common/vk_recipe_features.h"
+#include "yuzu_video_core/pipeline_fixture.h"
+#include <cstring>
 #include <nxemu-module-spec/base.h>
 
 #if defined(NXEMU_USE_ADRENOTOOLS) && defined(ANDROID) && (defined(_M_ARM64) || defined(ARCHITECTURE_arm64))
@@ -843,6 +846,35 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
                  descriptor_set_limits.maxPerStageDescriptorSampledImages);
     }
 
+    // Snapshot existing CPU inputs only; never query or change device features for diagnostics.
+    if (VideoCommon::PipelineFixture::Enabled()) {
+        try {
+            namespace Fixture=VideoCommon::PipelineFixture;
+            std::ostringstream s;bool complete=sizeof(void*)==8&&std::endian::native==std::endian::little;
+            s<<"{\"schema\":1,\"abi_pointer_bits\":"<<sizeof(void*)*8<<",\"instance_api_version\":"<<instance_version
+             <<",\"device_api_version\":"<<properties.properties.apiVersion<<",\"vendor_id\":"<<properties.properties.vendorID
+             <<",\"device_id\":"<<properties.properties.deviceID<<",\"driver_id\":"<<properties.driver.driverID
+             <<",\"driver_version\":"<<properties.properties.driverVersion<<",\"device_name\":"<<Fixture::Q(properties.properties.deviceName)
+             <<",\"pipeline_cache_uuid\":\"";
+            for(auto byte:properties.properties.pipelineCacheUUID)s<<std::hex<<std::setw(2)<<std::setfill('0')<<unsigned(byte);
+            s<<std::dec<<"\",\"enabled_extensions\":[";bool comma=false;
+            for(const auto& extension:loaded_extensions){if(comma)s<<',';comma=true;s<<Fixture::Q(extension);}
+            s<<"],\"queues\":[";comma=false;
+            for(const auto& queue:queue_cis){if(comma)s<<',';comma=true;s<<"{\"family\":"<<queue.queueFamilyIndex<<",\"flags\":"<<queue.flags<<",\"priorities\":[";
+                for(u32 i=0;i<queue.queueCount;++i){if(i)s<<',';s<<queue.pQueuePriorities[i];}s<<"]}";}
+            s<<"],\"feature_chain\":[";comma=false;std::array<const VkBaseInStructure*,64> seen{};std::size_t nodes{};
+            for(auto* node=static_cast<const VkBaseInStructure*>(first_next);node;node=node->pNext){
+                if(nodes==seen.size()||std::find(seen.begin(),seen.begin()+nodes,node)!=seen.begin()+nodes){complete=false;break;}seen[nodes++]=node;
+                if(comma)s<<',';comma=true;const auto bytes=RecipeFeatures::PayloadBytes(node->sType);
+                s<<"{\"s_type\":"<<node->sType<<",\"payload_offset\":"<<sizeof(VkBaseInStructure)<<",\"payload_bytes\":"<<bytes<<",\"values\":[";
+                if(bytes==0||bytes%4!=0){complete=false;}else for(std::size_t i=0;i<bytes/4;++i){std::uint32_t value;std::memcpy(&value,reinterpret_cast<const char*>(node)+sizeof(VkBaseInStructure)+i*4,4);if(i)s<<',';s<<value;if(value>1)complete=false;}
+                s<<"]}";
+            }
+            s<<"],\"feature_chain_complete\":"<<(complete?"true":"false")
+             <<",\"device_uuid\":null,\"driver_uuid\":null,\"instance_extensions_not_captured\":true,\"source\":\"actual_pre_vkCreateDevice_CPU_inputs_no_query\"}";
+            debug_creation_recipe=s.str();
+        }catch(...){debug_creation_recipe.clear();}
+    }
     logical = vk::Device::Create(physical, queue_cis, ExtensionListForVulkan(loaded_extensions), first_next, dld);
 
     graphics_queue = logical.GetQueue(graphics_family);
@@ -1315,6 +1347,17 @@ bool Device::GetSuitability(bool requires_swapchain)
     physical.GetProperties2(properties2);
     properties.properties = properties2.properties;
 
+    // VUID-VkDeviceCreateInfo-robustBufferAccess-10247: preserve robust access,
+    // but do not enable incompatible buffer update-after-bind capabilities.
+    // Image/sampler update-after-bind remains available (including MoltenVK).
+    if (features2.features.robustBufferAccess &&
+        !properties.descriptor_indexing.robustBufferAccessUpdateAfterBind) {
+        features.descriptor_indexing.descriptorBindingUniformBufferUpdateAfterBind = VK_FALSE;
+        features.descriptor_indexing.descriptorBindingStorageBufferUpdateAfterBind = VK_FALSE;
+        features.descriptor_indexing.descriptorBindingUniformTexelBufferUpdateAfterBind = VK_FALSE;
+        features.descriptor_indexing.descriptorBindingStorageTexelBufferUpdateAfterBind = VK_FALSE;
+    }
+
     // Unload extensions if feature support is insufficient.
     RemoveUnsuitableExtensions();
 
@@ -1349,6 +1392,13 @@ bool Device::GetSuitability(bool requires_swapchain)
 
 void Device::RemoveUnsuitableExtensions()
 {
+    // Extension presence alone does not enable conditionalRendering. Keep its
+    // queried/enabled feature node in the chain and fall back when unsupported.
+    extensions.conditional_rendering = features.conditional_rendering.conditionalRendering;
+    RemoveExtensionFeatureIfUnsuitable(extensions.conditional_rendering,
+                                      features.conditional_rendering,
+                                      VK_EXT_CONDITIONAL_RENDERING_EXTENSION_NAME);
+
     // VK_EXT_custom_border_color
     extensions.custom_border_color = features.custom_border_color.customBorderColors && features.custom_border_color.customBorderColorWithoutFormat;
     RemoveExtensionFeatureIfUnsuitable(extensions.custom_border_color, features.custom_border_color, VK_EXT_CUSTOM_BORDER_COLOR_EXTENSION_NAME);

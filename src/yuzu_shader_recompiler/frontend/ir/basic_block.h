@@ -18,6 +18,8 @@
 
 namespace Shader::IR {
 
+struct FixtureAccess;
+
 class Block {
 public:
     using InstructionList = boost::intrusive::list<Inst>;
@@ -166,6 +168,7 @@ public:
     }
 
 private:
+    friend struct FixtureAccess;
     /// Memory pool for instruction list
     ObjectPool<Inst>* inst_pool;
 

@@ -151,6 +151,8 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
         {106, nullptr, "GetFunctionBlackListVersion"},
         {1000, nullptr, "LoadNgWordDataForPlatformRegionChina"},
         {1001, nullptr, "GetNgWordDataSizeForPlatformRegionChina"},
+        {2000, D<&IPlatformServiceManager::GetBuiltInFontSharedMemory>, "GetBuiltInFontSharedMemory"},
+        {2010, D<&IPlatformServiceManager::GetBuiltInFontData>, "GetBuiltInFontData"},
     };
     // clang-format on
     RegisterHandlers(functions);
@@ -166,6 +168,7 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
 
     for (auto font : SHARED_FONTS) 
     {
+        impl->shared_font_regions.push_back(EMPTY_REGION);
         IVirtualFilePtr romfs;
         FileSysNCAPtr nca(nand.GetEntry(static_cast<u64>(font.first), LoaderContentRecordType::Data));
         if (nca) 
@@ -206,11 +209,31 @@ IPlatformServiceManager::IPlatformServiceManager(Core::System& system_, const ch
         const FontRegion region{static_cast<u32>(offset + 8),
                                 static_cast<u32>((font_data_u32.size() * sizeof(u32)) - 8)};
         DecryptSharedFont(font_data_u32, *impl->shared_font, offset);
-        impl->shared_font_regions.push_back(region);
+        impl->shared_font_regions.back() = region;
     }
 }
 
 IPlatformServiceManager::~IPlatformServiceManager() = default;
+
+// NS2 uses the same decrypted payload already held in the font shared memory.
+Result IPlatformServiceManager::GetBuiltInFontSharedMemory(
+    OutCopyHandle<Kernel::KSharedMemory> out_handle, Out<u32> out_size) {
+    R_TRY(GetSharedMemoryNativeHandle(out_handle));
+    *out_size = static_cast<u32>(impl->shared_font->size());
+    R_SUCCEED();
+}
+
+Result IPlatformServiceManager::GetBuiltInFontData(
+    Out<bool> out_available, Out<BuiltInFontDescriptor> out_descriptor, u8 type, bool option) {
+    // The option does not affect selection; Kirby also requests type 4 with option=true.
+    const auto& region = impl->GetSharedFontRegion(type);
+    *out_descriptor = {};
+    *out_available = DescribeBuiltInFont(*out_descriptor, type, region.offset, region.size,
+                                        impl->shared_font->size());
+    LOG_DEBUG(Service_NS, "BuiltInFont type={} option={} available={} offset={} size={}",
+              type, option, *out_available, region.offset, region.size);
+    R_SUCCEED();
+}
 
 Result IPlatformServiceManager::RequestLoad(SharedFontType type) {
     // Games don't call this so all fonts should be loaded

@@ -55,7 +55,7 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
     bool uses_uniform_bank = false;
     for (const auto& instruction : code) {
         const u32 op = instruction.Bits(0, 12);
-        uses_uniform_bank |= op == 0x3c4 || op == 0x2bd || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
+        uses_uniform_bank |= op == 0x3c4 || op == 0x2bd || op == 0xc11 || op == 0xc0c || op == 0x986 || op == 0x9a8 || op == 0xc12 || op == 0xc17 || op == 0xe24 || op == 0xc24 || op == 0xd00 || op == 0xd09 || op == 0x9c3 || op == 0xc45 || op == 0x2a4 || op == 0x891 || op == 0x890 || op == 0x290 || op == 0x28c || op == 0x88c || op == 0x287 || op == 0x887 || op == 0x958 || op == 0xab9 || op == 0xabb || op == 0x899 || op == 0xc20 || op == 0xe21 || op == 0xe23 || op == 0xc02 ||
                              op == 0x886 || op == 0x3c2 || op == 0xc82 || op == 0x882 || op == 0x292 || op == 0x892 || op == 0x291 || op == 0x981 || op == 0xc13 || op == 0xc10 || op == 0xc23 || op == 0x526 || op == 0x2be || op == 0x8a4 || op == 0xd05 || (op == 0x984 && instruction.Bits(91, 1)) || op == 0x89c || op == 0x883 || op == 0x2a5 || op == 0xd06 || op == 0x299 || op == 0xc09 || (op == 0x81c && instruction.Bits(67, 1));
     }
     const auto address_of = [](u32 index) { return 0x50U + index * 8 + ((index + 1) / 3) * 8; };
@@ -733,11 +733,17 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
         }
         case 0xb82: { // LDC.64 indexed byte offset
             const u32 width = insn.Bits(73, 3);
-            if ((width != 4 && width != 5) || insn.Bits(78, 2) || insn.Bits(91, 1) ||
+            // Native AdMode and Maxwell LDC Mode both encode segmented IS as 2.
+            // Preserve the dynamic high16 bank/low16 offset split in the real Slot
+            // translator; IL/ISL are not implemented there and remain rejected.
+            const u32 mode = insn.Bits(78, 2);
+            if ((width != 4 && width != 5) || (mode != 0 && mode != 2) || insn.Bits(91, 1) ||
                 bank() >= 18 ||
+                (mode == 2 && insn.Bits(54, 5) >= 18) ||
                 (width == 5 && ((dest & 1) || dest >= 254))) return fail(index, "native indexed constant load mode");
             emit(base(0xef90000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
-                 (u64{insn.Bits(38, 16)} << 20) | (u64{bank()} << 36) | (u64{width} << 48));
+                 (u64{insn.Bits(38, 16)} << 20) | (u64{bank()} << 36) |
+                 (u64{mode} << 44) | (u64{width} << 48));
             break;
         }
         case 0xf89: { // SHFL with immediate lane and segmentation/clamp mask, any mode.
@@ -836,32 +842,39 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0x3828000000000000ULL | predicate | (dest + 216) | (u64{insn.words[1] + 216} << 8) |
                  (u64{1} << 39) | (u64{1} << 40));
             break;
-        case 0x3a1: { // MATCH.ALL.U64 with only the all-equal predicate retained.
+        case 0x3a1: { // MATCH.ALL.U32/U64 with only the all-equal predicate retained.
             const u32 source = insn.Bits(24, 8), target = insn.Bits(81, 3);
-            if (dest != 255 || source >= 254 || (source & 1) || target >= 6 ||
-                native_predicate != 7 || insn.words[1] || (insn.words[2] & ~0xe0000U) != 0x200)
+            const bool wide = insn.Bits(73, 1) != 0;
+            if (dest != 255 || source >= 254 || (wide && (source & 1)) || target >= 6 ||
+                native_predicate != 7 || insn.words[1] || (insn.words[2] & ~0xe0200U))
                 return fail(index, "native warp match mode");
+            // The ballot selects a participating lane, not necessarily lane zero.
+            // U32 compares one word; U64 additionally ANDs the high-word equality.
+            // P6 is lowering scratch and must not overwrite a guest predicate.
             save_predicate();
             emit(0x50d8000000070000ULL | 250 | (u64{7} << 39) | (u64{7} << 45) | (u64{1} << 48));
             emit(0x5c10000000070000ULL | 251 | (u64{250} << 8) | (u64{255} << 20) | (u64{1} << 49));
             emit(0x5c40000000070000ULL | 250 | (u64{250} << 8) | (u64{251} << 20) | (u64{7} << 48));
             emit(0x5c30000000070000ULL | 250 | (u64{250} << 20));
-            for (u32 word = 0; word < 2; ++word)
+            for (u32 word = 0; word < (wide ? 2U : 1U); ++word)
                 emit(0xef10000000070000ULL | (251 + word) | (u64{source + word} << 8) |
                     (u64{250} << 20) | (u64{1} << 29) | (u64{31} << 34) | (u64{7} << 48));
             emit(0x5b60000000070000ULL | 7 | (u64{6} << 3) | (u64{source} << 8) |
                 (u64{251} << 20) | (u64{7} << 39) | (u64{2} << 49));
-            emit(0x5b60000000070000ULL | 7 | (u64{6} << 3) | (u64{source + 1} << 8) |
-                (u64{252} << 20) | (u64{6} << 39) | (u64{2} << 49));
+            if (wide) {
+                emit(0x5b60000000070000ULL | 7 | (u64{6} << 3) | (u64{source + 1} << 8) |
+                    (u64{252} << 20) | (u64{6} << 39) | (u64{2} << 49));
+            }
             emit(0x50d8000000070000ULL | 255 | (u64{6} << 39) | (u64{target} << 45));
             restore_predicate();
             break;
         }
-        case 0x3c4: { // REDUX.SUM (modulo 2^32) or .MAX (unsigned) over the actual active lanes.
+        case 0x3c4: { // REDUX.SUM/OR or .MAX (unsigned) over the actual active lanes.
             const u32 source = insn.Bits(24, 8), target = uniform_register(static_cast<u32>(dest));
             const bool maximum = insn.words[2] == 0x14000;
+            const bool bitwise_or = insn.words[2] == 0x4000; // REDUX op[80:78] = 1, .b32.
             if (target == ~0U || target == 255 || insn.words[1] ||
-                (insn.words[2] != 0xc000 && !maximum) || native_predicate != 7)
+                (insn.words[2] != 0xc000 && !maximum && !bitwise_or) || native_predicate != 7)
                 return fail(index, "native warp sum mode");
             emit(0x50d8000000070000ULL | 250 | (u64{7} << 39) | (u64{7} << 45) | (u64{1} << 48));
             mov_imm(target, 0);
@@ -872,7 +885,11 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 emit(0x0400000000070000ULL | 252 | (u64{252} << 8) | (u64{1} << 20));
                 emit(0x5c10000000070000ULL | 252 | (u64{255} << 8) | (u64{252} << 20) | (u64{1} << 48));
                 emit(0x5c40000000070000ULL | 251 | (u64{251} << 8) | (u64{252} << 20) | (u64{7} << 48));
-                if (maximum) {
+                if (bitwise_or) {
+                    // Inactive lanes contribute zero, the OR identity. Never sum flag bits.
+                    emit(0x5c40000000070000ULL | target | (u64{target} << 8) |
+                        (u64{251} << 20) | (u64{1} << 41) | (u64{7} << 48));
+                } else if (maximum) {
                     emit(0x5c20000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20) | (u64{15} << 39));
                 } else {
                     emit(0x5c10000000070000ULL | target | (u64{target} << 8) | (u64{251} << 20));
@@ -894,12 +911,17 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             emit(0xec00000000000000ULL | predicate | 255 | (u64{address} << 8) | (u64{250} << 20));
             break;
         }
-        case 0x38c: { // ATOMS.ADD.U32, naturally aligned shared byte offset.
+        case 0x38c: { // ATOMS.ADD/OR.U32, naturally aligned shared byte offset.
             const u32 offset = insn.Bits(40, 24);
-            if (insn.words[2] || (offset & 3)) return fail(index, "native shared atomic mode");
+            const u32 operation = insn.Bits(87, 4);
+            // Native and Maxwell agree on ADD=0 / OR=6. Preserve the actual atomic,
+            // including predication and the optional old-value destination.
+            if ((operation != 0 && operation != 6) ||
+                insn.words[2] != (operation << 23) || (offset & 3))
+                return fail(index, "native shared atomic mode");
             emit(0xec00000000000000ULL | predicate | dest |
                 (u64{insn.Bits(24, 8)} << 8) | (u64{insn.Bits(32, 8)} << 20) |
-                (u64{offset >> 2} << 30));
+                (u64{offset >> 2} << 30) | (u64{operation} << 52));
             break;
         }
         case 0x3a8: { // ATOMG.E.ADD.STRONG.GPU U32 at a 64-bit register address plus an offset.
@@ -1666,15 +1688,33 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
             result.instructions.push_back(translated);
             break;
         }
-        case 0x387: case 0x983: { // Captured scalar local spill at an immediate byte offset.
+        case 0x387: case 0x983: { // Local spill, 32/64/128 bits; preserve each word's predicate.
             const bool store = opcode == 0x387;
             const u32 data = insn.Bits(32, 8), offset = insn.Bits(40, 24);
-            if (insn.Bits(24, 8) != 255 || (store && (insn.Bits(16, 8) || data > 247)) ||
-                (!store && (data || dest >= 248)) || (offset & 3) || offset > 0x7fffff ||
-                insn.words[2] != (store ? 0x00100800U : 0x00300800U))
+            const u32 size = insn.Bits(73, 3);
+            const u32 words = size == 6 ? 4 : size == 5 ? 2 : 1;
+            const u32 value = store ? data : static_cast<u32>(dest);
+            const u32 scratch_begin = uses_uniform_bank ? 216U : 246U;
+            const u32 address = insn.Bits(24, 8);
+            // Wide loads with a destination aliasing their address register need a separate,
+            // tested address-preservation lowering; do not let the first word change the base.
+            // Check the entire register tuple, not only its first register. RZ stores write
+            // zero to every component rather than wrapping the register number after R255.
+            // The existing STL backend does not guard dynamic local stores at runtime.
+            // Keep stores immediate until their bounds contract has an independent test.
+            if ((store && address != 255) || (address != 255 && address >= scratch_begin) ||
+                (!store && words > 1 && address >= value && address < value + words) ||
+                (store && insn.Bits(16, 8)) || (!store && data) ||
+                (!store && value == 255) ||
+                (value != 255 && (value + words > scratch_begin || (value & (words - 1)))) ||
+                (offset & 3) || offset + 4 * words > 0x800000 || size < 4 || size > 6 ||
+                (insn.words[2] & ~(store ? 0xe00U : 0x200e00U)) != 0x00100000U)
                 return fail(index, "native local scalar spill mode");
-            emit((store ? 0xef50000000000000ULL : 0xef40000000000000ULL) | predicate |
-                 (store ? data : dest) | (u64{255} << 8) | (u64{offset} << 20) | (u64{4} << 48));
+            for (u32 word = 0; word < words; ++word) {
+                emit((store ? 0xef50000000000000ULL : 0xef40000000000000ULL) | predicate |
+                     (value == 255 ? 255U : value + word) | (u64{address} << 8) |
+                     (u64{offset + 4 * word} << 20) | (u64{4} << 48));
+            }
             break;
         }
         case 0x803: { // P2R PR, register merge source, immediate mask, byte select (76-77)
@@ -1986,7 +2026,13 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 (dest << 8) | (u64{b} << 20) | (u64{7} << 39) | (u64{1} << 49));
             break;
         }
-        case 0x211: case 0x811: { // LEA low word, no carry result
+        case 0x211: case 0x811: case 0xc11: { // LEA low word; 0xc11 reads uniform Rb.
+            // Admit only the tested mixed R/UR low-word form. Its carry/high modes
+            // are separate contracts, not covered by ordinary or uniform carry tests.
+            if (opcode == 0xc11 && (insn.Bits(80, 1) || insn.Bits(74, 1) ||
+                insn.Bits(81, 3) != 7 || insn.Bits(64, 8) != 255 ||
+                (insn.words[1] & ~0x8000003fU)))
+                return fail(index, "native uniform-source LEA mode");
             if (insn.Bits(80, 1)) {
                 // LEA.HI Rd, Ra, Rb (or an immediate, 0x811), RZ, s: Rb + high word of (Ra << s);
                 // bit 73 sign-extends Ra.
@@ -2007,14 +2053,36 @@ inline LoweredProgram LowerToMaxwell(std::span<const Instruction> code) {
                 }
                 break;
             }
-            if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) || insn.Bits(81, 3) != 7 ||
+            const u32 carry_out = insn.Bits(81, 3);
+            if (insn.Bits(72, 1) || insn.Bits(74, 1) || insn.Bits(80, 1) ||
+                (carry_out != 7 && ((opcode == 0x211 && insn.Bits(63, 1)) ||
+                                   (rewritten_uniform && (opcode != 0x211 || carry_out > 1)))) ||
                 (opcode == 0x211 && insn.Bits(62, 1))) return fail(index, "native LEA carry/high mode");
             // 0x211 bit 63 negates Rb (LEA Rd, Ra, -Rb, s), as Maxwell ISCADD's bit 48.
-            u32 b = insn.Bits(32, 8);
+            u32 b = opcode == 0xc11 ? uniform_register(insn.Bits(32, 8)) : insn.Bits(32, 8);
+            if (b == ~0U) return fail(index, "native uniform LEA register");
             if (opcode == 0x811) { mov_imm(251, insn.words[1]); b = 251; }
+            if (carry_out != 7) {
+                // Carry belongs to the truncated low-word add, not shifted-out Ra bits.
+                // Keep the sum separate: Rd may alias either source. Uniform UPn lives
+                // in R239 bit 6-n; preserve the unrelated guest P(6-n) around capture.
+                const u32 target = rewritten_uniform ? 6 - carry_out : carry_out;
+                const u32 mask = 1U << target;
+                emit(0x5c18000000000000ULL | predicate | 250 | (u64{insn.Bits(24, 8)} << 8) |
+                     (u64{b} << 20) | (u64{insn.Bits(75, 5)} << 39));
+                if (rewritten_uniform) save_predicate(mask);
+                emit(0x5b60000000000000ULL | predicate | 7 | (u64{target} << 3) | (u64{250} << 8) |
+                     (u64{b} << 20) | (u64{7} << 39) | (u64{1} << 49));
+                if (rewritten_uniform) {
+                    emit(0x38e8000000070000ULL | 239 | (u64{239} << 8) | (u64{mask} << 20));
+                    restore_predicate(mask);
+                }
+                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{250} << 20));
+                break;
+            }
             emit(base(0x5c18000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{b} << 20) | (u64{insn.Bits(75, 5)} << 39) |
-                 (u64{opcode == 0x211 ? insn.Bits(63, 1) : 0U} << 48));
+                 (u64{opcode != 0x811 ? insn.Bits(63, 1) : 0U} << 48));
             break;
         }
         case 0x210: case 0x810: case 0xa10: case 0xc10: { // IADD3 with zero third source and no carry outputs

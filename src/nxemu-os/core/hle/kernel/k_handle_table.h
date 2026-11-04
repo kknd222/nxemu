@@ -9,6 +9,7 @@
 #include "yuzu_common/bit_field.h"
 #include "yuzu_common/common_types.h"
 #include "core/hle/kernel/k_auto_object.h"
+#include "core/hle/kernel/handle_debug_trace.h"
 #include "core/hle/kernel/k_spin_lock.h"
 #include "core/hle/kernel/k_thread.h"
 #include "core/hle/kernel/kernel.h"
@@ -78,7 +79,11 @@ public:
             return this->GetObjectImpl(handle);
         } else {
             if (auto* obj = this->GetObjectImpl(handle); obj != nullptr) [[likely]] {
-                return obj->DynamicCast<T*>();
+                auto* typed = obj->DynamicCast<T*>();
+                if (typed == nullptr) [[unlikely]] {
+                    this->TraceHandle("typed-lookup", handle, obj, T::GetStaticTypeName(), "wrong-type", ResultInvalidHandle.GetInnerValue());
+                }
+                return typed;
             } else {
                 return nullptr;
             }
@@ -149,6 +154,7 @@ public:
                 // Cast the current object to the desired type.
                 T* cur_t = cur_object->DynamicCast<T*>();
                 if (cur_t == nullptr) [[unlikely]] {
+                    this->TraceHandle("multi-typed-lookup", cur_handle, cur_object, T::GetStaticTypeName(), "wrong-type", ResultInvalidHandle.GetInnerValue());
                     break;
                 }
 
@@ -172,6 +178,19 @@ public:
     }
 
 private:
+    // Called only while the handle-table lock is held. Trace takes no kernel locks/references.
+    void TraceHandle(const char* operation, Handle handle, KAutoObject* object,
+                     const char* expected, const char* reason, u32 result = 0) const {
+        if (!HandleDebugTrace::Enabled()) return;
+        const u32 index = handle & 0x7fff;
+        // EntryInfo is a free-list union when object is absent: never label that as a generation.
+        const u32 generation = index < m_table_size && m_objects[index] != nullptr
+                                   ? m_entry_infos[index].GetLinearId() : 0;
+        HandleDebugTrace::Record(reinterpret_cast<uintptr_t>(this), operation, handle,
+            generation, m_table_size, reinterpret_cast<uintptr_t>(object),
+            object ? object->GetTypeName() : "", expected, reason, result);
+    }
+
     s32 AllocateEntry() {
         ASSERT(m_count < m_table_size);
 
@@ -238,12 +257,19 @@ private:
         // Handles must not have reserved bits set.
         const auto handle_pack = HandlePack(handle);
         if (handle_pack.reserved != 0) [[unlikely]] {
+            this->TraceHandle("lookup", handle, nullptr, "", "reserved-bits", ResultInvalidHandle.GetInnerValue());
             return nullptr;
         }
 
         if (this->IsValidHandle(handle)) [[likely]] {
+            this->TraceHandle("lookup", handle, m_objects[handle_pack.index], "", "valid");
             return m_objects[handle_pack.index];
         } else {
+            const char* reason = handle == 0 ? "zero-handle" : handle_pack.linear_id == 0 ? "zero-generation"
+                : handle_pack.index >= m_table_size ? "index-out-of-range"
+                : m_objects[handle_pack.index] == nullptr ? "empty-slot" : "generation-mismatch";
+            auto* actual = handle_pack.index < m_table_size ? m_objects[handle_pack.index] : nullptr;
+            this->TraceHandle("lookup", handle, actual, "", reason, ResultInvalidHandle.GetInnerValue());
             return nullptr;
         }
     }

@@ -26,6 +26,7 @@
 #include "yuzu_shader_recompiler/frontend/ir/reg.h"
 #include "yuzu_shader_recompiler/frontend/ir/value.h"
 #include "yuzu_shader_recompiler/ir_opt/passes.h"
+#include "yuzu_shader_recompiler/translation_trace.h"
 
 namespace Shader::Optimization {
 namespace {
@@ -165,6 +166,7 @@ public:
 
     template <typename Type>
     IR::Value ReadVariable(Type variable, IR::Block* root_block) {
+        TranslationTrace::Add(TranslationTrace::Work::SSAReadCalls);
         boost::container::small_vector<ReadState<Type>, 64> stack{
             ReadState<Type>(nullptr),
             ReadState<Type>(root_block),
@@ -187,7 +189,12 @@ public:
             IR::Block* const block{stack.back().block};
             switch (stack.back().pc) {
             case Status::Start: {
-                if (const IR::Value& def = current_def.Def(block, variable); !def.IsEmpty()) {
+                const IR::Value& def = current_def.Def(block, variable);
+                if (stack.size() == 2) {
+                    TranslationTrace::Add(def.IsEmpty() ? TranslationTrace::Work::SSARootMisses
+                                                       : TranslationTrace::Work::SSARootHits);
+                }
+                if (!def.IsEmpty()) {
                     stack.back().result = def;
                 } else if (!block->IsSsaSealed()) {
                     // Incomplete CFG
@@ -244,7 +251,15 @@ public:
             for (auto& pair : it->second) {
                 auto& variant{pair.first};
                 auto& phi{pair.second};
-                std::visit([&](auto& variable) { AddPhiOperands(variable, *phi, block); }, variant);
+                std::visit([&](auto& variable) {
+                    const IR::Value result{AddPhiOperands(variable, *phi, block)};
+                    // Only update a definition still referring to this incomplete Phi.
+                    // A later write in this block must retain its newer definition.
+                    if (result != IR::Value{phi} &&
+                        current_def.Def(block, variable) == IR::Value{phi}) {
+                        WriteVariable(variable, block, result);
+                    }
+                }, variant);
             }
         }
         block->SsaSeal();
@@ -260,6 +275,7 @@ private:
     }
 
     IR::Value TryRemoveTrivialPhi(IR::Inst& phi, IR::Block* block, IR::Opcode undef_opcode) {
+        TranslationTrace::Add(TranslationTrace::Work::SSATrivialCandidates);
         IR::Value same;
         const size_t num_args{phi.NumArgs()};
         for (size_t arg_index = 0; arg_index < num_args; ++arg_index) {
@@ -276,10 +292,23 @@ private:
         }
         // Remove the phi node from the block, it will be reinserted
         IR::Block::InstructionList& list{block->Instructions()};
+        TranslationTrace::Add(TranslationTrace::Work::SSATrivialRemoved);
         list.erase(IR::Block::InstructionList::s_iterator_to(phi));
 
         // Find the first non-phi instruction and use it as an insertion point
-        IR::Block::iterator reinsert_point{std::ranges::find_if_not(list, IR::IsPhi)};
+        IR::Block::iterator reinsert_point;
+        if (TranslationTrace::current) {
+            std::uint64_t checks{};
+            reinsert_point = std::ranges::find_if_not(list, [&](const IR::Inst& inst) {
+                ++checks;
+                return IR::IsPhi(inst);
+            });
+            TranslationTrace::Add(TranslationTrace::Work::SSAPrefixScans);
+            TranslationTrace::Add(TranslationTrace::Work::SSAPrefixChecks, checks);
+            TranslationTrace::Max(TranslationTrace::Work::SSAPrefixMaxChecks, checks);
+        } else {
+            reinsert_point = std::ranges::find_if_not(list, IR::IsPhi);
+        }
         if (same.IsEmpty()) {
             // The phi is unreachable or in the start block
             // Insert an undefined instruction and make it the phi node replacement
@@ -363,18 +392,24 @@ void VisitInst(Pass& pass, IR::Block* block, IR::Inst& inst) {
 }
 
 void VisitBlock(Pass& pass, IR::Block* block) {
+    TranslationTrace::Add(TranslationTrace::Work::SSABlocks);
     for (IR::Inst& inst : block->Instructions()) {
+        TranslationTrace::Add(TranslationTrace::Work::SSAVisitInstructions);
         VisitInst(pass, block, inst);
     }
     pass.SealBlock(block);
 }
 
 IR::Type GetConcreteType(IR::Inst* inst) {
+    TranslationTrace::Add(TranslationTrace::Work::SSATypeCalls);
     std::deque<IR::Inst*> queue;
     queue.push_back(inst);
+    TranslationTrace::Add(TranslationTrace::Work::SSATypeEnqueues);
+    TranslationTrace::Max(TranslationTrace::Work::SSATypeMaxQueue, queue.size());
     while (!queue.empty()) {
         IR::Inst* current = queue.front();
         queue.pop_front();
+        TranslationTrace::Add(TranslationTrace::Work::SSATypePops);
         const size_t num_args{current->NumArgs()};
         for (size_t i = 0; i < num_args; ++i) {
             const auto set_type = current->Arg(i).Type();
@@ -383,6 +418,8 @@ IR::Type GetConcreteType(IR::Inst* inst) {
             }
             if (!current->Arg(i).IsImmediate()) {
                 queue.push_back(current->Arg(i).Inst());
+                TranslationTrace::Add(TranslationTrace::Work::SSATypeEnqueues);
+                TranslationTrace::Max(TranslationTrace::Work::SSATypeMaxQueue, queue.size());
             }
         }
     }
@@ -393,16 +430,32 @@ IR::Type GetConcreteType(IR::Inst* inst) {
 void SsaRewritePass(IR::Program& program) {
     Pass pass;
     const auto end{program.post_order_blocks.rend()};
-    for (auto block = program.post_order_blocks.rbegin(); block != end; ++block) {
-        VisitBlock(pass, *block);
+    {
+        TranslationTrace::SubTimer visit(TranslationTrace::Subpass::SSAVisit);
+        for (auto block = program.post_order_blocks.rbegin(); block != end; ++block) {
+            VisitBlock(pass, *block);
+        }
     }
-    for (auto block = program.post_order_blocks.rbegin(); block != end; ++block) {
-        for (IR::Inst& inst : (*block)->Instructions()) {
-            if (inst.GetOpcode() == IR::Opcode::Phi) {
-                if (inst.Type() == IR::Type::Opaque) {
-                    inst.SetFlags(GetConcreteType(&inst));
+    {
+        TranslationTrace::SubTimer finalize(TranslationTrace::Subpass::SSAFinalize);
+        for (auto block = program.post_order_blocks.rbegin(); block != end; ++block) {
+            for (IR::Inst& inst : (*block)->Instructions()) {
+                TranslationTrace::Add(TranslationTrace::Work::SSAFinalInstructions);
+                // SSA construction preserves the contiguous Phi prefix. Identity replacements
+                // are reinserted after that prefix; no later instruction needs Phi finalization.
+                if (inst.GetOpcode() != IR::Opcode::Phi) {
+                    break;
                 }
-                inst.OrderPhiArgs();
+                if (inst.GetOpcode() == IR::Opcode::Phi) {
+                    TranslationTrace::Add(TranslationTrace::Work::SSAFinalPhis);
+                    TranslationTrace::Add(TranslationTrace::Work::SSAFinalPhiArgs, inst.NumArgs());
+                    TranslationTrace::Max(TranslationTrace::Work::SSAFinalPhiMaxArgs, inst.NumArgs());
+                    if (inst.Type() == IR::Type::Opaque) {
+                        TranslationTrace::Add(TranslationTrace::Work::SSAOpaquePhis);
+                        inst.SetFlags(GetConcreteType(&inst));
+                    }
+                    inst.OrderPhiArgs();
+                }
             }
         }
     }

@@ -31,6 +31,7 @@
 #include "yuzu_video_core/vulkan_common/vulkan_memory_allocator.h"
 #include "yuzu_video_core/vulkan_common/vulkan_wrapper.h"
 #include "video_settings.h"
+#include "samples_backend_lab.h"
 
 namespace Vulkan {
 
@@ -148,7 +149,15 @@ public:
                              Scheduler& scheduler_, const MemoryAllocator& memory_allocator_,
                              ComputePassDescriptorQueue& compute_pass_descriptor_queue,
                              DescriptorPool& descriptor_pool)
-        : BaseStreamer(id_), runtime{runtime_}, rasterizer{rasterizer_}, device{device_},
+        : SamplesStreamer(id_, &runtime_, {}, rasterizer_, device_, scheduler_, memory_allocator_,
+                          compute_pass_descriptor_queue, descriptor_pool) {}
+
+    SamplesStreamer(size_t id_, QueryCacheRuntime* runtime_, SamplesBackendSync sync_,
+                    VideoCore::RasterizerInterface* rasterizer_, const Device& device_,
+                    Scheduler& scheduler_, const MemoryAllocator& memory_allocator_,
+                    ComputePassDescriptorQueue& compute_pass_descriptor_queue,
+                    DescriptorPool& descriptor_pool)
+        : BaseStreamer(id_), runtime{runtime_}, lab_sync{std::move(sync_)}, rasterizer{rasterizer_}, device{device_},
           scheduler{scheduler_}, memory_allocator{memory_allocator_} {
         current_bank = nullptr;
         current_query = nullptr;
@@ -222,6 +231,7 @@ public:
     }
 
     void ResetCounter() override {
+        empty_since_reset = true;
         if (has_started) {
             PauseCounter();
         }
@@ -247,20 +257,26 @@ public:
     }
 
     bool HasPendingSync() const override {
-        return !pending_sync.empty() || NeedsCheckpoint();
+        std::scoped_lock lk(zero_sync_guard);
+        return !pending_sync.empty() || !pending_final_zeros.empty() || NeedsCheckpoint();
     }
 
     void SyncWrites() override {
-        if (sync_values_stash.empty()) {
-            return;
-        }
-
         for (size_t i = 0; i < sync_values_stash.size(); i++) {
-            runtime.template SyncValues<HostSyncValues>(sync_values_stash[i],
-                                                        *buffers[resolve_buffers[i]]);
+            if (runtime) {
+                runtime->template SyncValues<HostSyncValues>(sync_values_stash[i],
+                                                            *buffers[resolve_buffers[i]]);
+            } else {
+                std::vector<SamplesBackendCopy> copies;
+                copies.reserve(sync_values_stash[i].size());
+                for (const auto& value : sync_values_stash[i])
+                    copies.push_back({value.address,value.size,value.offset});
+                lab_sync(copies,*buffers[resolve_buffers[i]]);
+            }
         }
 
         sync_values_stash.clear();
+        SyncResetZeroReports();
     }
 
     void PresyncWrites() override {
@@ -280,6 +296,14 @@ public:
             // Reduce the live counter without publishing a guest write. The
             // replicated query below pins the banks until their fence completes.
             num_slots_used = current_query->size_slots;
+            pending_sync.push_back(current_query_id);
+        }
+        // A guest report can precede newer, unreported draws. Resolve the
+        // internal current query as well so the GPU carry includes those draws;
+        // it remains orphaned and never becomes a guest write.
+        const bool has_current_epoch_query = current_query != nullptr;
+        if (current_query && std::find(pending_sync.begin(), pending_sync.end(),
+                                       current_query_id) == pending_sync.end()) {
             pending_sync.push_back(current_query_id);
         }
         sync_values_stash.clear();
@@ -352,10 +376,21 @@ public:
             auto loc_data = offsets[query->start_bank_id];
             sync_values_stash[sync_value_slot].emplace_back(HostSyncValues{
                 .address = query->guest_address,
-                .size = SamplesQueryBank::QUERY_SIZE,
+                .size = True(query->flags & VideoCommon::QueryFlagBits::HasTimestamp)
+                            ? SamplesQueryBank::QUERY_SIZE
+                            : sizeof(u32),
                 .offset =
                     loc_data.second + (query->start_slot - loc_data.first + query->size_slots - 1) *
                                           SamplesQueryBank::QUERY_SIZE,
+            });
+        }
+
+        size_t current_result_offset = 0;
+        if (current_query) {
+            ApplyBankOp(current_query, [&](SamplesQueryBank* bank, size_t start, size_t amount) {
+                const auto& location = offsets.at(bank->GetIndex());
+                current_result_offset = location.second +
+                                        (start - location.first + amount - 1) * sizeof(u64);
             });
         }
 
@@ -363,7 +398,7 @@ public:
             const size_t min_accumulation_limit =
                 checkpoint ? num_slots_used : std::min(first_accumulation_checkpoint, num_slots_used);
             const size_t max_accumulation_limit =
-                checkpoint ? num_slots_used : std::max(last_accumulation_checkpoint, num_slots_used);
+                checkpoint ? num_slots_used : std::min(last_accumulation_checkpoint, num_slots_used);
             if (checkpoint && !accumulation_since_last_sync) {
                 scheduler.RequestOutsideRenderPassOperationContext();
                 scheduler.Record([buffer = *accumulation_buffer](vk::CommandBuffer cmdbuf) {
@@ -378,8 +413,31 @@ public:
 
         } else {
             scheduler.RequestOutsideRenderPassOperationContext();
-            scheduler.Record([buffer = *accumulation_buffer](vk::CommandBuffer cmdbuf) {
-                cmdbuf.FillBuffer(buffer, 0, 8, 0);
+            // Even a single query is the current epoch's GPU total. Preserve it
+            // for the next synchronization instead of losing the CPU amend's
+            // GPU counterpart by clearing the carry to zero.
+            scheduler.Record([source = *buffers[resolve_buffer_index],
+                              destination = *accumulation_buffer,
+                              offset = current_result_offset,
+                              has_current_epoch_query]
+                             (vk::CommandBuffer cmdbuf) {
+                VkMemoryBarrier barrier{VK_STRUCTURE_TYPE_MEMORY_BARRIER};
+                barrier.srcAccessMask = VK_ACCESS_MEMORY_READ_BIT | VK_ACCESS_MEMORY_WRITE_BIT;
+                barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT | VK_ACCESS_TRANSFER_WRITE_BIT;
+                cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_ALL_COMMANDS_BIT,
+                                       VK_PIPELINE_STAGE_TRANSFER_BIT, 0, barrier);
+                if (has_current_epoch_query) {
+                    const VkBufferCopy copy{offset, 0, sizeof(u64)};
+                    cmdbuf.CopyBuffer(source, destination, vk::Span(&copy, 1));
+                } else {
+                    // Pending reports may belong to the epoch before Reset.
+                    cmdbuf.FillBuffer(destination, 0, sizeof(u64), 0);
+                }
+                barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
+                barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT |
+                                        VK_ACCESS_TRANSFER_READ_BIT;
+                cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                       VK_PIPELINE_STAGE_ALL_COMMANDS_BIT, 0, barrier);
             });
         }
 
@@ -390,7 +448,7 @@ public:
         num_slots_used = 0;
         first_accumulation_checkpoint = std::numeric_limits<size_t>::max();
         last_accumulation_checkpoint = 0;
-        accumulation_since_last_sync = has_multi_queries;
+        accumulation_since_last_sync = has_current_epoch_query;
         pending_sync.clear();
     }
 
@@ -407,6 +465,13 @@ public:
         }
         if (!current_query) {
             new_query->flags |= VideoCommon::QueryFlagBits::IsFinalValueSynced;
+            // A report without host-query banks is only known to be zero before
+            // the first query in a reset epoch. Later CPU completion may add an
+            // accumulated value, so do not force all bankless reports to zero.
+            if (empty_since_reset) {
+                std::scoped_lock lk(zero_sync_guard);
+                pending_final_zeros.push_back(index);
+            }
             return index;
         }
         new_query->start_bank_id = current_query->start_bank_id;
@@ -522,6 +587,7 @@ private:
     }
 
     void ReserveHostQuery() {
+        empty_since_reset = false;
         const bool starts_new_bank = !current_bank || current_bank->IsClosed();
         size_t new_slot = ReserveBankSlot();
         current_bank->AddReference(1);
@@ -546,6 +612,8 @@ private:
 
     void Free(size_t query_id) override {
         std::scoped_lock lk(guard);
+        std::scoped_lock zero_lk(zero_sync_guard);
+        std::erase(pending_final_zeros, query_id);
         auto* query = GetQuery(query_id);
         ApplyBankOp(query, [](SamplesQueryBank* bank, size_t start, size_t amount) {
             bank->CloseReference(amount);
@@ -560,6 +628,63 @@ private:
         Free(current_query_id);
         current_query = nullptr;
         current_query_id = 0;
+    }
+
+    void SyncResetZeroReports() {
+        std::vector<HostSyncValues> values;
+        {
+            std::scoped_lock lk(zero_sync_guard);
+            values.reserve(pending_final_zeros.size());
+            for (const size_t id : pending_final_zeros) {
+                auto* query = GetQuery(id);
+                if (!query || query->size_slots != 0 ||
+                    False(query->flags & VideoCommon::QueryFlagBits::IsFinalValueSynced) ||
+                    True(query->flags & (VideoCommon::QueryFlagBits::IsInvalidated |
+                                         VideoCommon::QueryFlagBits::IsRewritten |
+                                         VideoCommon::QueryFlagBits::IsOrphan))) {
+                    continue;
+                }
+                query->flags |= VideoCommon::QueryFlagBits::IsHostSynced;
+                values.push_back({query->guest_address,
+                                  True(query->flags & VideoCommon::QueryFlagBits::HasTimestamp)
+                                      ? sizeof(u64) : sizeof(u32),
+                                  0});
+            }
+            pending_final_zeros.clear();
+        }
+        if (values.empty()) {
+            return;
+        }
+        if (!zero_report_buffer) {
+            const VkBufferCreateInfo info{
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .size = sizeof(u64),
+                .usage = VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            };
+            zero_report_buffer = memory_allocator.CreateBuffer(info, MemoryUsage::DeviceLocal);
+            scheduler.RequestOutsideRenderPassOperationContext();
+            scheduler.Record([buffer = *zero_report_buffer](vk::CommandBuffer cmdbuf) {
+                cmdbuf.FillBuffer(buffer, 0, sizeof(u64), 0);
+                const VkMemoryBarrier barrier{
+                    .sType = VK_STRUCTURE_TYPE_MEMORY_BARRIER,
+                    .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
+                    .dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT,
+                };
+                cmdbuf.PipelineBarrier(VK_PIPELINE_STAGE_TRANSFER_BIT,
+                                      VK_PIPELINE_STAGE_TRANSFER_BIT, 0, barrier);
+            });
+        }
+        if (runtime) {
+            runtime->template SyncValues<HostSyncValues>(values, *zero_report_buffer);
+        } else {
+            std::vector<SamplesBackendCopy> copies;
+            copies.reserve(values.size());
+            for (const auto& value : values) {
+                copies.push_back({value.address, value.size, value.offset});
+            }
+            lab_sync(copies, *zero_report_buffer);
+        }
     }
 
     void ReplicateCurrentQueryIfNeeded() {
@@ -623,7 +748,8 @@ private:
         return buffers.size() - 1;
     }
 
-    QueryCacheRuntime& runtime;
+    QueryCacheRuntime* runtime;
+    SamplesBackendSync lab_sync;
     VideoCore::RasterizerInterface* rasterizer;
     const Device& device;
     Scheduler& scheduler;
@@ -633,11 +759,15 @@ private:
     std::array<size_t, 32> resolve_table{};
     std::array<size_t, 32> intermediary_table{};
     vk::Buffer accumulation_buffer;
+    vk::Buffer zero_report_buffer;
     std::deque<std::vector<HostSyncValues>> sync_values_stash;
     std::vector<size_t> resolve_buffers;
 
     // syncing queue
     std::vector<size_t> pending_sync;
+    mutable std::mutex zero_sync_guard;
+    std::vector<size_t> pending_final_zeros;
+    bool empty_since_reset{true};
 
     // flush levels
     std::vector<size_t> pending_flush_queries;
@@ -1234,6 +1364,15 @@ private:
 
 } // namespace
 
+std::unique_ptr<VideoCommon::StreamerInterface> CreateSamplesBackendLab(
+ size_t id, SamplesBackendSync sync, VideoCore::RasterizerInterface* rasterizer,
+ const Device& device,Scheduler& scheduler,const MemoryAllocator& allocator,
+ UpdateDescriptorQueue& queue,DescriptorPool& pool) {
+    if (!sync || !rasterizer || id >= static_cast<size_t>(QueryType::MaxQueryTypes))
+        throw std::invalid_argument("Samples lab requires valid callbacks and streamer id");
+    return std::make_unique<SamplesStreamer>(id,nullptr,std::move(sync),rasterizer,device,scheduler,allocator,queue,pool);
+}
+
 struct QueryCacheRuntimeImpl {
     QueryCacheRuntimeImpl(QueryCacheRuntime& runtime, VideoCore::RasterizerInterface* rasterizer_,
                           Tegra::MaxwellDeviceMemoryManager& device_memory_,
@@ -1262,21 +1401,23 @@ struct QueryCacheRuntimeImpl {
         hcr_setup.pNext = nullptr;
         hcr_setup.flags = 0;
 
-        conditional_resolve_pass = std::make_unique<ConditionalRenderingResolvePass>(
-            device, scheduler, descriptor_pool, compute_pass_descriptor_queue);
+        if (device.IsExtConditionalRendering()) {
+            conditional_resolve_pass = std::make_unique<ConditionalRenderingResolvePass>(
+                device, scheduler, descriptor_pool, compute_pass_descriptor_queue);
 
-        const VkBufferCreateInfo buffer_ci = {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-            .pNext = nullptr,
-            .flags = 0,
-            .size = sizeof(u32),
-            .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
-                     VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT,
-            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
-            .queueFamilyIndexCount = 0,
-            .pQueueFamilyIndices = nullptr,
-        };
-        hcr_resolve_buffer = memory_allocator.CreateBuffer(buffer_ci, MemoryUsage::DeviceLocal);
+            const VkBufferCreateInfo buffer_ci = {
+                .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+                .pNext = nullptr,
+                .flags = 0,
+                .size = sizeof(u32),
+                .usage = VK_BUFFER_USAGE_TRANSFER_DST_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT |
+                         VK_BUFFER_USAGE_CONDITIONAL_RENDERING_BIT_EXT,
+                .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+                .queueFamilyIndexCount = 0,
+                .pQueueFamilyIndices = nullptr,
+            };
+            hcr_resolve_buffer = memory_allocator.CreateBuffer(buffer_ci, MemoryUsage::DeviceLocal);
+        }
     }
 
     VideoCore::RasterizerInterface* rasterizer;
@@ -1396,15 +1537,19 @@ void QueryCacheRuntime::HostConditionalRenderingCompareValueImpl(VideoCommon::Lo
     ResumeHostConditionalRendering();
 }
 
-void QueryCacheRuntime::HostConditionalRenderingCompareBCImpl(DAddr address, bool is_equal) {
+void QueryCacheRuntime::HostConditionalRenderingCompareBCImpl(DAddr address, bool is_equal,
+                                                             bool compare_to_zero) {
     VkBuffer to_resolve;
     u32 to_resolve_offset;
     {
         std::scoped_lock lk(impl->buffer_cache.mutex);
-        static constexpr auto sync_info = VideoCommon::ObtainBufferSynchronize::NoSynchronize;
+        const auto sync_info = compare_to_zero
+                                  ? VideoCommon::ObtainBufferSynchronize::FullSynchronize
+                                  : VideoCommon::ObtainBufferSynchronize::NoSynchronize;
         const auto post_op = VideoCommon::ObtainBufferOperation::DoNothing;
         const auto [buffer, offset] =
-            impl->buffer_cache.ObtainCPUBuffer(address, 24, sync_info, post_op);
+            impl->buffer_cache.ObtainCPUBuffer(address, compare_to_zero ? 8 : 24,
+                                              sync_info, post_op);
         to_resolve = buffer->Handle();
         to_resolve_offset = static_cast<u32>(offset);
     }
@@ -1412,7 +1557,7 @@ void QueryCacheRuntime::HostConditionalRenderingCompareBCImpl(DAddr address, boo
         PauseHostConditionalRendering();
     }
     impl->conditional_resolve_pass->Resolve(*impl->hcr_resolve_buffer, to_resolve,
-                                            to_resolve_offset, false);
+                                            to_resolve_offset, compare_to_zero);
     impl->hcr_setup.buffer = *impl->hcr_resolve_buffer;
     impl->hcr_setup.offset = 0;
     impl->hcr_setup.flags = is_equal ? 0 : VK_CONDITIONAL_RENDERING_INVERTED_BIT_EXT;
@@ -1489,7 +1634,13 @@ bool QueryCacheRuntime::HostConditionalRenderingCompareValues(VideoCommon::Looku
     for (size_t i = 0; i < 2; i++) {
         if (is_null[i]) {
             size_t j = (i + 1) % 2;
-            HostConditionalRenderingCompareValueImpl(*objects[j], equal_check);
+            // Equality with a known zero pair must inspect both words. A Vulkan
+            // conditional predicate reads only one u32 and loses the upper word.
+            if (objects[j]->address % sizeof(u32) != 0) {
+                EndHostConditionalRendering();
+                return false;
+            }
+            HostConditionalRenderingCompareBCImpl(objects[j]->address, equal_check, true);
             return true;
         }
     }

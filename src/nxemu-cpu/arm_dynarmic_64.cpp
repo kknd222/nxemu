@@ -231,7 +231,7 @@ public:
     {
         ASSERT_MSG(!m_parent.m_uses_wall_clock, "Dynarmic ticking disabled");
 
-        uint64_t amortized_ticks = ticks / Hardware::NUM_CPU_CORES;
+        uint64_t amortized_ticks = ticks / m_parent.m_process.GetGuestCoreCount();
         amortized_ticks = std::max<uint64_t>(amortized_ticks, 1);
         m_parent.m_system.Timing().AddTicks(amortized_ticks);
     }
@@ -516,7 +516,7 @@ CpuHaltReason ArmDynarmic64::RunThread(IKernelThread * thread)
         };
         return m_jit->Run();
     }();
-    return TranslateHaltReason(result);
+    return TranslateHaltReason(result, this, m_coreIndex, "run");
 }
 
 
@@ -532,7 +532,7 @@ CpuHaltReason ArmDynarmic64::StepThread(IKernelThread * thread)
         };
         return m_jit->Step();
     }();
-    return TranslateHaltReason(result);
+    return TranslateHaltReason(result, this, m_coreIndex, "step");
 }
 
 void ArmDynarmic64::LockThread(IKernelThread * /*thread*/)

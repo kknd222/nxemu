@@ -8,6 +8,8 @@
 #include <bit>
 #include <cstddef>
 #include <optional>
+#include <sstream>
+#include <string>
 #include <span>
 #include <vector>
 
@@ -115,6 +117,29 @@ public:
         return {table_bindings.data(), table_bindings.size()};
     }
 
+    VkPushConstantRange PushConstantRange() const {
+        using Shader::Backend::SPIRV::RenderAreaLayout;
+        using Shader::Backend::SPIRV::RescalingLayout;
+        const u32 size_offset=is_compute?sizeof(RescalingLayout::down_factor):0u;
+        return {static_cast<VkShaderStageFlags>(is_compute?VK_SHADER_STAGE_COMPUTE_BIT:VK_SHADER_STAGE_ALL_GRAPHICS),0,
+                static_cast<u32>(sizeof(RescalingLayout))-size_offset+static_cast<u32>(sizeof(RenderAreaLayout))};
+    }
+
+    /// Snapshot exact compute layout CPU values used below, never descriptor handles.
+    std::string DebugComputeRecipe() const {
+        std::ostringstream s;
+        const auto flags=device->UsesUpdateAfterBindDescriptorSets()?VK_DESCRIPTOR_SET_LAYOUT_CREATE_UPDATE_AFTER_BIND_POOL_BIT:0U;
+        const auto range=PushConstantRange();
+        s<<"{\"set_count\":"<<((bindings.empty()&&table_bindings.empty())?0:1)
+         <<",\"set0_flags\":"<<flags<<",\"pnext\":null,\"bindings\":[";
+        bool comma=false;bool immutable=false;
+        for(const auto& binding:bindings){if(comma)s<<',';comma=true;immutable|=binding.pImmutableSamplers!=nullptr;
+            s<<"{\"binding\":"<<binding.binding<<",\"type\":"<<binding.descriptorType<<",\"count\":"<<binding.descriptorCount<<",\"stages\":"<<binding.stageFlags<<",\"immutable_samplers\":null}";}
+        s<<"],\"pipeline_layout_flags\":0,\"push_constants\":[{\"offset\":"<<range.offset<<",\"size\":"<<range.size<<",\"stages\":"<<range.stageFlags<<"}]"
+         <<",\"recipe_complete\":"<<((is_compute&&!immutable)?"true":"false")<<",\"texture_table_binding_count\":"<<table_bindings.size()<<"}";
+        return s.str();
+    }
+
     /// Layout of descriptor set 1, holding the texture and sampler tables.
     vk::DescriptorSetLayout CreateTextureTableSetLayout() const {
         return device->GetLogical().CreateDescriptorSetLayout({
@@ -212,16 +237,7 @@ public:
     vk::PipelineLayout CreatePipelineLayout(
         VkDescriptorSetLayout descriptor_set_layout,
         VkDescriptorSetLayout texture_table_set_layout = VK_NULL_HANDLE) const {
-        using Shader::Backend::SPIRV::RenderAreaLayout;
-        using Shader::Backend::SPIRV::RescalingLayout;
-        const u32 size_offset = is_compute ? sizeof(RescalingLayout::down_factor) : 0u;
-        const VkPushConstantRange range{
-            .stageFlags = static_cast<VkShaderStageFlags>(
-                is_compute ? VK_SHADER_STAGE_COMPUTE_BIT : VK_SHADER_STAGE_ALL_GRAPHICS),
-            .offset = 0,
-            .size = static_cast<u32>(sizeof(RescalingLayout)) - size_offset +
-                    static_cast<u32>(sizeof(RenderAreaLayout)),
-        };
+        const auto range=PushConstantRange();
         const std::array set_layouts{descriptor_set_layout, texture_table_set_layout};
         const u32 num_sets{texture_table_set_layout ? 2U : descriptor_set_layout ? 1U : 0U};
         return device->GetLogical().CreatePipelineLayout({

@@ -17,6 +17,7 @@
 #include "yuzu_video_core/engines/maxwell_3d.h"
 #include "yuzu_video_core/host1x/gpu_device_memory_manager.h"
 #include "yuzu_video_core/memory_manager.h"
+#include "yuzu_video_core/draw_admission_trace.h"
 #include "yuzu_video_core/shader_cache.h"
 #include "yuzu_video_core/shader_environment.h"
 
@@ -44,6 +45,8 @@ ShaderCache::ShaderCache(Tegra::MaxwellDeviceMemoryManager& device_memory_)
 bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
     auto& dirty{maxwell3d->dirty.flags};
     if (!dirty[VideoCommon::Dirty::Shaders]) {
+        DrawAdmission::MarkRefresh(last_shaders_valid ? DrawAdmission::Refresh::CachedValid :
+                                                       DrawAdmission::Refresh::CachedInvalid);
         return last_shaders_valid;
     }
     dirty[VideoCommon::Dirty::Shaders] = false;
@@ -64,6 +67,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         const auto location = ResolveGraphicsProgramLocation(maxwell3d->IsNativeTuring(),
             base_addr, shader_config.offset, shader_config.reserved[0], shader_config.reserved[1]);
         const GPUVAddr shader_addr{location.address};
+        DrawAdmission::MarkStage(index, shader_addr);
         if (maxwell3d->IsNativeTuring()) {
             static std::atomic<u32> reported{};
             if (reported.fetch_add(1, std::memory_order_relaxed) < 24)
@@ -74,6 +78,7 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         if (!cpu_shader_addr) {
             LOG_ERROR(HW_GPU, "Invalid GPU address for shader 0x{:016x}", shader_addr);
             last_shaders_valid = false;
+            DrawAdmission::MarkRefresh(DrawAdmission::Refresh::InvalidAddress, static_cast<int>(index));
             return false;
         }
         const ShaderInfo* shader_info{TryGet(*cpu_shader_addr)};
@@ -83,12 +88,15 @@ bool ShaderCache::RefreshStages(std::array<u64, 6>& unique_hashes) try {
         }
         shader_infos[index] = shader_info;
         unique_hashes[index] = shader_info->unique_hash;
+        DrawAdmission::MarkStageHash(index, shader_info->unique_hash);
     }
     last_shaders_valid = true;
+    DrawAdmission::MarkRefresh(DrawAdmission::Refresh::Refreshed);
     return true;
 } catch (const Shader::Exception& error) {
     if (!maxwell3d->IsNativeTuring()) throw;
     last_shaders_valid = false;
+    DrawAdmission::MarkRefresh(DrawAdmission::Refresh::Exception);
     static std::atomic<uint64_t> rejected{};
     const auto count = rejected.fetch_add(1, std::memory_order_relaxed) + 1;
     if (count <= 16 || count % 1024 == 0)

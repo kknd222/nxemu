@@ -1,3 +1,5 @@
+#include "yuzu_video_core/shader_progress_trace.h"
+#include "yuzu_shader_recompiler/ssa_fixture_capture.h"
 // SPDX-FileCopyrightText: Copyright 2019 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -42,6 +44,7 @@
 #include "yuzu_video_core/renderer_vulkan/pipeline_statistics.h"
 #include "yuzu_video_core/renderer_vulkan/vk_compute_pipeline.h"
 #include "yuzu_video_core/renderer_vulkan/vk_descriptor_pool.h"
+#include "yuzu_video_core/draw_admission_trace.h"
 #include "yuzu_video_core/renderer_vulkan/vk_pipeline_cache.h"
 #include "yuzu_video_core/renderer_vulkan/progressive_pipeline_warmup.h"
 #include "yuzu_video_core/renderer_vulkan/guest_pipeline_recipe_probe.h"
@@ -897,6 +900,9 @@ GraphicsPipeline* PipelineCache::CurrentGraphicsPipeline() {
                                      pool.linked_samplers ? 0U : pool.num_samplers};
     }
 
+    // Valid only after this invocation's complete refresh. This is the requested
+    // pre-lookup key; later cbuf normalization can change the returned pipeline key.
+    VideoCommon::DrawAdmission::MarkKey(graphics_key.Hash(), graphics_key.unique_hashes);
     if (guest_recipe_probe) {
         guest_recipe_probe->Observe(maxwell3d->regs, maxwell3d->draw_manager->GetDrawState().topology,
                                     maxwell3d->engine_state, graphics_key, dynamic_features);
@@ -2877,6 +2883,7 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     env.SetCachedSize(shader->size_bytes);
 
     main_pools.ReleaseContents();
+    VideoCommon::ShaderProgress::SourceScope progress_source(shader->size_bytes);
     auto pipeline{CreateComputePipeline(main_pools, key, env, nullptr, true)};
     cbuf_size_dependencies.Observe(key.unique_hash, env.CbufSizeMask());
     if (!pipeline || pipeline_cache_filename.empty()) {
@@ -2895,6 +2902,11 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
 std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     ShaderPools& pools, const ComputePipelineCacheKey& key, Shader::Environment& env,
     PipelineStatistics* statistics, bool build_in_parallel) try {
+    namespace Progress = VideoCommon::ShaderProgress;
+    const auto progress_token=Progress::Begin(key.Hash(),device.GetModelName());
+    Progress::Guard progress_guard(progress_token);
+    Progress::Metrics progress_metrics{};
+    if (Progress::source_hint) {progress_metrics.source_bytes=*Progress::source_hint;progress_metrics.source_known=true;}
     namespace Runtime = VideoCommon::ShaderProfile::Runtime;
     Runtime::Context runtime_context(runtime_report && runtime_report->active ? runtime_report->Begin(key.Hash(),true,quarantined_compute.Contains(key)) : nullptr);
     Runtime::Span runtime_timer(Runtime::current,Runtime::Work::Compiler);
@@ -2903,12 +2915,15 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
     auto hash = key.Hash();
     if (device.HasBrokenCompute()) {
         LOG_ERROR(Render_Vulkan, "Skipping 0x{:016x}", hash);
+        Progress::Finish(progress_token,Progress::State::Skipped,"device_HasBrokenCompute");
+        progress_guard.HandOff();
         return nullptr;
     }
 
     LOG_INFO(Render_Vulkan, "0x{:016x}", hash);
 
     Timing::Timer translation_timer(Timing::current, Timing::Phase::GuestTranslation);
+    Progress::Transition(progress_token,Progress::Stage::CFG);
     Shader::Maxwell::Flow::CFG cfg{env, pools.flow_block, env.StartAddress()};
 
     // Dump it before error.
@@ -2916,8 +2931,34 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
         env.Dump(hash, key.unique_hash);
     }
 
-    auto program{TranslateProgram(pools.inst, pools.block, env, cfg, host_info)};
+    Progress::Transition(progress_token,Progress::Stage::TranslateProgram);
+    auto program = [&] {
+        Shader::SsaFixture::Scope ssa_fixture_scope(key.Hash(),key.unique_hash);
+        Shader::TranslationTrace::Record passes;
+        Shader::TranslationTrace::Capture capture(progress_token ? &passes : nullptr);
+        try {
+            auto result = TranslateProgram(pools.inst, pools.block, env, cfg, host_info);
+            Progress::SetTranslationTrace(progress_token,passes);
+            return result;
+        } catch (...) {
+            Progress::SetTranslationTrace(progress_token,passes);
+            throw;
+        }
+    }();
     translation_timer.Stop();
+    Progress::Transition(progress_token,Progress::Stage::IRPostprocess);
+    if (progress_token) {
+        progress_metrics.ir_blocks=program.blocks.size();progress_metrics.ir_known=true;
+        static_assert(Shader::IR::Block::InstructionList::constant_time_size);
+        // O(1) per-block counts, capped at 4096 blocks; never walk instructions.
+        std::size_t counted_blocks{};
+        for (const auto* block:program.blocks) {
+            if (counted_blocks++==4096) {progress_metrics.ir_truncated=true;break;}
+            progress_metrics.ir_instructions+=block->Instructions().size();
+        }
+        progress_metrics.ssbo_count=Shader::NumDescriptors(program.info.storage_buffers_descriptors);
+        progress_metrics.ssbo_known=true;Progress::SetMetrics(progress_token,progress_metrics);
+    }
     // Only where the host enforces its limit
     const u32 max_shared_memory{profile.max_compute_shared_memory_size};
     if (max_shared_memory != 0 && program.shared_memory_size > max_shared_memory &&
@@ -2929,10 +2970,15 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
                      key.unique_hash, requested_shared_memory, program.shared_memory_size);
         }
     }
+    Progress::Transition(progress_token,Progress::Stage::EmitSPIRV);
     const std::vector<u32> code{Timing::Measure(Timing::current, Timing::Phase::SpirvEmission,
         [&] { return EmitSPIRV(profile, program); })};
+    progress_metrics.spirv_words=code.size();progress_metrics.spirv_known=true;
+    Progress::SetMetrics(progress_token,progress_metrics);
     VideoCommon::ShaderProfile::Audit::Record(code);
             device.SaveShader(code);
+    Progress::Transition(progress_token,Progress::Stage::ShaderModule);
+    auto pipeline_fixture=VideoCommon::PipelineFixture::Capture(key.Hash(),key.unique_hash,code);
     vk::ShaderModule spv_module{Timing::Measure(Timing::current, Timing::Phase::ShaderModuleCreation,
         [&] { return BuildShader(device, code); })};
     if (device.HasDebuggingToolAttached()) {
@@ -2940,9 +2986,12 @@ std::unique_ptr<ComputePipeline> PipelineCache::CreateComputePipeline(
         spv_module.SetObjectNameEXT(name.c_str());
     }
     NativePipelineBuildQueue* const thread_worker{build_in_parallel ? &runtime_builds : nullptr};
-    return std::make_unique<ComputePipeline>(device, vulkan_pipeline_cache, descriptor_pool,
+    Progress::Transition(progress_token,Progress::Stage::Constructor);
+    auto pipeline=std::make_unique<ComputePipeline>(device, vulkan_pipeline_cache, descriptor_pool,
                                              guest_descriptor_queue, thread_worker, statistics,
-                                             &shader_notify, program.info, std::move(spv_module), staging_pool);
+                                               &shader_notify, program.info, std::move(spv_module), staging_pool,progress_token,std::move(pipeline_fixture));
+    progress_guard.HandOff();
+    return pipeline;
 } catch (const Shader::Exception& exception) {
     env.Dump(key.Hash(), key.unique_hash);
     LOG_ERROR(Render_Vulkan, "Compute shader {:#016x}, TIC table size={}: {}",

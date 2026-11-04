@@ -597,3 +597,8 @@ if(ARCHITECTURE_arm64)
 endif()
 
 nxemu_set_module_output(nxemu-cpu cpu)
+
+# Offline diagnostic entry uses the same linked Dynarmic implementation.
+if(WIN32)
+    target_sources(nxemu-cpu PRIVATE diagnostics/a64_semantic_probe.cpp)
+endif()

@@ -101,6 +101,8 @@ protected:
     }
     std::optional<u64> TryFindSize();
     void InitializeNativeCode(u32 header_size = 0x80);
+    virtual void CaptureNativeDrawInput(std::span<const u8> native, u32 offset, u32 opcode,
+        const std::array<u32,4>& words, std::string_view reason) noexcept {}
     u32 native_source_size{};
 
     /// Returns std::nullopt when the handle points outside of the texture table, which the
@@ -204,6 +206,8 @@ public:
     std::optional<Shader::ReplaceConstant> GetReplaceConstBuffer(u32 bank, u32 offset) override;
 
 private:
+    void CaptureNativeDrawInput(std::span<const u8> native, u32 offset, u32 opcode,
+        const std::array<u32,4>& words, std::string_view reason) noexcept override;
     [[nodiscard]] std::optional<Tegra::Texture::TICEntry> ReadSnapshotTextureInfo(u32 raw) const;
 
     Tegra::Engines::Maxwell3D* maxwell3d{};

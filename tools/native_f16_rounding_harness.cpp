@@ -1,0 +1,15 @@
+
+int main(int argc,char**argv)try{
+ std::cout<<std::unitbuf;assert(argc==3);const bool baseline=std::string(argv[1])=="baseline";const std::filesystem::path out=argv[2];std::filesystem::create_directories(out);const char* data=std::getenv("NXEMU_F16_INPUT");assert(data);std::ifstream input_file(data);std::vector<std::array<u32,2>> values;u32 bits_value,expected_value;while(input_file>>std::hex>>bits_value>>expected_value)values.push_back({bits_value,expected_value});assert(!values.empty()&&values.size()%32==0);assert(!std::getenv("NXEMU_HMMA_RTE16"));assert(std::getenv("NXEMU_HMMA_NATIVE_HALF"));
+ unsigned cases{};{
+ Gpu gpu;std::cout<<"ACTUAL_NATIVE_F16_RN_LAYER; global_RTE16=False; Int16=False\n";
+ for(unsigned chunk=0;chunk<values.size()/32;++chunk){std::vector<std::array<u32,8>> inputs(32);std::vector<u32> expected;for(unsigned t=0;t<32;++t){auto pair=values[chunk*32+t];inputs[t][0]=pair[0];expected.push_back(pair[1]);expected.push_back(0);expected.push_back(t);expected.push_back(31);for(unsigned n=0;n<4;++n)expected.push_back(0x12340000+n);}
+  Ampere::Instruction native{{0x00307304,8,0x00200800,0}};auto low=one(native);assert(low);auto spv=compile_case(low,inputs,out,"RN-"+std::to_string(chunk));actual_file=out/("RN-"+std::to_string(chunk)+".actual.txt");std::ofstream exp(out/("RN-"+std::to_string(chunk)+".expected.txt"));for(u32 x:expected)exp<<std::hex<<x<<'\n';gpu.run(spv,expected);++cases;
+ }
+ const auto rn_mismatches=numeric_mismatches;
+ std::ifstream excluded_file(std::getenv("NXEMU_F16_EXCLUSION_INPUT"));std::vector<std::array<u32,2>> exclusions;while(excluded_file>>std::hex>>bits_value>>expected_value)exclusions.push_back({bits_value,expected_value});assert(exclusions.size()==32);
+ for(unsigned mode=1;mode<=7;++mode){_putenv_s("NXEMU_F16_OVERRIDE",std::to_string(mode).c_str());std::vector<std::array<u32,8>> inputs(32);std::vector<u32> expected;for(unsigned t=0;t<32;++t){inputs[t][0]=exclusions[t][0];expected.push_back(exclusions[t][1]);expected.push_back(0);expected.push_back(t);expected.push_back(31);for(unsigned n=0;n<4;++n)expected.push_back(0x12340000+n);}Ampere::Instruction native{{0x00307304,8,0x00200800,0}};auto low=one(native);assert(low);auto spv=compile_case(low,inputs,out,"EXCLUDED-"+std::to_string(mode));actual_file=out/("EXCLUDED-"+std::to_string(mode)+".actual.txt");gpu.run(spv,expected);++cases;}
+ _putenv_s("NXEMU_F16_OVERRIDE","");assert(numeric_mismatches==rn_mismatches);
+ }
+ assert(validation_errors==0&&validation_warnings==0);assert(baseline?numeric_mismatches>0:numeric_mismatches==0);std::cout<<"RESULT {\"diagnostic_passed\":true,\"baseline_expected_RN_defect\":"<<(baseline?"true":"false")<<",\"RN_numeric_mismatches\":"<<numeric_mismatches<<",\"GPU_cases\":"<<cases<<",\"native_input_count\":"<<values.size()<<",\"actual_Lower_CFG_SSA_SPIRV_Vulkan\":true,\"global_RTE16\":false,\"Int16\":false,\"Khronos_errors\":"<<validation_errors<<",\"Khronos_warnings\":"<<validation_warnings<<",\"NaN_payload_hardware_verified\":false}\n";
+}catch(const std::exception&e){std::cerr<<e.what()<<'\n';return 2;}

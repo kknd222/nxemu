@@ -7,9 +7,11 @@
 #include "yuzu_common/settings.h"
 #include "yuzu_common/scope_exit.h"
 #include "core/core.h"
+#include "core/guest_debug_trace.h"
 #include "core/hle/ipc.h"
 #include "core/hle/kernel/kernel.h"
 #include "core/hle/kernel/k_thread.h"
+#include "core/hle/kernel/svc_results.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/global_scheduler_context.h"
 #include "core/hle/service/ipc_helpers.h"
@@ -67,6 +69,12 @@ void ServiceFrameworkBase::RegisterHandlersBaseTipc(const FunctionInfoBase* func
 
 void ServiceFrameworkBase::ReportUnimplementedFunction(HLERequestContext& ctx, const FunctionInfoBase* info)
 {
+    // Chat has explicit offline operations. An unknown command must not enter the
+    // broad NS2 empty-success auto stub, even when enabled in the existing config.
+    if (std::string_view{service_name}.starts_with("nn::chat::")) {
+        LOG_WARNING(Service, "Chat operation not implemented: {} command={}",service_name,ctx.GetCommand());
+        IPC::ResponseBuilder rb{ctx,2};rb.Push(Kernel::ResultNotImplemented);return;
+    }
     auto cmd_buf = ctx.CommandBuffer();
     std::string function_name = info == nullptr ? fmt::format("{}", ctx.GetCommand()) : info->name;
 
@@ -154,7 +162,21 @@ void ServiceFrameworkBase::InvokeRequestTipc(HLERequestContext& ctx)
 
 Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
                                                HLERequestContext& ctx) {
+    // Capture before the service lock so a blocked dispatcher remains distinguishable.
+    uint64_t debug_token=0;
+    if(Core::GuestDebugTrace::Enabled()) {
+        Core::GuestDebugTrace::Event event;
+        event.kind="ipc";event.phase="service_lock_wait";event.port=service_name;
+        event.command=ctx.GetCommand();event.tipc=ctx.IsTipc();
+        event.guest_tid=ctx.GetThread().GetThreadId();event.pc=ctx.GetThread().GetContext().pc;
+        std::copy_n(ctx.CommandBuffer(),event.words.size(),event.words.begin());
+        debug_token=Core::GuestDebugTrace::Begin(std::move(event));
+    }
+    ctx.SetGuestDebugToken(debug_token);
+    Result debug_dispatch_result=ResultSuccess;
+    auto debug_end=SCOPE_GUARD { Core::GuestDebugTrace::End(debug_token,ctx.CommandBuffer(),debug_dispatch_result.raw); };
     const auto guard = LockService();
+    Core::GuestDebugTrace::Dispatching(debug_token);
 
     ctx.SetCompletionTime(0);
     const auto work = system.Kernel().GlobalSchedulerContext().BeginHle();
@@ -204,6 +226,7 @@ Result ServiceFrameworkBase::HandleSyncRequest(Kernel::KServerSession& session,
 
     finish_work();
     complete_work.Cancel();
+    debug_dispatch_result=result;
     return result;
 }
 

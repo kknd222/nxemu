@@ -13,6 +13,8 @@
 #include "core/hle/service/nxemu_android_diagnostics.h"
 #include "core/hle/kernel/svc.h"
 #include <algorithm>
+#include "core/guest_debug_trace.h"
+#include "core/guest_thread_trace.h"
 #include <array>
 #include <atomic>
 #include <chrono>
@@ -257,6 +259,59 @@ void PhysicalCore::RunThread(Kernel::KThread * thread)
                          m_core_index, static_cast<int>(hr));
             }
 
+            if (Core::GuestDebugTrace::CpuSampleDue(m_core_index)) {
+                const auto capture_start = std::chrono::steady_clock::now();
+                CpuThreadContext debug_context{};
+                interface->GetContext(debug_context);
+                Core::GuestDebugTrace::Event event;
+                event.kind = "cpu_boundary"; event.phase = "after_run_thread";
+                event.command = static_cast<u32>(hr); event.guest_tid = thread->GetThreadId();
+                event.pc = debug_context.pc; event.object_count = 3;
+                event.objects[0] = debug_context.lr; event.object_types[0] = "lr";
+                event.objects[1] = debug_context.sp; event.object_types[1] = "sp";
+                event.objects[2] = debug_context.fp; event.object_types[2] = "fp";
+                for (size_t i = 0; i < 6; ++i) {
+                    event.words[2*i] = static_cast<u32>(debug_context.r[i]);
+                    event.words[2*i+1] = static_cast<u32>(debug_context.r[i] >> 32);
+                }
+                event.cpu_context_valid = true;
+                std::copy_n(debug_context.r, 29, event.registers.begin());
+                event.registers[29] = debug_context.fp;
+                event.registers[30] = debug_context.lr;
+                event.pstate = debug_context.pstate;
+                // Read hints at bounded register bases and +0xd0. These are not
+                // lock owners, and other cores can change memory between reads.
+                constexpr std::array<size_t,4> probe_regs{0,8,9,25};
+                for (size_t i = 0; i < probe_regs.size(); ++i) {
+                    const auto base = event.registers[probe_regs[i]];
+                    for (size_t j = 0; j < 2; ++j) {
+                        const size_t slot = 2*i+j;
+                        const u64 offset = j ? 0xd0 : 0;
+                        if (base == 0 || base > UINT64_MAX-offset-8) continue;
+                        const auto address = base+offset;
+                        event.probe_addresses[slot] = address;
+                        if (process->GetMemory().IsValidVirtualAddressRange(address, 8)) {
+                            event.probe_readable[slot] = process->GetCoreMemory().ReadBlock(
+                                address, &event.probe_values[slot], 8);
+                        }
+                    }
+                }
+                u64 frame = debug_context.fp;
+                for (size_t i = 3; i < event.objects.size(); ++i) {
+                    std::array<u64,2> pair{};
+                    if (frame == 0 || (frame & 7) ||
+                        !process->GetMemory().IsValidVirtualAddressRange(frame,16) ||
+                        !process->GetCoreMemory().ReadBlock(frame,pair.data(),16)) break;
+                    event.objects[i] = pair[1];
+                    event.object_types[i] = "frame_chain_lr_hint";
+                    event.object_count = static_cast<u32>(i+1);
+                    if (pair[0] <= frame || pair[0]-frame > 1048576) break;
+                    frame = pair[0];
+                }
+                event.capture_ns = std::chrono::duration_cast<std::chrono::nanoseconds>(
+                    std::chrono::steady_clock::now()-capture_start).count();
+                Core::GuestDebugTrace::CpuSample(m_core_index, std::move(event));
+            }
             WriteGuestTrace(*thread, *interface, m_core_index, hr);
 
             ExitContext();
@@ -383,6 +438,13 @@ void PhysicalCore::SaveContext(KThread * thread) const
     if (interface)
     {
         interface->GetContext(thread->GetContext());
+        if(Core::GuestDebugTrace::Enabled()) {
+            const auto& ctx=thread->GetContext();
+            Core::GuestThreadTrace::Context row;row.tid=thread->GetThreadId();row.core=m_core_index;
+            row.pc=ctx.pc;row.sp=ctx.sp;row.pstate=ctx.pstate;
+            std::copy_n(ctx.r,29,row.registers.begin());row.registers[29]=ctx.fp;row.registers[30]=ctx.lr;
+            Core::GuestThreadTrace::Saved(row);
+        }
     }
 }
 

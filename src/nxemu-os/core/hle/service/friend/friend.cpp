@@ -2,6 +2,8 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <queue>
+#include <array>
+#include "core/hle/kernel/k_thread.h"
 #include "yuzu_common/logging/log.h"
 #include "yuzu_common/uuid.h"
 #include "core/core.h"
@@ -12,6 +14,7 @@
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/kernel_helpers.h"
 #include "core/hle/service/server_manager.h"
+#include "core/sm_resolution_trace.h"
 
 namespace Service::Friend {
 
@@ -396,6 +399,8 @@ Module::Interface::Interface(std::shared_ptr<Module> module_, Core::System& syst
 
 Module::Interface::~Interface() = default;
 
+#include "core/hle/service/friend/chat_service.inc"
+
 void LoopProcess(Core::System& system) {
     auto server_manager = std::make_unique<ServerManager>(system);
     auto module = std::make_shared<Module>();
@@ -411,6 +416,7 @@ void LoopProcess(Core::System& system) {
     server_manager->RegisterNamedService("friend:v",
                                          std::make_shared<Friend>(module, system, "friend:v"));
 
+    server_manager->RegisterNamedService("chat:u", std::make_shared<ChatUserService>(system));
     ServerManager::RunServer(std::move(server_manager));
 }
 

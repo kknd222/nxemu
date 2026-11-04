@@ -56,6 +56,11 @@ public:
     /// Requests to begin a renderpass.
     void RequestRenderpass(const Framebuffer* framebuffer, u32 color_scratch_mask = 0);
 
+    // Explicit external experiment entry; no default renderer call uses it.
+    void RequestLabRenderpass(VkRenderPass pass,VkFramebuffer framebuffer,VkExtent2D extent,
+                              std::span<const VkImage> images,
+                              std::span<const VkImageSubresourceRange> ranges);
+
     /// Requests the current execution context to be able to execute operations only allowed outside
     /// of a renderpass.
     void RequestOutsideRenderPassOperationContext();

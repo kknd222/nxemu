@@ -15,6 +15,7 @@
 #include "core/file_sys/vfs/vfs_ivirtualfile.h"
 #include "core/loader/loader.h"
 #include "system_loader.h"
+#include "yuzu_common/resource_trace.h"
 
 namespace FileSys {
 
@@ -34,6 +35,7 @@ void RomFSFactory::SetPackedUpdate(VirtualFile update_raw_file) {
 
 VirtualFile RomFSFactory::OpenCurrentProcess(uint64_t current_process_title_id) const {
     if (!updatable) {
+        Common::ResourceTrace::Loader::Record(current_process_title_id, 0, int(LoaderContentRecordType::Program), "current-process-unpatched", -1, bool(file), file ? file->GetSize() : 0);
         return file;
     }
 
@@ -59,10 +61,12 @@ VirtualFile RomFSFactory::OpenPatchedRomFSWithProgramIndex(uint64_t title_id, u8
 VirtualFile RomFSFactory::Open(uint64_t title_id, StorageId storage, LoaderContentRecordType type) const {
     const std::shared_ptr<NCA> res = GetEntry(title_id, storage, type);
     if (res == nullptr) {
+        Common::ResourceTrace::Loader::Record(title_id, int(storage), int(type), "catalog-miss", -1, false);
         return nullptr;
     }
-
-    return res->RomFS();
+    auto fs = res->RomFS();
+    Common::ResourceTrace::Loader::Record(title_id, int(storage), int(type), "nca-romfs", int(res->GetStatus()), bool(fs), fs ? fs->GetSize() : 0);
+    return fs;
 }
 
 std::shared_ptr<NCA> RomFSFactory::GetEntry(uint64_t title_id, StorageId storage, LoaderContentRecordType type) const 

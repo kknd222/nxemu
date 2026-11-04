@@ -6,7 +6,8 @@
 #include <nxemu-module-spec/cpu.h>
 
 Dynarmic::HaltReason TranslateDynarmicHaltReason(CpuHaltReason hr);
-CpuHaltReason TranslateHaltReason(Dynarmic::HaltReason hr);
+CpuHaltReason TranslateHaltReason(Dynarmic::HaltReason hr, const ICpuCore* core = nullptr,
+                                  uint32_t core_index = UINT32_MAX, const char* operation = "unspecified");
 
 #if defined(__linux__) && !defined(__ANDROID__)
 

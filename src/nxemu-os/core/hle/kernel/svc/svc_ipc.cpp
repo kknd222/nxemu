@@ -5,6 +5,7 @@
 #include "yuzu_common/scratch_buffer.h"
 #include "core/core.h"
 #include "core/hle/kernel/k_client_session.h"
+#include "core/hle/kernel/handle_debug_trace.h"
 #include "core/hle/kernel/k_hardware_timer.h"
 #include "core/hle/kernel/k_process.h"
 #include "core/hle/kernel/k_scoped_resource_reservation.h"
@@ -24,14 +25,32 @@ Result SendSyncRequestImpl(KernelCore& kernel, uintptr_t message, size_t buffer_
     // Get the client session.
     KScopedAutoObject session =
         GetCurrentProcess(kernel).GetHandleTable().GetObject<KClientSession>(session_handle);
-    R_UNLESS(session.IsNotNull(), ResultInvalidHandle);
+    if (session.IsNull()) {
+        if (HandleDebugTrace::Enabled()) {
+            auto& process = GetCurrentProcess(kernel);
+            HandleDebugTrace::Record(reinterpret_cast<uintptr_t>(&process.GetHandleTable()),
+                "SendSyncRequest", session_handle, 0, process.GetHandleTable().GetTableSize(),
+                0, "", "KClientSession", "first-svc-typed-lookup-failed", ResultInvalidHandle.GetInnerValue(),
+                GetCurrentThread(kernel).GetThreadId(), process.GetProcessId());
+        }
+        R_THROW(ResultInvalidHandle);
+    }
 
     // Get the parent, and persist a reference to it until we're done.
     KScopedAutoObject parent = session->GetParent();
     ASSERT(parent.IsNotNull());
 
     // Send the request.
-    R_RETURN(session->SendSyncRequest(message, buffer_size));
+    const Result result = session->SendSyncRequest(message, buffer_size);
+    if (HandleDebugTrace::Enabled()) {
+        auto& process = GetCurrentProcess(kernel);
+        HandleDebugTrace::Record(reinterpret_cast<uintptr_t>(&process.GetHandleTable()),
+            "SendSyncRequest", session_handle, 0,
+            process.GetHandleTable().GetTableSize(), reinterpret_cast<uintptr_t>(session.GetPointerUnsafe()),
+            "KClientSession", "KClientSession", "returned-from-session-layer", result.GetInnerValue(),
+            GetCurrentThread(kernel).GetThreadId(), process.GetProcessId());
+    }
+    R_RETURN(result);
 }
 
 Result ReplyAndReceiveImpl(KernelCore& kernel, int32_t* out_index, uintptr_t message,

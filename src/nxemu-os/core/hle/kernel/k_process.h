@@ -258,6 +258,9 @@ public:
     }
 
     bool IsSwitch2() const { return m_is_switch2; }
+    uint32_t GetGuestCoreCount() const override {
+        return m_is_switch2 ? Hardware::NUM_CPU_CORES : Hardware::NUM_NS1_CPU_CORES;
+    }
 
     bool IsApplication() const override
     {

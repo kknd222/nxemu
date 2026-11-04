@@ -19,6 +19,7 @@
 #include "core/hle/service/ipc_helpers.h"
 #include "core/hle/service/server_manager.h"
 #include "core/hle/service/sm/sm.h"
+#include "core/guest_debug_trace.h"
 
 namespace Service {
 
@@ -413,6 +414,21 @@ Result ServerManager::CompleteSyncRequest(Session* session) {
         R_SUCCEED();
     }
 
+    uint64_t reply_trace_token{};
+    if(Core::GuestDebugTrace::Enabled()) {
+        Core::GuestDebugTrace::Event event;
+        event.kind="ipc_reply_pending";event.phase="after_handler_before_reply";
+        event.guest_tid=session->GetContext()->GetThread().GetThreadId();
+        event.command=session->GetContext()->GetCommand();
+        event.pc=session->GetContext()->GetThread().GetContext().pc;
+        event.timeout_ns=static_cast<s64>(session->GetContext()->GetCompletionTime());
+        const auto now=static_cast<u64>(m_system.CoreTiming().GetGlobalTimeNs().count());
+        event.words[0]=static_cast<u32>(now);event.words[1]=static_cast<u32>(now>>32);
+        event.objects[0]=reinterpret_cast<uint64_t>(server_session);
+        event.object_types[0]="KServerSession";event.object_count=1;
+        reply_trace_token=Core::GuestDebugTrace::Begin(std::move(event));
+    }
+    auto reply_trace_end=SCOPE_GUARD {Core::GuestDebugTrace::End(reply_trace_token,nullptr,res.raw);};
     if (session->GetContext()->GetCompletionTime() != 0)
     {
         // Retain the request/context until completion. The reply transaction

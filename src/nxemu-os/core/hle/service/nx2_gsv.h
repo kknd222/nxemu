@@ -17,6 +17,10 @@
 #include "core/hle/kernel/k_resource_limit.h"
 #include "core/hle/kernel/k_server_session.h"
 #include "core/hle/kernel/k_session.h"
+#include "core/hle/kernel/k_scoped_resource_reservation.h"
+#include "core/hle/kernel/k_readable_event.h"
+#include "core/hle/kernel/svc_results.h"
+#include "core/hle/service/nx2_chat_protocol.h"
 #include "core/hle/kernel/k_event.h"
 #include "core/hle/kernel/k_transfer_memory.h"
 #include "core/hle/service/ipc_helpers.h"
@@ -96,6 +100,105 @@ private:
  void Poll(){std::scoped_lock lk{mutex};for(auto& [slot,r]:requests){if(!r.pending)continue;const u64 value=r.id<192?system.GetVideo().HostSyncpointValue(r.id):r.value;const bool reached=r.mode==1?value>=r.value:s32(u32(value)-u32(r.value))>=0;if(reached){r.pending=false;Event(slot)->Signal();}}}
  KernelHelpers::ServiceContext context;std::mutex mutex;std::map<u32,Kernel::KEvent*> events;std::map<u32,Request> requests;std::shared_ptr<Core::Timing::EventType> poll;
 };
+// Kirby SDK 0x639bbc: 1202 returns one raw session at TLS word 3, result at word 4.
+// 0x639818/0x6398a4: child 1 returns a limit <=0x3ff; child 11 returns an event.
+// These are client-proven wire formats, not a complete GameChat implementation.
+class INx2ChatGsvSession final : public ServiceFramework<INx2ChatGsvSession> {
+public:
+    explicit INx2ChatGsvSession(Core::System& sys)
+        : ServiceFramework{sys, "nn::chat::gsv::EventSupervisor"}, context{sys, "ChatGsv"} {
+        static const FunctionInfo functions[] = {
+            {1, &INx2ChatGsvSession::GetEventLimit, "GetEventLimit"},
+            {11, &INx2ChatGsvSession::CreateEvent, "CreateEvent"},
+            {103, &INx2ChatGsvSession::BindEvent, "BindEvent"},
+            {121, &INx2ChatGsvSession::CreateMetadataPool, "CreateMetadataPool"},
+        };
+        RegisterHandlersTipc(functions);
+    }
+    ~INx2ChatGsvSession() override {
+        for (auto* event : events) context.CloseEvent(event);
+    }
+    Result HandleSyncRequest(Kernel::KServerSession& session, HLERequestContext& ctx) override {
+        if (ctx.IsTipc()) {
+            switch (ctx.GetCommand()) {
+            case 1:
+            case 11:
+            case 103:
+            case 121:
+                return ServiceFrameworkBase::HandleSyncRequest(session, ctx);
+            default:
+                break;
+            }
+        }
+        const auto guard = LockService();
+        LOG_WARNING(Service, "ChatGsv unsupported command={} tipc={}", ctx.GetCommand(), ctx.IsTipc());
+        IPC::ResponseBuilder rb{ctx, 2};
+        if (ctx.IsTipc()) rb.PushRaw<u32>(Kernel::ResultNotImplemented.raw);
+        else rb.Push(Kernel::ResultNotImplemented);
+        return system.IsPoweredOn() ? ctx.WriteToOutgoingCommandBuffer() : ResultSuccess;
+    }
+private:
+    bool Packet(HLERequestContext& ctx, u32 command, u32 size) const {
+        return Nx2ChatProtocol::Packet(std::span<const u32>{ctx.CommandBuffer(), IPC::COMMAND_BUFFER_LENGTH}, command, size);
+    }
+    void Reply(HLERequestContext& ctx, Result result) {
+        IPC::ResponseBuilder rb{ctx, 2}; rb.PushRaw<u32>(result.raw);
+    }
+    void GetEventLimit(HLERequestContext& ctx) {
+        const auto result = Packet(ctx, 1, 0) ? ResultSuccess : Kernel::ResultInvalidCombination;
+        LOG_INFO(Service, "ChatGsv cmd1 limit={} result={:#x}", Nx2ChatProtocol::EventLimit, result.raw);
+        IPC::ResponseBuilder rb{ctx, 3}; rb.PushRaw<u32>(result.raw); rb.Push<u32>(Nx2ChatProtocol::EventLimit);
+    }
+    void CreateEvent(HLERequestContext& ctx) {
+        const auto count = ctx.CommandBuffer()[2];
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KReadableEvent* readable{};
+        if (Packet(ctx, 11, 1)) {
+            if (!Nx2ChatProtocol::ValidCount(count)) result = Kernel::ResultOutOfRange;
+            else if (events.size() >= Nx2ChatProtocol::EventLimit) result = Kernel::ResultOutOfResource;
+            else if (auto* event = context.CreateEvent("ChatGsvEvent")) {
+                events.push_back(event);
+                readable = &event->GetReadableEvent();
+                readable->Open(); // transfer one reference; ServiceContext keeps its original.
+                result = ResultSuccess;
+            } else result = Kernel::ResultOutOfResource;
+        }
+        // Idle events remain unsignalled. Never signal them merely to force loading progress.
+        LOG_INFO(Service, "ChatGsv cmd11 count={} move_event={} result={:#x}", count, readable != nullptr, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1, IPC::ResponseBuilder::Flags::AlwaysMoveHandles};
+        rb.PushRaw<u32>(result.raw); rb.PushMoveObjects(readable);
+    }
+    void BindEvent(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        if (Packet(ctx, 103, 3)) {
+            result = Nx2ChatProtocol::ValidSlot(w[4]) ? ResultSuccess : Kernel::ResultOutOfRange;
+            if (result.IsSuccess()) bindings[w[4]] = u64{w[2]} | (u64{w[3]} << 32);
+        }
+        LOG_DEBUG(Service, "ChatGsv cmd103 slot={} result={:#x}", w[4], result.raw);
+        Reply(ctx, result);
+    }
+    void CreateMetadataPool(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        Result result = Kernel::ResultInvalidCombination;
+        if (Packet(ctx, 121, 5)) {
+            // Only the client wire format is proved. Recording is not hardware-backed pool service.
+            if (metadata_pools.size() >= Nx2ChatProtocol::EventLimit && !metadata_pools.contains(w[6])) {
+                result = Kernel::ResultOutOfResource;
+            } else {
+                metadata_pools[w[6]] = {u64{w[2]} | (u64{w[3]} << 32), u64{w[4]} | (u64{w[5]} << 32)};
+                result = ResultSuccess;
+            }
+        }
+        LOG_DEBUG(Service, "ChatGsv cmd121 index={} result={:#x}", w[6], result.raw);
+        Reply(ctx, result);
+    }
+    KernelHelpers::ServiceContext context;
+    std::vector<Kernel::KEvent*> events;
+    std::map<u32, u64> bindings;
+    std::map<u32, std::pair<u64, u64>> metadata_pools;
+};
+
 class INx2GpuSession final : public ServiceFramework<INx2GpuSession> {
 public:
     explicit INx2GpuSession(Core::System& system_)
@@ -458,11 +561,52 @@ private:
 class INx2GraphicsSystemSession final:public ServiceFramework<INx2GraphicsSystemSession> {
 public:
  explicit INx2GraphicsSystemSession(Core::System& sys):ServiceFramework{sys,"nx2:gsv"},m_context{sys,"nx2:gsv"}{
- static const FunctionInfo functions[]={{305,&INx2GraphicsSystemSession::OpenViSession,"OpenViSession"},{111,&INx2GraphicsSystemSession::CreateNativeMemory,"CreateNativeMemory"},{112,&INx2GraphicsSystemSession::DestroyNativeMemory,"DestroyNativeMemory"},{114,&INx2GraphicsSystemSession::BindNativeMemory,"BindNativeMemory"},{423,&INx2GraphicsSystemSession::BindNativeGpuMemory,"BindNativeGpuMemory"},{429,&INx2GraphicsSystemSession::CreateNativeImage,"CreateNativeImage"},{430,&INx2GraphicsSystemSession::DestroyNativeImage,"DestroyNativeImage"},{426,&INx2GraphicsSystemSession::QueryNativeImage,"MapNativeImage"},{428,&INx2GraphicsSystemSession::QueryNativeImage,"QueryNativeImage"},{435,&INx2GraphicsSystemSession::CalculateNativeImageSize,"CalculateNativeImageSize"},{314,&INx2GraphicsSystemSession::ConfigureWindowImagePool,"DestroyNativeWindowAliasImagePool"},{315,&INx2GraphicsSystemSession::ConfigureWindowImagePool,"CreateNativeWindowAliasImagePool"},{1510,&INx2GraphicsSystemSession::CalculateRequirements,"CalculateRequirements"},{202,&INx2GraphicsSystemSession::OpenSyncptSession,"OpenSyncptSession"},{204,&INx2GraphicsSystemSession::AttachSyncptMemory,"AttachSyncptMemory"},{497,&INx2GraphicsSystemSession::OpenGpuSession,"OpenGpuSession"},{1402,&INx2GraphicsSystemSession::OpenNvsrvSession,"OpenNvsrvSession"}};
+ static const FunctionInfo functions[]={{305,&INx2GraphicsSystemSession::OpenViSession,"OpenViSession"},{111,&INx2GraphicsSystemSession::CreateNativeMemory,"CreateNativeMemory"},{112,&INx2GraphicsSystemSession::DestroyNativeMemory,"DestroyNativeMemory"},{114,&INx2GraphicsSystemSession::BindNativeMemory,"BindNativeMemory"},{423,&INx2GraphicsSystemSession::BindNativeGpuMemory,"BindNativeGpuMemory"},{429,&INx2GraphicsSystemSession::CreateNativeImage,"CreateNativeImage"},{430,&INx2GraphicsSystemSession::DestroyNativeImage,"DestroyNativeImage"},{426,&INx2GraphicsSystemSession::QueryNativeImage,"MapNativeImage"},{428,&INx2GraphicsSystemSession::QueryNativeImage,"QueryNativeImage"},{435,&INx2GraphicsSystemSession::CalculateNativeImageSize,"CalculateNativeImageSize"},{314,&INx2GraphicsSystemSession::ConfigureWindowImagePool,"DestroyNativeWindowAliasImagePool"},{315,&INx2GraphicsSystemSession::ConfigureWindowImagePool,"CreateNativeWindowAliasImagePool"},{1510,&INx2GraphicsSystemSession::CalculateRequirements,"CalculateRequirements"},{202,&INx2GraphicsSystemSession::OpenSyncptSession,"OpenSyncptSession"},{204,&INx2GraphicsSystemSession::AttachSyncptMemory,"AttachSyncptMemory"},{497,&INx2GraphicsSystemSession::OpenGpuSession,"OpenGpuSession"},{1402,&INx2GraphicsSystemSession::OpenNvsrvSession,"OpenNvsrvSession"},{1201,&INx2GraphicsSystemSession::CreateChatContext,"CreateChatContext"},{1202,&INx2GraphicsSystemSession::InitializeChatContext,"InitializeChatContext"},{1203,&INx2GraphicsSystemSession::DestroyChatContext,"DestroyChatContext"}};
  RegisterHandlersTipc(functions);
  }
  ~INx2GraphicsSystemSession() override {if(m_syncpt_poll)system.CoreTiming().UnscheduleEvent(m_syncpt_poll);for(auto*e:m_syncpt_events)if(e)m_context.CloseEvent(e);}
 private:
+    void ChatContextReply(HLERequestContext& ctx, bool started) {
+        const auto command = ctx.GetCommand();
+        const auto valid = Nx2ChatProtocol::Packet(std::span<const u32>{ctx.CommandBuffer(), IPC::COMMAND_BUFFER_LENGTH}, command, 0);
+        const auto result = valid ? ResultSuccess : Kernel::ResultInvalidCombination;
+        if (valid) m_chat_context_started = started;
+        LOG_INFO(Service, "ChatGsv root cmd={} started={} result={:#x}", command, m_chat_context_started, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2}; rb.PushRaw<u32>(result.raw);
+    }
+    void CreateChatContext(HLERequestContext& ctx) { ChatContextReply(ctx, true); }
+    void DestroyChatContext(HLERequestContext& ctx) {
+        // Do not close guest-owned child handles here; the SDK explicitly closes its raw session.
+        ChatContextReply(ctx, false);
+    }
+    void InitializeChatContext(HLERequestContext& ctx) {
+        Result result = Kernel::ResultInvalidCombination;
+        Kernel::KClientSession* client{};
+        if (Nx2ChatProtocol::Packet(std::span<const u32>{ctx.CommandBuffer(), IPC::COMMAND_BUFFER_LENGTH}, 1202, 0)) {
+            auto& kernel = system.Kernel();
+            Kernel::KScopedResourceReservation reservation{&Kernel::GetCurrentProcess(kernel), Kernel::LimitableResource::SessionCountMax};
+            result = Kernel::ResultOutOfResource;
+            if (reservation.Succeeded()) {
+                if (auto* session = Kernel::KSession::Create(kernel)) {
+                    session->Initialize(nullptr, 0);
+                    reservation.Commit(); // initialized KSession releases this resource on destruction.
+                    Kernel::KSession::Register(kernel, session);
+                    auto manager = std::make_shared<SessionRequestManager>(kernel, ctx.GetManager()->GetServerManager());
+                    manager->SetSessionHandler(std::make_shared<INx2ChatGsvSession>(system));
+                    result = ctx.GetManager()->GetServerManager().RegisterSession(&session->GetServerSession(), manager);
+                    if (result.IsSuccess()) client = &session->GetClientSession();
+                    else {
+                        session->GetServerSession().Close();
+                        session->GetClientSession().Close();
+                    }
+                }
+            }
+        }
+        LOG_INFO(Service, "ChatGsv root cmd1202 raw_session={} transfer=move result={:#x}", client != nullptr, result.raw);
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1, IPC::ResponseBuilder::Flags::AlwaysMoveHandles};
+        rb.PushRaw<u32>(result.raw); rb.PushMoveObjects(client);
+    }
+
     // Index of the first raw data word of a TIPC request: header (2 words), then an optional
     // special header with pid and copy/move handle words.
     static size_t TipcDataOffset(const u32* cmd_buf) {
@@ -810,6 +954,7 @@ private:
     static constexpr std::chrono::nanoseconds SyncptPollInterval{std::chrono::microseconds{500}};
     KernelHelpers::ServiceContext m_context;
     std::array<Kernel::KEvent*,2> m_syncpt_events{};
+    bool m_chat_context_started{};
     IMemory* m_syncpt_memory{};
     u64 m_syncpt_rw{},m_syncpt_ro{};
     u32 m_syncpt_count{};

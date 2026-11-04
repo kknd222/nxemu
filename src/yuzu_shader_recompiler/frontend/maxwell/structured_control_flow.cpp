@@ -1,3 +1,4 @@
+#include "yuzu_shader_recompiler/translation_trace.h"
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -313,6 +314,7 @@ class GotoPass {
 public:
     explicit GotoPass(Flow::CFG& cfg, ObjectPool<Statement>& stmt_pool) : pool{stmt_pool} {
         std::vector gotos{BuildTree(cfg)};
+        TranslationTrace::Add(TranslationTrace::Work::BuildGotos,gotos.size());
         const auto end{gotos.rend()};
         for (auto goto_stmt = gotos.rbegin(); goto_stmt != end; ++goto_stmt) {
             RemoveGoto(*goto_stmt);
@@ -331,7 +333,8 @@ private:
             // Move goto_stmt out using outward-movement transformation until it becomes
             // directly related to label_stmt
             while (!IsDirectlyRelated(goto_stmt, label_stmt)) {
-                goto_stmt = MoveOutward(goto_stmt);
+                TranslationTrace::Add(TranslationTrace::Work::BuildOutwardMoves);
+                    goto_stmt = MoveOutward(goto_stmt);
             }
         }
         // Force goto_stmt and label_stmt to be siblings
@@ -341,6 +344,7 @@ private:
             if (goto_level > label_level) {
                 // Move goto_stmt out of its level using outward-movement transformations
                 while (goto_level > label_level) {
+                    TranslationTrace::Add(TranslationTrace::Work::BuildOutwardMoves);
                     goto_stmt = MoveOutward(goto_stmt);
                     --goto_level;
                 }
@@ -348,10 +352,12 @@ private:
                 if (NeedsLift(goto_stmt, label_stmt)) {
                     // Lift goto_stmt to above stmt containing label_stmt using goto-lifting
                     // transformations
+                    TranslationTrace::Add(TranslationTrace::Work::BuildLifts);
                     goto_stmt = Lift(goto_stmt);
                 }
                 // Move goto_stmt into label_stmt's level using inward-movement transformation
                 while (goto_level < label_level) {
+                    TranslationTrace::Add(TranslationTrace::Work::BuildInwardMoves);
                     goto_stmt = MoveInward(goto_stmt);
                     ++goto_level;
                 }
@@ -984,10 +990,16 @@ IR::AbstractSyntaxList BuildASL(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::
                                 Environment& env, Flow::CFG& cfg,
                                 const HostTranslateInfo& host_info) {
     ObjectPool<Statement> stmt_pool{64};
-    GotoPass goto_pass{cfg, stmt_pool};
+    auto goto_pass = [&] {
+        TranslationTrace::SubTimer timer(TranslationTrace::Subpass::BuildGoto);
+        return GotoPass{cfg,stmt_pool};
+    }();
     Statement& root{goto_pass.RootStatement()};
     IR::AbstractSyntaxList syntax_list;
-    TranslatePass{inst_pool, block_pool, stmt_pool, env, root, syntax_list, host_info};
+    {
+        TranslationTrace::SubTimer timer(TranslationTrace::Subpass::BuildTranslate);
+        TranslatePass{inst_pool, block_pool, stmt_pool, env, root, syntax_list, host_info};
+    }
     return syntax_list;
 }
 

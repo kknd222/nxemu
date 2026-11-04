@@ -18,6 +18,10 @@
 #include "yuzu_common/settings.h"
 #include "os_settings.h"
 #include "core/perf_stats.h"
+#include "core/guest_debug_trace.h"
+#include "core/guest_thread_trace.h"
+#include "core/hle/kernel/handle_debug_trace.h"
+#include "core/hle/service/nxemu_android_diagnostics.h"
 
 using namespace std::chrono_literals;
 using DoubleSecs = std::chrono::duration<double, std::chrono::seconds::period>;
@@ -27,6 +31,9 @@ using std::chrono::microseconds;
 // Purposefully ignore the first five frames, as there's a significant amount of overhead in
 // booting that we shouldn't account for
 constexpr std::size_t IgnoreFrames = 5;
+
+#include "yuzu_common/resource_trace.h"
+#include "core/sm_resolution_trace.h"
 
 namespace Core {
 
@@ -114,6 +121,21 @@ double PerfStats::GetMeanFrametime() const {
 }
 
 PerfStatsResults PerfStats::GetAndResetStats(microseconds current_system_time_us) {
+    GuestDebugTrace::Publish();
+    GuestThreadTrace::Publish();
+    Kernel::HandleDebugTrace::Publish();
+    Common::ResourceTrace::System::Flush();
+    Core::SmResolutionTrace::Flush();
+    if (GuestDebugTrace::Enabled()) {
+        static uint64_t last_service_snapshot_ms{};
+        const auto now=GuestDebugTrace::Now();
+        if(now-last_service_snapshot_ms>=500) {
+            last_service_snapshot_ms=now;
+            Common::DebugDocument::Publish("os-service-events",
+                "{\"scope\":\"bounded_sampled_hle_and_svc_history\",\"snapshot\":" +
+                Common::DebugDocument::Quote(Service::NxemuAndroidDiagnostics::Snapshot()) + "}",false);
+        }
+    }
     std::scoped_lock lock{object_mutex};
 
     const auto now = Clock::now();

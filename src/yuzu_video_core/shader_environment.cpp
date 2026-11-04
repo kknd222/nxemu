@@ -1,3 +1,5 @@
+#include "yuzu_video_core/engines/draw_manager.h"
+#include <limits>
 // SPDX-FileCopyrightText: Copyright 2021 yuzu Emulator Project
 // SPDX-License-Identifier: GPL-2.0-or-later
 
@@ -29,6 +31,11 @@
 #include "yuzu_video_core/engines/kepler_compute.h"
 #include "yuzu_video_core/memory_manager.h"
 #include "yuzu_video_core/shader_environment.h"
+#include "yuzu_video_core/draw_admission_trace.h"
+#include "yuzu_video_core/native_draw_input_fixture.h"
+#include "yuzu_video_core/shader_rejection_trace.h"
+#include "yuzu_video_core/native_shader_fixture.h"
+#include "yuzu_video_core/native_compute_input_fixture.h"
 #include "yuzu_video_core/native_shader_address.h"
 #include "yuzu_shader_recompiler/frontend/ampere/program_capture.h"
 #include "yuzu_shader_recompiler/frontend/ampere/program_address_map.h"
@@ -232,10 +239,11 @@ void GenericEnvironment::InitializeNativeCode(u32 header_size) {
     using Shader::Ampere::Instruction;
     std::vector<Instruction> native;
     Shader::Ampere::ProgramCaptureState capture;
+    std::string_view capture_termination="instruction_limit";
     for (u32 i = 0; i < Shader::Ampere::ProgramCaptureState::MaximumInstructions; ++i) {
         const GPUVAddr address = program_base + header_size + u64{i} * sizeof(Instruction);
         if (!gpu_memory->IsFullyMappedRange(address, sizeof(Instruction))) {
-            if (!native.empty()) break;
+            if (!native.empty()) {capture_termination="unmapped_range";break;}
             throw Shader::RuntimeError("Unmapped native shader at {:#x}", address);
         }
         auto& instruction = native.emplace_back();
@@ -243,34 +251,87 @@ void GenericEnvironment::InitializeNativeCode(u32 header_size) {
         const auto status = capture.Observe(instruction, i);
         if (status == Shader::Ampere::ProgramCaptureState::Result::InvalidTarget)
             throw Shader::RuntimeError("Native shader branch outside capture at {:#x}", address);
-        if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) break;
+        if (status == Shader::Ampere::ProgramCaptureState::Result::Complete) {capture_termination="complete";break;}
     }
     auto lowered = Shader::Ampere::LowerToMaxwell(native);
     if (!lowered) {
         const size_t badIndex = lowered.error_offset / sizeof(Instruction);
         const auto bad = badIndex < native.size() ? native[badIndex] : Instruction{};
-        if (const char* diagnosticDir = std::getenv("NXEMU_NATIVE_SHADER_DIAG_DIR")) {
-            static std::atomic<u32> captures{};
-            if (captures.fetch_add(1, std::memory_order_relaxed) < 4) {
-                std::error_code ec;
-                const auto directory = std::filesystem::u8path(diagnosticDir);
-                std::filesystem::create_directories(directory, ec);
-                if (!ec) {
-                    const auto name = fmt::format("shader-{:x}", program_base);
-                    std::ofstream full(directory / (name + ".bin"), std::ios::binary);
-                    std::array<u8, NativeGraphicsHeaderSize> header{};
-                    gpu_memory->ReadBlock(program_base, header.data(), header_size);
-                    full.write(reinterpret_cast<const char*>(header.data()), header_size);
-                    full.write(reinterpret_cast<const char*>(native.data()),
-                               std::min<size_t>(native.size(), 64) * sizeof(Instruction));
-                    std::ofstream meta(directory / (name + ".txt"));
-                    meta << fmt::format("address={:#x} header_size={:#x} rejected_offset={:#x} opcode={:#x} reason={}\n",
-                        program_base, header_size, lowered.error_offset, bad.Bits(0, 12), lowered.error);
-                    LOG_INFO(HW_GPU, "NX2_NATIVE_CAPTURE file={} header_size={:#x}",
-                        (directory / (name + ".bin")).string(), header_size);
+        if (ShaderRejectionTrace::Enabled()) {
+            ShaderRejectionTrace::Event event{};
+            event.lowering=true;event.program=program_base;event.stage=static_cast<u32>(stage);
+            event.header_size=header_size;event.offset=lowered.error_offset;
+            event.native_bytes=native.size()*sizeof(Instruction);event.opcode=bad.Bits(0,12);
+            event.words=bad.words;
+            // Copy from the already-captured CPU vector, not an extra GPU read or synchronization.
+            if (badIndex<native.size()) {
+                const size_t begin=badIndex>4?badIndex-4:0;
+                const size_t end=std::min(native.size(),badIndex+5);
+                for(size_t index=begin;index<end;++index) {
+                    auto& neighbor=event.neighbors[event.neighbor_count++];
+                    neighbor.offset=index*sizeof(Instruction);neighbor.words=native[index].words;
                 }
             }
+            ShaderRejectionTrace::Record(event,lowered.error);
+            ShaderRejectionTrace::Publish();
         }
+        // Explicit opt-in only; use existing CPU capture, never reread the GPU header.
+        if (NativeShaderFixture::Enabled()) {
+            NativeShaderFixture::Metadata metadata{program_base,lowered.error_offset,
+                static_cast<u32>(stage),header_size,static_cast<u32>(bad.Bits(0,12)),bad.words,
+                lowered.error,capture_termination};
+            if (stage == Shader::Stage::Compute) {
+                auto& context=metadata.compute;
+                context.available=true;
+                context.local_memory_size=local_memory_size;
+                context.shared_memory_size=shared_memory_size;
+                context.texture_bound_buffer=texture_bound;
+                context.workgroup_size=workgroup_size;
+                if (const auto* dispatch=ShaderRejectionTrace::current_dispatch;
+                    dispatch && dispatch->program==program_base) {
+                    context.dispatch_available=true;
+                    context.dispatch_token=dispatch->token;
+                    context.dispatch_program=dispatch->program;
+                    context.grid=dispatch->grid;
+                    context.cbuf_mask=dispatch->cbuf_mask;
+                    for(size_t i=0;i<context.cbufs.size();++i) {
+                        const auto& source=dispatch->cbufs[i];
+                        context.cbufs[i]={source.address,source.size,source.enabled};
+                    }
+                }
+            }
+            NativeShaderFixture::Capture({reinterpret_cast<const std::uint8_t*>(native.data()),
+                native.size()*sizeof(Instruction)},metadata);
+            if (stage == Shader::Stage::Compute && metadata.compute.dispatch_available) {
+                // Independent, explicit reservation-before-read bounded CPU mirror input.
+                // Never FlushRegion or claim this is the GPU-visible input snapshot.
+                static const bool input_enabled =
+                    Common::DebugDocument::Environment("NXEMU_NATIVE_COMPUTE_INPUTS") == "1";
+                static const std::string target =
+                    Common::DebugDocument::Environment("NXEMU_NATIVE_COMPUTE_INPUT_HASH");
+                const auto& source = metadata.compute.cbufs[0];
+                const NativeComputeInputs::Context context{program_base,
+                    metadata.compute.dispatch_program, metadata.compute.dispatch_token,
+                    source.address, source.size, source.enabled};
+                NativeComputeInputs::Capture(
+                    {reinterpret_cast<const std::uint8_t*>(native.data()),
+                     native.size()*sizeof(Instruction)}, context, input_enabled, target,
+                    [&](std::uint64_t address, std::size_t size) {
+                        return gpu_memory->IsFullyMappedRange(address, size);
+                    },
+                    [&](std::uint64_t address, std::span<std::uint8_t> bytes) {
+                        gpu_memory->ReadBlockUnsafe(address, bytes.data(), bytes.size());
+                    });
+            }
+        }
+        // Explicit narrow input capture, before the original rejection; failure is isolated.
+        if (NativeDrawInputs::Enabled()) {
+            CaptureNativeDrawInput({reinterpret_cast<const u8*>(native.data()),
+                native.size()*sizeof(Instruction)}, static_cast<u32>(lowered.error_offset),
+                static_cast<u32>(bad.Bits(0,12)), bad.words, lowered.error);
+        }
+        DrawAdmission::Reject(program_base, lowered.error_offset, static_cast<u32>(stage),
+                              static_cast<u32>(bad.Bits(0,12)), bad.words, lowered.error);
         throw Shader::RuntimeError("Native shader {:#x} +{:#x}: {} opcode={:#x} words={:08x},{:08x},{:08x},{:08x}",
             program_base, lowered.error_offset, lowered.error, bad.Bits(0, 12),
             bad.words[0], bad.words[1], bad.words[2], bad.words[3]);
@@ -457,6 +518,10 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
     if (native) {
         if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel)
             throw Shader::RuntimeError("Unsupported native shader stage {}", static_cast<u32>(program));
+        // Initialize diagnostic identity before InitializeNativeCode can throw. The
+        // later common switch retains the same assignments for successful construction.
+        stage = program == Maxwell::ShaderType::VertexB ? Shader::Stage::VertexB : Shader::Stage::Fragment;
+        stage_index = program == Maxwell::ShaderType::VertexB ? 0 : 4;
         program_base += start_address;
         start_address = 0;
         gpu_memory->ReadBlock(program_base, &sph, sizeof(sph));
@@ -664,6 +729,74 @@ std::shared_ptr<const GraphicsEnvironment::Snapshot> GraphicsEnvironment::Captur
         }
     }
     return result;
+}
+
+void GraphicsEnvironment::CaptureNativeDrawInput(std::span<const u8> native, u32 offset,
+    u32 opcode, const std::array<u32,4>& words, std::string_view reason) noexcept {
+    namespace I=NativeDrawInputs;
+    if (!I::Enabled() || !DrawAdmission::CurrentToken() || native.size()>4096) return;
+    // Only the currently investigated special-register/clip-status admission paths.
+    if (opcode!=0x9c3 && opcode!=0x919 && opcode!=0x80d) return;
+    try {
+        // Narrow, explicitly identified vertex input recipe. Its LEA creates a
+        // segmented LDC address: bank1 for small VertexId, not immediate bank0.
+        // The captured prefix still does not observe the runtime VertexId value.
+        using NativeInstruction=Shader::Ampere::Instruction;
+        const auto instruction=[&](size_t offset) {
+            NativeInstruction value{};
+            if(offset+sizeof(value)<=native.size())std::memcpy(&value,native.data()+offset,sizeof(value));
+            return value;
+        };
+        if(native.size()<0x130 || stage!=Shader::Stage::VertexB) return;
+        const auto ald=instruction(0),lea=instruction(0x30);
+        if(ald.Bits(0,12)!=0x321 || ald.Bits(16,8)!=0 || ald.Bits(24,8)!=255 || ald.Bits(40,10)!=0x2fc ||
+           lea.Bits(0,12)!=0x811 || lea.Bits(16,8)!=0 || lea.Bits(24,8)!=0 || lea.words[1]!=0x10000 ||
+           lea.Bits(75,5)!=5 || lea.Bits(64,8)!=255 || lea.Bits(72,1) || lea.Bits(74,1) || lea.Bits(80,1) ||
+           lea.Bits(81,3)!=7 || lea.Bits(12,4)!=7) return;
+        for(size_t offset:{size_t(0x40),size_t(0x50),size_t(0x120)}) {
+            const auto ldc=instruction(offset);
+            if(ldc.Bits(0,12)!=0xb82 || ldc.Bits(24,8)!=0 || ldc.Bits(78,2)!=2 ||
+               ldc.Bits(54,5)!=0 || ldc.Bits(73,3)!=5 || ldc.Bits(91,1)) return;
+        }
+        const auto reservation=I::Reserve();
+        if(!reservation) return; // Bound additional memory reads before doing them.
+        std::array<u8,128> header_bytes{};
+        const bool header_mapped=gpu_memory->IsFullyMappedRange(program_base,header_bytes.size());
+        if(header_mapped) gpu_memory->ReadBlock(program_base,header_bytes.data(),header_bytes.size());
+        std::array<u8,1024> cbuf_bytes{};
+        constexpr u32 CaptureBank=1;
+        const auto& bound=maxwell3d->state.shader_stages[stage_index].const_buffers[CaptureBank];
+        const size_t bytes=bound.enabled?std::min<size_t>(bound.size,cbuf_bytes.size()):0;
+        const bool mapped=bytes && gpu_memory->IsFullyMappedRange(bound.address,bytes);
+        if(mapped) gpu_memory->ReadBlock(bound.address,cbuf_bytes.data(),bytes);
+        I::Input input;
+        input.invocation=NativeDrawInvocation::Current();
+        if(input.invocation.available && input.invocation.kind==NativeDrawInvocation::Kind::Direct && input.invocation.is_indexed && input.invocation.draw_mode!=2){
+            const auto& index=maxwell3d->draw_manager->GetDrawState().index_buffer;
+            auto& out=input.index_input;out.requested=true;out.element_size=1U<<input.invocation.index_format;
+            out.count=input.invocation.index_count;out.first=input.invocation.index_first;
+            out.bytes=static_cast<u32>(std::min<u64>(u64{out.count}*out.element_size,out.prefix.size()));
+            const u64 start=input.invocation.index_address,delta=u64{out.first}*out.element_size;
+            out.limit_address=index.EndAddress();
+            if(start<=std::numeric_limits<u64>::max()-delta){
+                out.address=start+delta;out.range_valid=out.bytes && out.address && out.bytes-1<=std::numeric_limits<u64>::max()-out.address &&
+                    (!out.limit_address||(out.address<=out.limit_address && out.bytes-1<=out.limit_address-out.address));
+            }
+            out.mapped=out.range_valid && gpu_memory->IsFullyMappedRange(out.address,out.bytes);
+            if(out.mapped)gpu_memory->ReadBlock(out.address,out.prefix.data(),out.bytes);
+        }
+        input.token=DrawAdmission::CurrentToken();input.program=program_base;
+        input.stage=static_cast<u32>(stage);input.header_size=128;
+        input.error_offset=offset;input.opcode=opcode;input.words=words;input.reason=reason;
+        input.native=native;input.header={header_bytes.data(),header_mapped?header_bytes.size():0};
+        input.parsed_header={reinterpret_cast<const u8*>(&sph),sizeof(sph)};
+        input.header_fully_mapped=header_mapped;
+        input.regs={reinterpret_cast<const u8*>(maxwell3d->regs.reg_array.data()),sizeof(maxwell3d->regs)};
+        input.cbuf={cbuf_bytes.data(),mapped?bytes:0};input.cbuf_address=bound.address;
+        input.cbuf_declared_size=bound.size;input.cbuf_enabled=bound.enabled;
+        input.cbuf_fully_mapped=mapped;input.cbuf_bank=CaptureBank;input.cbuf_offset=0;
+        I::Capture(input,reservation);
+    } catch(...) { /* Optional input observation never changes shader failure semantics. */ }
 }
 
 void GraphicsEnvironment::SetSnapshot(std::shared_ptr<const Snapshot> snapshot_) {
@@ -1381,3 +1514,85 @@ void LoadPipelines(
 }
 
 } // namespace VideoCommon
+
+// Deliberately after all owner implementation: Windows document macros never enter a shared header.
+#include "yuzu_common/debug_document.h"
+namespace VideoCommon::ShaderRejectionTrace {
+bool Enabled() {
+    static const bool enabled=[] {
+        const auto value=Common::DebugDocument::Environment("NXEMU_SHADER_REJECTION_TRACE");
+        return value=="1" || (value.empty() && Common::DebugDocument::Enabled());
+    }();
+    return enabled;
+}
+static void EventJson(std::ostringstream& s,const Event& e,uint64_t now) {
+    s<<"{\"sequence\":"<<e.sequence<<",\"age_ms\":"<<(now-e.observed_ms)
+     <<",\"kind\":"<<Common::DebugDocument::Quote(e.lowering?"native_lowering_rejection":"dispatch_exception")
+     <<",\"program\":"<<e.program<<",\"stage\":"<<e.stage<<",\"header_size\":"<<e.header_size
+     <<",\"native_offset\":"<<e.offset<<",\"native_capture_bytes\":"<<e.native_bytes<<",\"opcode\":"<<e.opcode
+     <<",\"reason\":"<<Common::DebugDocument::Quote(e.reason.data())<<",\"reason_truncated\":"<<(e.reason_truncated?"true":"false")
+     <<",\"native_words\":[";
+    for(size_t i=0;i<e.words.size();++i){if(i)s<<",";s<<e.words[i];}
+    s<<"],\"neighbors\":[";
+    for(size_t i=0;i<e.neighbor_count;++i){if(i)s<<",";const auto& n=e.neighbors[i];s<<"{\"offset\":"<<n.offset<<",\"words\":[";
+        for(size_t j=0;j<n.words.size();++j){if(j)s<<",";s<<n.words[j];}s<<"]}";}
+    s<<"],\"same_thread_dispatch_token\":"<<e.dispatch.token<<",\"dispatch_program\":"<<e.dispatch.program
+     <<",\"grid\":["<<e.dispatch.grid[0]<<","<<e.dispatch.grid[1]<<","<<e.dispatch.grid[2]
+     <<"],\"block\":["<<e.dispatch.block[0]<<","<<e.dispatch.block[1]<<","<<e.dispatch.block[2]
+     <<"],\"cbuf_mask\":"<<e.dispatch.cbuf_mask<<",\"constant_buffer_descriptors\":[";
+    for(size_t i=0;i<e.dispatch.cbufs.size();++i){if(i)s<<",";const auto& b=e.dispatch.cbufs[i];
+        s<<"{\"slot\":"<<i<<",\"enabled\":"<<(b.enabled?"true":"false")<<",\"address\":"<<b.address<<",\"size\":"<<b.size<<"}";}
+    s<<"]}";
+}
+void Publish() {
+    if(!Enabled() || !Common::DebugDocument::PublicationEnabled("shader-rejections"))return;
+    const auto started=std::chrono::steady_clock::now();std::string payload;
+    {
+        std::unique_lock lock(registry.mutex,std::try_to_lock);if(!lock.owns_lock())return;
+        const auto now=Now();if(now-registry.publish_ms<500)return;registry.publish_ms=now;
+        std::ostringstream s;
+        s<<"{\"source\":\"native_lowerer_and_validated_dispatch_exception_boundaries\",\"history_only\":true,\"enabled\":true,\"capacity\":64,\"reason_capacity\":32"
+         <<",\"lowering_rejection_attempts\":"<<registry.lowering_attempts.load()
+         <<",\"dispatch_exception_attempts\":"<<registry.dispatch_exceptions.load()
+         <<",\"validated_dispatch_attempts\":"<<registry.dispatch_attempts.load()
+         <<",\"dispatch_submitted\":"<<registry.dispatch_submitted.load()
+         <<",\"dispatch_not_submitted\":"<<registry.dispatch_not_submitted.load()
+         <<",\"lock_dropped\":"<<registry.lock_dropped.load()
+         <<",\"event_overwritten\":"<<(registry.cursor>64?registry.cursor-64:0)
+         <<",\"unclassified_reason_events\":"<<registry.unclassified
+         <<",\"capture_ns\":"<<registry.capture_ns.load()<<",\"publish_ns\":"<<registry.publish_ns.load()
+         <<",\"first_retained_lowering_rejection\":";
+        if(registry.first_lowering.sequence)EventJson(s,registry.first_lowering,now);else s<<"null";
+        s<<",\"first_retained_dispatch_exception\":";
+        if(registry.first_dispatch.sequence)EventJson(s,registry.first_dispatch,now);else s<<"null";
+        s<<",\"reason_counts\":[";bool comma=false;
+        for(const auto& row:registry.reasons)if(row.used){if(comma)s<<",";comma=true;
+            s<<"{\"kind\":"<<Common::DebugDocument::Quote(row.lowering?"native_lowering_rejection":"dispatch_exception")
+             <<",\"reason\":"<<Common::DebugDocument::Quote(row.text.data())<<",\"retained_count\":"<<row.count<<"}";}
+        s<<"],\"recent\":[";comma=false;uint64_t omitted=0;
+        for(uint64_t i=registry.cursor>64?registry.cursor-64:0;i<registry.cursor;++i){
+            if(s.tellp()>95000){omitted=registry.cursor-i;break;}
+            if(comma)s<<",";comma=true;EventJson(s,registry.events[i%64],now);
+        }
+        s<<"],\"serialization_budget_omitted\":"<<omitted
+         <<",\"limitations\":[\"not_live_gpu_state\",\"counts_exclude_disabled_periods\",\"lowering_and_dispatch_counts_are_separate_not_additive_unique_failures\",\"reason_counts_exclude_contended_drops_and_truncate_long_reasons\",\"first_latches_are_first_retained_after_drops\",\"dispatch_token_zero_means_no_same_thread_program_match\",\"cbuf_descriptors_are_not_output_buffer_content_or_read_write_access_proof\",\"no_extra_gpu_readback_or_synchronization\",\"pre_dispatch_qmd_validation_and_cached_failure_paths_not_all_covered\",\"capture_cost_excludes_disabled_and_dropped_calls\",\"publication_is_attempted_only_at_rejection_boundaries\"]}";
+        payload=s.str();
+    }
+    Common::DebugDocument::Publish("shader-rejections",payload,false);
+    registry.publish_ns+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-started).count();
+}
+} // namespace VideoCommon::ShaderRejectionTrace
+
+namespace VideoCommon::NativeShaderFixture {
+bool Enabled() {return Common::DebugDocument::Environment("NXEMU_NATIVE_SHADER_FIXTURES")=="1";}
+std::filesystem::path Root() {return std::filesystem::u8path(Common::DebugDocument::Environment("NXEMU_NATIVE_SHADER_DIAG_DIR"));}
+std::string RunId() {return Common::DebugDocument::Environment("NXEMU_DEBUG_RUN_ID");}
+std::string Generation() {return Common::DebugDocument::Environment("NXEMU_DEBUG_GENERATION");}
+bool Replace(const std::filesystem::path& from,const std::filesystem::path& to) noexcept {
+#ifdef _WIN32
+    return MoveFileExW(from.c_str(),to.c_str(),MOVEFILE_REPLACE_EXISTING)!=0;
+#else
+    std::error_code ec;std::filesystem::rename(from,to,ec);return !ec;
+#endif
+}
+} // namespace VideoCommon::NativeShaderFixture

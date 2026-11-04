@@ -104,6 +104,7 @@ private:
     std::string LoadFailureMessage(const std::string & path) const;
     void ReleaseModules();
     bool ResetModules();
+    void AdvanceModuleGeneration();
     void RegisterSystemCallbacks();
     void ProcessProgramEvents();
     void ReportError(const std::string & message);

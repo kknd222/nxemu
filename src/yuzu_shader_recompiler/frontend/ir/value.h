@@ -28,6 +28,7 @@ namespace Shader::IR {
 
 class Block;
 class Inst;
+struct FixtureAccess;
 
 struct AssociatedInsts;
 
@@ -73,6 +74,7 @@ public:
     [[nodiscard]] bool operator!=(const Value& other) const;
 
 private:
+    friend struct FixtureAccess;
     IR::Type type{};
     union {
         IR::Inst* inst{};
@@ -228,6 +230,7 @@ public:
     }
 
 private:
+    friend struct FixtureAccess;
     struct NonTriviallyDummy {
         NonTriviallyDummy() noexcept {}
     };

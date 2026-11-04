@@ -6,6 +6,8 @@
 #include <vector>
 #include <queue>
 
+#include "yuzu_shader_recompiler/translation_trace.h"
+#include "yuzu_shader_recompiler/ssa_fixture_capture.h"
 #include "yuzu_common/settings.h"
 #include "nxemu-video/video_settings.h"
 #include "yuzu_shader_recompiler/exception.h"
@@ -232,9 +234,10 @@ void LowerGeometryPassthrough(const IR::Program& program, const HostTranslateInf
 IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Block>& block_pool,
                              Environment& env, Flow::CFG& cfg, const HostTranslateInfo& host_info) {
     IR::Program program;
-    program.syntax_list = BuildASL(inst_pool, block_pool, env, cfg, host_info);
-    program.blocks = GenerateBlocks(program.syntax_list);
-    program.post_order_blocks = PostOrder(program.syntax_list.front());
+    program.syntax_list = TranslationTrace::Measure(TranslationTrace::Pass::BuildASL, [&] { return BuildASL(inst_pool, block_pool, env, cfg, host_info); });
+    program.blocks = TranslationTrace::Measure(TranslationTrace::Pass::GenerateBlocks, [&] { return GenerateBlocks(program.syntax_list); });
+    program.post_order_blocks = TranslationTrace::Measure(TranslationTrace::Pass::PostOrder, [&] { return PostOrder(program.syntax_list.front()); });
+    { TranslationTrace::Timer stage_setup(TranslationTrace::Pass::StageSetup);
     program.stage = env.ShaderStage();
     program.local_memory_size = env.LocalMemorySize();
     switch (program.stage) {
@@ -269,43 +272,46 @@ IR::Program TranslateProgram(ObjectPool<IR::Inst>& inst_pool, ObjectPool<IR::Blo
     default:
         break;
     }
-    RemoveUnreachableBlocks(program);
+    }
+    TranslationTrace::Measure(TranslationTrace::Pass::RemoveUnreachable, [&] { RemoveUnreachableBlocks(program); });
 
     // Replace instructions before the SSA rewrite
     if (!host_info.support_float64) {
-        Optimization::LowerFp64ToFp32(program);
+        TranslationTrace::Measure(TranslationTrace::Pass::LowerFp64, [&] { Optimization::LowerFp64ToFp32(program); });
     }
     if (!host_info.support_float16) {
-        Optimization::LowerFp16ToFp32(program);
+        TranslationTrace::Measure(TranslationTrace::Pass::LowerFp16, [&] { Optimization::LowerFp16ToFp32(program); });
     }
     if (!host_info.support_int64) {
-        Optimization::LowerInt64ToInt32(program);
+        TranslationTrace::Measure(TranslationTrace::Pass::LowerInt64, [&] { Optimization::LowerInt64ToInt32(program); });
     }
     if (!host_info.support_conditional_barrier) {
-        Optimization::ConditionalBarrierPass(program);
+        TranslationTrace::Measure(TranslationTrace::Pass::ConditionalBarrier, [&] { Optimization::ConditionalBarrierPass(program); });
     }
-    Optimization::SsaRewritePass(program);
+    SsaFixture::CapturePre(program);
+    TranslationTrace::Measure(TranslationTrace::Pass::SsaRewrite, [&] { Optimization::SsaRewritePass(program); });
+    SsaFixture::CapturePost(program);
 
-    Optimization::ConstantPropagationPass(env, program);
+    TranslationTrace::Measure(TranslationTrace::Pass::ConstantPropagation, [&] { Optimization::ConstantPropagationPass(env, program); });
 
-    Optimization::PositionPass(env, program);
+    TranslationTrace::Measure(TranslationTrace::Pass::Position, [&] { Optimization::PositionPass(env, program); });
 
-    Optimization::GlobalMemoryToStorageBufferPass(program, host_info);
-    Optimization::TexturePass(env, program, host_info);
+    TranslationTrace::Measure(TranslationTrace::Pass::GlobalMemory, [&] { Optimization::GlobalMemoryToStorageBufferPass(program, host_info); });
+    TranslationTrace::Measure(TranslationTrace::Pass::Texture, [&] { Optimization::TexturePass(env, program, host_info); });
 
     if (videoSettings.resolution_info.active) {
-        Optimization::RescalingPass(program);
+        TranslationTrace::Measure(TranslationTrace::Pass::Rescaling, [&] { Optimization::RescalingPass(program); });
     }
-    Optimization::DeadCodeEliminationPass(program);
+    TranslationTrace::Measure(TranslationTrace::Pass::DeadCode, [&] { Optimization::DeadCodeEliminationPass(program); });
     if (videoSettings.renderer_debug) {
-        Optimization::VerificationPass(program);
+        TranslationTrace::Measure(TranslationTrace::Pass::Verification, [&] { Optimization::VerificationPass(program); });
     }
-    Optimization::CollectShaderInfoPass(env, program);
-    Optimization::LayerPass(program, host_info);
-    Optimization::VendorWorkaroundPass(program);
+    TranslationTrace::Measure(TranslationTrace::Pass::CollectInfo, [&] { Optimization::CollectShaderInfoPass(env, program); });
+    TranslationTrace::Measure(TranslationTrace::Pass::Layer, [&] { Optimization::LayerPass(program, host_info); });
+    TranslationTrace::Measure(TranslationTrace::Pass::Vendor, [&] { Optimization::VendorWorkaroundPass(program); });
 
-    CollectInterpolationInfo(env, program);
-    AddNVNStorageBuffers(program);
+    TranslationTrace::Measure(TranslationTrace::Pass::Interpolation, [&] { CollectInterpolationInfo(env, program); });
+    TranslationTrace::Measure(TranslationTrace::Pass::NVN, [&] { AddNVNStorageBuffers(program); });
     return program;
 }
 

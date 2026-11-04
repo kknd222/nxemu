@@ -19,6 +19,8 @@
 #include "core/hle/service/server_manager.h"
 #include "core/hle/service/sm/sm.h"
 #include "core/hle/service/sm/sm_controller.h"
+#include "core/hle/kernel/k_thread.h"
+#include "core/sm_resolution_trace.h"
 
 namespace Service::SM {
 
@@ -78,6 +80,8 @@ Result ServiceManager::RegisterService(Kernel::KServerPort** out_server_port, st
         deferral_event->Signal();
     }
 
+    Core::SmResolutionTrace::Record(0,name,"registered",0);
+
     // Set our output.
     *out_server_port = std::addressof(port->GetServerPort());
 
@@ -95,6 +99,7 @@ Result ServiceManager::UnregisterService(const std::string& name) {
         return Service::SM::ResultNotRegistered;
     }
 
+    Core::SmResolutionTrace::Record(0,name,"unregistered",0);
     registered_services.erase(iter);
     service_ports.erase(name);
 
@@ -186,6 +191,7 @@ Result SM::GetServiceImpl(Kernel::KAutoObject** out_client_session, HLERequestCo
     // Find the named port.
     Kernel::KClientPort* client_port{};
     auto port_result = service_manager.GetServicePort(&client_port, name);
+    Core::SmResolutionTrace::Record(ctx.GetThread().GetThreadId(),name,port_result.IsError()?"lookup-failed":"port-found",port_result.raw);
     if (port_result == Service::SM::ResultInvalidServiceName) {
         LOG_ERROR(Service_SM, "Invalid service name '{}'", name);
         return Service::SM::ResultInvalidServiceName;
@@ -197,6 +203,7 @@ Result SM::GetServiceImpl(Kernel::KAutoObject** out_client_session, HLERequestCo
             "name=" + name + " result=not_registered raw=0x" +
                 fmt::format("{:08X}", port_result.raw));
         LOG_INFO(Service_SM, "Waiting for service {} to become available", name);
+        Core::SmResolutionTrace::Record(ctx.GetThread().GetThreadId(),name,"deferred-wait-registration",port_result.raw);
         ctx.SetIsDeferred();
         return Service::SM::ResultNotRegistered;
     }

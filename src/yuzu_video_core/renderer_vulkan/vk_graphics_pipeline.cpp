@@ -1792,6 +1792,23 @@ void GraphicsPipeline::ConfigureDraw(const RescalingPushConstant& rescaling,
         }
     }
     scheduler.RequestRenderpass(framebuffer, color_scratch_mask);
+    if (VideoCommon::ImageWriters::Enabled()) {
+        namespace W = VideoCommon::ImageWriters;
+        diagnostic_draw_events = {};
+        if (!diagnostic_shader_key_known) {
+            diagnostic_shader_key = key.Hash();
+            diagnostic_shader_key_known = true;
+        }
+        const auto written = ColorWriteMask();
+        for (size_t slot = 0; slot < diagnostic_draw_events.size(); ++slot) {
+            if ((written & (1u << slot)) == 0) continue;
+            auto event = W::Stamp(W::Handle(framebuffer->DiagnosticColorImage(slot, color_scratch_mask)),
+                                 W::Op::DrawRecorded);
+            event.shader_key = diagnostic_shader_key;
+            event.hashes = key.unique_hashes;
+            diagnostic_draw_events[slot] = event;
+        }
+    }
     if (attachment_reads != Shader::Backend::SPIRV::NO_ATTACHMENT_READS) {
         // Reads of the pixel being shaded only wait for earlier draws to the same region
         scheduler.Record([](vk::CommandBuffer cmdbuf) {

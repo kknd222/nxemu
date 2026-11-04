@@ -110,6 +110,10 @@ private:
     const Device& device;
     MemoryAllocator& memory_allocator;
     const Swapchain& swapchain;
+    // Failure-only, fixed capacity. Declared before Scheduler so queued CPU recording is
+    // stopped before these buffers are destroyed; normal destruction waits for GPU idle.
+    std::array<vk::Buffer,2> paired_failed_buffers;
+    bool paired_readback_disabled{};
     StateTracker state_tracker;
     Scheduler scheduler;
     PresentManager present_manager;
